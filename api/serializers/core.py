@@ -6,6 +6,7 @@ from apps.restaurants.models import Restaurant
 from apps.products.models import Food
 from apps.orders.models import Order, OrderItem, Dispute
 from apps.delivery.models import Driver, DeliveryProof
+from apps.core.models import Notification
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
 
