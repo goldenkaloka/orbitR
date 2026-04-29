@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mwanachuo_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mwanachuo_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mwanachuo_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}) do echo '...waiting for minio...' && sleep 1; done;
+      /usr/bin/mc mb local/${MINIO_STORAGE_BUCKET_NAME:-static} || true;
+      /usr/bin/mc mb local/media || true;
+      /usr/bin/mc anonymous set public local/${MINIO_STORAGE_BUCKET_NAME:-static};
+      /usr/bin/mc anonymous set public local/media;
+      exit 0;
+      "
+
+  backend:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-mwanachuo_db}
+      - DB_USER=${POSTGRES_USER:-mwanachuo_user}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-mwanachuo_password}
+      - REDIS_URL=redis://redis:6379/1
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_EXTERNAL_ENDPOINT=http://localhost:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
+      - MINIO_STORAGE_BUCKET_NAME=${MINIO_STORAGE_BUCKET_NAME:-static}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:

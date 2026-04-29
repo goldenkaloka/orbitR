@@ -1,0 +1,17 @@
+from abc import ABC, abstractmethod
+
+class PaymentGateway(ABC):
+    @abstractmethod
+    def collect(self, amount, phone, order_reference, **kwargs):
+        """Initiate payment collection from customer"""
+        pass
+
+    @abstractmethod
+    def disburse(self, amount, account_info, reference, **kwargs):
+        """Disburse funds to a driver or restaurant"""
+        pass
+
+    @abstractmethod
+    def get_status(self, provider_reference):
+        """Query status of a transaction"""
+        pass

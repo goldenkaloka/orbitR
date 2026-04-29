@@ -1,0 +1,53 @@
+from django.db import models
+from apps.users.models import User
+from apps.orders.models import Order
+import uuid
+
+# Note: In production/scaling with PostGIS, uncomment the following and change 'location' to a PointField.
+# from django.contrib.gis.db import models as gis_models
+
+from django.contrib.gis.db import models as gis_models
+
+class Driver(models.Model):
+    DRIVER_TYPE_CHOICES = (
+        ('permanent', 'Permanent'),
+        ('temporary', 'Temporary'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
+    status = models.CharField(max_length=50, default='OFFLINE', db_index=True) # Handled by Driver FSM
+    driver_type = models.CharField(max_length=20, choices=DRIVER_TYPE_CHOICES, default='permanent', db_index=True)
+    assigned_by = models.ForeignKey(
+        'restaurants.Restaurant', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='temp_drivers',
+        help_text='Only set for temporary drivers assigned by a restaurant'
+    )
+    
+    # PostGIS Location Field
+    location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
+    
+    rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
+    
+    # Legacy fields (to be deprecated after migration)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    def __str__(self):
+        return f"Driver: {self.user.username} ({self.driver_type})"
+
+class DeliveryAssignment(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='delivery_assignment')
+    driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='assignments')
+    assigned_at = models.DateTimeField(auto_now_add=True)
+    picked_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+class DeliveryProof(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='delivery_proof')
+    delivered_by = models.ForeignKey(Driver, on_delete=models.DO_NOTHING)
+    photo_url = models.URLField(max_length=500, blank=True, null=True)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)

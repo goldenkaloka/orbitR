@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Airpay Payment Test</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f0f2f5; }
+        .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center; }
+        h1 { color: #1a73e8; }
+        button { background: #1a73e8; color: white; border: none; padding: 12px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; margin-top: 1rem; }
+        button:hover { background: #1557b0; }
+        pre { text-align: left; background: #f8f9fa; padding: 1rem; border-radius: 6px; font-size: 12px; max-width: 400px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Airpay Payment Test</h1>
+        <p>Ready to test Order: <b>8d3f90df-6609-41bd-8b30-e7577ff2f7d0</b></p>
+        <p>Amount: <b>14,500.00 TZS</b></p>
+        
+        <form id="paymentForm" method="POST" action="https://payments.airpay.tz/pay/v1">
+            <!-- These values should be copied from the test_airpay_init.py output -->
+            <input type="hidden" name="merchant_id" value="247234">
+            <input type="hidden" name="encdata" value="9f19c9314d1c56a3H9sdITGsT2YVrBoaaTiSlyUDa3MXkrJnqbitHVlT5tgAhrNh7CNuMC10NxqPbHRmdGjloRgfnzWC7appYoq/aeqbdB1TlkXckOnooGZXG6yDcBxSxO5n267TPGTlaRUNVI0mPyluCKgT+wjif+ipE+PffjyH/85rz0ajc4wvLPTBL3BEB4eXC44rhqFV3xKo6KOVhvD+FXA36D/rbrHnBmO3dR77hlTK4NvegZlP1MCOQNnhHm+A8dkM1Fi437mpiPEEMZh3P3Y7Bu7Up0O6Z8f6+27zO3w/cfLbvWLn/ybQvH298rVlYxUZGhGbOg88BwV640TmgbTHqPPgY3l88g==">
+            <input type="hidden" name="checksum" value="66e0ea8f99dec58be3ec829157027636202721d2ab5e799c323b9340d2f564eb">
+            <input type="hidden" name="privatekey" value="5252aef8f6718d54cb6ee8ef8f8ad65ca95f127866c601d99d3f9dc866f8ce4a">
+            
+            <button type="submit">Proceed to Airpay Sandbox</button>
+        </form>
+    </div>
+</body>
+</html>
