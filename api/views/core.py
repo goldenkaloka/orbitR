@@ -243,6 +243,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     def claim_job(self, request, pk=None):
         try:
             driver = Driver.objects.get(user=request.user)
+            # Track attempt
+            driver.total_claim_attempts += 1
+            driver.save()
+            
             order = AssignDriverService.execute(pk, driver.id, request.user)
             return Response(OrderSerializer(order).data)
         except Driver.DoesNotExist:

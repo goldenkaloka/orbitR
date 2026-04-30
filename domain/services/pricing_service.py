@@ -32,13 +32,18 @@ class PricingService:
                 logger.info(f"Matched Delivery Zone: {zone.name} with fee {zone.fee}")
                 return zone.fee
             
-            # 2. Fallback: If no zone is matched, you can either:
-            # - Return a high "Out of Zone" fee
-            # - Return a default fee
-            # - Or raise an error to block the order (uncomment below if desired)
-            # raise ValueError("Delivery location is outside the restaurant's supported zones.")
+            # 2. Fallback: Distance-based calculation
+            # base_fee (500) + (distance_km * 100)
+            if restaurant.geo_location and delivery_location:
+                # distance() returns meters in geography mode
+                distance_km = restaurant.geo_location.distance(delivery_location) / 1000
+                base_fee = Decimal('500.00')
+                per_km = Decimal('100.00')
+                dynamic_fee = base_fee + (Decimal(str(distance_km)) * per_km)
+                # Round to nearest 100 for simplicity in TSh
+                return (dynamic_fee / 100).quantize(Decimal('1')) * 100
             
-            logger.warning(f"No delivery zone found for restaurant {restaurant.id} at {delivery_location}. Using default.")
+            logger.warning(f"No delivery zone or restaurant location found. Using default.")
             return cls.DEFAULT_FEE
 
         except Exception as e:

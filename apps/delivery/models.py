@@ -28,10 +28,23 @@ class Driver(models.Model):
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
+    max_active_orders = models.PositiveIntegerField(default=3)
+    current_active_orders = models.PositiveIntegerField(default=0)
     
-    # Legacy fields (to be deprecated after migration)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    VEHICLE_CHOICES = (
+        ('bicycle', 'Bicycle'),
+        ('motorcycle', 'Motorcycle'),
+        ('bajaj', 'Bajaj'),
+        ('car', 'Car'),
+    )
+    vehicle_type = models.CharField(max_length=20, choices=VEHICLE_CHOICES, default='motorcycle')
+    vehicle_number = models.CharField(max_length=50, blank=True, null=True)
+    
+    # Performance & Earnings
+    total_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    today_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
+    total_claim_attempts = models.PositiveIntegerField(default=0)
+    total_claims_accepted = models.PositiveIntegerField(default=0)
     
     def __str__(self):
         return f"Driver: {self.user.username} ({self.driver_type})"

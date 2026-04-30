@@ -36,15 +36,26 @@ class PlaceOrderService:
         # Calculate dynamic delivery fee
         dynamic_fee = PricingService.calculate_delivery_fee(restaurant, delivery_location)
         
+        # Tag Zone for Batching
+        from apps.restaurants.models import DeliveryZone
+        zone = None
+        if delivery_location:
+            zone = DeliveryZone.objects.filter(
+                restaurant=restaurant, 
+                is_active=True, 
+                boundary__contains=delivery_location
+            ).order_by('-priority').first()
+        
         otp = str(random.randint(1000, 9999))
         
         with transaction.atomic():
-            # 1. Create Order with dynamic delivery fee and OTP
+            # 1. Create Order with dynamic delivery fee, OTP, and Zone
             order = Order.objects.create(
                 items_subtotal=Decimal('0.00'),
                 delivery_fee=dynamic_fee, 
                 total_amount=Decimal('0.00'),
                 delivery_otp=otp,
+                zone=zone,
                 **validated_data
             )
             
@@ -222,6 +233,13 @@ class PoolOrderService:
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id)
             
+            from apps.restaurants.models import DeliveryZone
+            zone = DeliveryZone.objects.filter(
+                restaurant=pool.restaurant, 
+                is_active=True, 
+                boundary__contains=pool.delivery_location
+            ).order_by('-priority').first()
+            
             # 1. Create a single master Order
             master_order = Order.objects.create(
                 customer=pool.initiator, # Initiator is the primary contact
@@ -230,6 +248,7 @@ class PoolOrderService:
                 delivery_location=pool.delivery_location,
                 delivery_fee=pool.total_delivery_fee,
                 pool=pool,
+                zone=zone,
                 status='CREATED'
             )
             
@@ -321,6 +340,12 @@ class MarkReadyService:
             from django.utils import timezone
             order.ready_at = timezone.now()
             order.save()
+            
+            # Proactively try to batch this order with others in the same zone
+            if order.zone:
+                from domain.services.batching_service import BatchingService
+                BatchingService.attempt_batching(order.restaurant.id, order.zone.id)
+            
             EventBus.publish(FoodReady(aggregate_id=order.id, payload={'actor_id': str(actor.id)}))
             return order
 
@@ -369,7 +394,8 @@ class PickupOrderService:
             
             # Transition Driver to DELIVERING
             driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
-            driver.save(update_fields=['status'])
+            driver.total_claims_accepted += 1
+            driver.save(update_fields=['status', 'total_claims_accepted'])
             
             assignment = order.delivery_assignment
             from django.utils import timezone
@@ -403,7 +429,9 @@ class DeliverOrderService:
             
             # Transition Driver back to AVAILABLE
             driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
-            driver.save(update_fields=['status'])
+            driver.total_earnings += order.delivery_fee
+            driver.today_earnings += order.delivery_fee
+            driver.save(update_fields=['status', 'total_earnings', 'today_earnings'])
             
             assignment = order.delivery_assignment
             from django.utils import timezone
@@ -412,6 +440,27 @@ class DeliverOrderService:
 
             EventBus.publish(OrderDelivered(aggregate_id=order.id, payload={'actor_id': str(actor.id)}))
             return order
+
+class AssignBatchService:
+    @staticmethod
+    def execute(batch_id, driver_id, actor):
+        from apps.orders.models import DeliveryBatch
+        with transaction.atomic():
+            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+            
+            # Transition Batch
+            batch.status = 'ASSIGNED'
+            batch.driver = driver
+            batch.save()
+            
+            # Transition all orders in the batch
+            for order in batch.orders.all():
+                if not order.driver:
+                    # We reuse the individual assignment logic to ensure events are triggered
+                    AssignDriverService.execute(order.id, driver.id, actor)
+            
+            return batch
 
 class DispatchService:
     @staticmethod
@@ -445,12 +494,15 @@ class DispatchService:
             )
             
             if best_driver:
-                # 3. Assign the driver
-                AssignDriverService.execute(
-                    order_id=order.id, 
-                    driver_id=best_driver.id, 
-                    actor=system_user
-                )
+                # 3. Check if we should dispatch a batch or a single order
+                if order.batch and order.batch.status == 'CREATED':
+                    AssignBatchService.execute(order.batch.id, best_driver.id, system_user)
+                else:
+                    AssignDriverService.execute(
+                        order_id=order.id, 
+                        driver_id=best_driver.id, 
+                        actor=system_user
+                    )
                 return order
             else:
                 # No driver found

@@ -1,23 +1,50 @@
 from celery import shared_task
-from domain.services.order_services import DispatchService
+from django.utils import timezone
+from datetime import timedelta
+from apps.orders.models import Order
 import logging
 
 logger = logging.getLogger(__name__)
 
-@shared_task(bind=True, max_retries=5)
-def retry_dispatch_task(self, order_id, retry_count=0):
+@shared_task
+def expire_unassigned_orders_task():
     """
-    Background task to retry order dispatching.
-    Retries up to 5 times with exponential backoff or custom delay.
+    Cancel READY orders older than 30 minutes that have no driver assigned.
+    Ensures that stale orders don't clutter the dispatch queue and 
+    restaurants/customers are notified of the failure to find a rider.
     """
-    logger.info(f"Retrying dispatch for Order {order_id}, attempt {retry_count + 1}")
+    cutoff = timezone.now() - timedelta(minutes=30)
     
-    order = DispatchService.execute(order_id, is_retry=True)
+    stale_orders = Order.objects.filter(
+        status='READY',
+        driver__isnull=True,
+        updated_at__lt=cutoff
+    )
     
-    if not order.driver:
-        if retry_count < self.max_retries:
-            # Retry in 60 seconds
-            self.retry(kwargs={'order_id': order_id, 'retry_count': retry_count + 1}, countdown=60)
-        else:
-            logger.error(f"Failed to dispatch Order {order_id} after {self.max_retries} attempts. Alerting admin.")
-            # Trigger Admin Alert (already handled by DispatchFailed event if we add it)
+    count = stale_orders.count()
+    if count > 0:
+        logger.info(f"Found {count} stale unassigned orders. Cancelling...")
+        # We update them in a loop to ensure any post_save signals or FSM logic triggers
+        for order in stale_orders:
+            try:
+                # Transition status to CANCELLED
+                order.status = 'CANCELLED'
+                order.notes = (order.notes or "") + "\nAuto-cancelled: No rider found within 30 minutes."
+                order.save()
+                
+                # TODO: Trigger notification events for Customer and Restaurant
+                logger.info(f"Order {order.id} auto-cancelled due to timeout.")
+            except Exception as e:
+                logger.error(f"Failed to auto-cancel order {order.id}: {str(e)}")
+    
+    return f"Processed {count} stale orders."
+
+@shared_task
+def daily_earnings_reset_task():
+    """
+    Reset today_earnings for all drivers to 0 at midnight.
+    """
+    from apps.delivery.models import Driver
+    updated = Driver.objects.update(today_earnings=0.0)
+    logger.info(f"Daily reset: Reset earnings for {updated} drivers.")
+    return f"Reset {updated} drivers."

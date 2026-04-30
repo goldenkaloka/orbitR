@@ -16,17 +16,20 @@ class DeliveryAssignmentInline(TabularInline):
 
 @admin.register(Driver)
 class DriverAdmin(ModelAdmin):
-    list_display = ('display_header', 'show_status', 'latitude', 'longitude', 'assignment_count')
-    list_filter = ('status',)
-    search_fields = ('user__username', 'user__email', 'user__phone')
+    list_display = ('display_header', 'show_status', 'vehicle_type', 'rating', 'total_earnings', 'assignment_count')
+    list_filter = ('status', 'vehicle_type')
+    search_fields = ('user__username', 'user__email', 'user__phone', 'vehicle_number')
     raw_id_fields = ('user',)
-    readonly_fields = ('id',)
+    readonly_fields = ('id', 'total_earnings', 'today_earnings', 'total_claim_attempts', 'total_claims_accepted')
     list_per_page = 25
     inlines = [DeliveryAssignmentInline]
 
     fieldsets = (
-        (None, {'fields': ('id', 'user', 'status')}),
-        ('Location', {'fields': ('latitude', 'longitude')}),
+        (None, {'fields': ('id', 'user', 'status', 'assigned_by')}),
+        ('Vehicle Info', {'fields': ('vehicle_type', 'vehicle_number')}),
+        ('Capacity & Quality', {'fields': ('max_active_orders', 'current_active_orders', 'rating')}),
+        ('Financials & Stats', {'fields': ('total_earnings', 'today_earnings', 'total_claim_attempts', 'total_claims_accepted')}),
+        ('Location', {'fields': ('location',)}),
     )
 
     actions = ['set_online', 'set_offline']

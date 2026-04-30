@@ -12,6 +12,10 @@ class Order(models.Model):
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='orders', db_index=True)
     pool = models.ForeignKey('OrderPool', on_delete=models.SET_NULL, null=True, blank=True, related_name='final_orders')
     
+    # Batching & Zoning
+    zone = models.ForeignKey('restaurants.DeliveryZone', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
+    batch = models.ForeignKey('DeliveryBatch', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
+    
     status = models.CharField(max_length=50, default='CREATED', db_index=True) 
     is_settled = models.BooleanField(default=False, db_index=True)
     
@@ -134,3 +138,23 @@ class PoolItem(models.Model):
 
     def __str__(self):
         return f"{self.quantity} x {self.food.name} (User: {self.member.user.username})"
+
+class DeliveryBatch(models.Model):
+    STATUS_CHOICES = (
+        ('CREATED', 'Batch Created'),
+        ('ASSIGNED', 'Rider Assigned'),
+        ('PICKED', 'Rider Picked Up'),
+        ('COMPLETED', 'All Delivered'),
+        ('CANCELLED', 'Cancelled'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='batches')
+    zone = models.ForeignKey('restaurants.DeliveryZone', on_delete=models.CASCADE, related_name='batches')
+    driver = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='batches')
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    def __str__(self):
+        return f"Batch {self.id} - {self.zone.name} ({self.status})"
