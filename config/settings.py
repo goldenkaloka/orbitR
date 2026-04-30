@@ -406,7 +406,7 @@ ONESIGNAL_APP_ID = config('ONESIGNAL_APP_ID', default='')
 ONESIGNAL_REST_API_KEY = config('ONESIGNAL_REST_API_KEY', default='')
 
 # SMS Gateway Configuration (https://messaging-service.co.tz)
-MESSAGING_SERVICE_TOKEN = config('MESSAGING_SERVICE_TOKEN', default='cedcce9becad866f59beac1fd5a235bc')
+MESSAGING_SERVICE_TOKEN = config('MESSAGING_SERVICE_TOKEN', default='d983d9d1d54176047e68547aba079ba4')
 MESSAGING_SERVICE_SENDER_ID = config('MESSAGING_SERVICE_SENDER_ID', default='TANZANIATIP')
 MOCK_SMS = config('MOCK_SMS', default=False, cast=bool)
 
