@@ -7,6 +7,7 @@ For more information on this file, see
 https://docs.djangoproject.com/en/5.0/howto/deployment/asgi/
 """
 
+import os
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
 import django
