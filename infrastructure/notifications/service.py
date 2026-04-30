@@ -7,9 +7,9 @@ class NotificationService:
     @staticmethod
     def send_sms(phone, message):
         """
-        Send SMS via Infobip API
+        Send SMS via Messaging Service Tanzania (messaging-service.co.tz)
         """
-        logger.info(f"📲 SENDING SMS TO {phone} via Infobip: {message}")
+        logger.info(f"📲 SENDING SMS TO {phone} via Messaging Service: {message}")
         
         try:
             from django.conf import settings
@@ -23,7 +23,7 @@ class NotificationService:
                 
             import requests
             
-            # Format phone to E.164 without the '+' sign (e.g., 255XXXXXXXXX)
+            # Format phone to E.164 (e.g., 255XXXXXXXXX)
             if phone.startswith('0'):
                 phone = '255' + phone[1:]
             elif phone.startswith('+'):
@@ -31,43 +31,39 @@ class NotificationService:
             elif not phone.startswith('255') and len(phone) == 9:
                 phone = '255' + phone
 
-            api_key = getattr(settings, 'INFOBIP_API_KEY', '')
-            base_url = getattr(settings, 'INFOBIP_BASE_URL', '')
-            sender_id = getattr(settings, 'INFOBIP_SENDER_ID', 'InfoSMS')
+            api_token = getattr(settings, 'MESSAGING_SERVICE_TOKEN', '')
+            sender_id = getattr(settings, 'MESSAGING_SERVICE_SENDER_ID', 'TANZANIATIP')
 
-            if not api_key or not base_url:
-                logger.warning("Infobip credentials not found. Skipping real SMS.")
+            if not api_token:
+                logger.warning("Messaging Service token not found. Skipping real SMS.")
                 return False
 
-            url = f"https://{base_url}/sms/2/text/advanced"
+            url = "https://messaging-service.co.tz/api/sms/v2/text/single"
 
             payload = {
-                "messages": [
-                    {
-                        "destinations": [{"to": phone}],
-                        "from": sender_id,
-                        "text": message
-                    }
-                ]
+                "from": sender_id,
+                "to": phone,
+                "text": message,
+                "flash": 0
             }
 
             headers = {
-                "Authorization": f"App {api_key}",
+                "Authorization": f"Bearer {api_token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
 
-            response = requests.post(url, json=payload, headers=headers, timeout=5)
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
             
-            if response.status_code in [200, 202]:
-                logger.info(f"✅ SMS Sent successfully to {phone} via Infobip")
+            if response.status_code == 200:
+                logger.info(f"✅ SMS Sent successfully to {phone}")
                 return True
             else:
-                logger.error(f"❌ Infobip SMS Failed: {response.status_code} - {response.text}")
+                logger.error(f"❌ SMS Failed: {response.status_code} - {response.text}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error sending Infobip SMS: {str(e)}")
+            logger.error(f"Error sending SMS: {str(e)}")
             return False
 
     @staticmethod

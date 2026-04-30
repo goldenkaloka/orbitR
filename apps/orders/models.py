@@ -10,6 +10,7 @@ class Order(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', db_index=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='orders', db_index=True)
+    pool = models.ForeignKey('OrderPool', on_delete=models.SET_NULL, null=True, blank=True, related_name='final_orders')
     
     status = models.CharField(max_length=50, default='CREATED', db_index=True) 
     is_settled = models.BooleanField(default=False, db_index=True)
@@ -77,3 +78,59 @@ class Dispute(models.Model):
 
     def __str__(self):
         return f"Dispute for Order {self.order.id} - {self.status}"
+
+class OrderPool(models.Model):
+    STATUS_CHOICES = (
+        ('OPEN', 'Open for additions'),
+        ('LOCKED', 'Locked for payment'),
+        ('COMPLETED', 'Ordered'),
+        ('CANCELLED', 'Cancelled'),
+        ('EXPIRED', 'Expired'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    initiator = models.ForeignKey(User, on_delete=models.CASCADE, related_name='initiated_pools')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='order_pools')
+    
+    invite_code = models.CharField(max_length=10, unique=True, db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN', db_index=True)
+    
+    # Shared delivery details
+    delivery_address = models.TextField()
+    delivery_location = gis_models.PointField(geography=True, db_index=True)
+    
+    total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    expires_at = models.DateTimeField()
+
+    def __str__(self):
+        return f"Pool {self.invite_code} at {self.restaurant.name}"
+
+class PoolMember(models.Model):
+    STATUS_CHOICES = (
+        ('JOINED', 'Joined'),
+        ('READY', 'Ready to pay'),
+        ('PAID', 'Paid share'),
+    )
+
+    pool = models.ForeignKey(OrderPool, on_delete=models.CASCADE, related_name='members')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pool_memberships')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='JOINED')
+    
+    delivery_fee_share = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    
+    joined_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('pool', 'user')
+
+class PoolItem(models.Model):
+    member = models.ForeignKey(PoolMember, on_delete=models.CASCADE, related_name='items')
+    food = models.ForeignKey(Food, on_delete=models.CASCADE)
+    quantity = models.PositiveIntegerField(default=1)
+    price_at_addition = models.DecimalField(max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.quantity} x {self.food.name} (User: {self.member.user.username})"

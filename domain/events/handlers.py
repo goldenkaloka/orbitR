@@ -171,12 +171,18 @@ def on_order_event(event):
         extra_data = {"order_id": str(order.id), "type": "order_update", "status": event.event_type}
         
         if event.event_type == 'OrderCreated':
+            # 1. Push Notification
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
                 title="New Order!",
                 body=f"You have a new order: #{str(order.id).split('-')[0]}",
                 data=extra_data
             )
+            # 2. SMS Notification to Vendor
+            vendor_phone = order.restaurant.owner.phone
+            vendor_name = order.restaurant.owner.username or "Vendor"
+            sms_text = f"Habari {vendor_name}, una oda mpya #{str(order.id).split('-')[0]} kwenye Mwanachuoshop. Tafadhali iandae sasa."
+            NotificationService.send_sms(vendor_phone, sms_text)
         elif event.event_type == 'OrderConfirmed':
             NotificationService.send_push(
                 user_id=str(order.customer.id),

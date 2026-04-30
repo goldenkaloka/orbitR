@@ -385,10 +385,9 @@ AIRPAY_CONFIG = {
 ONESIGNAL_APP_ID = config('ONESIGNAL_APP_ID', default='')
 ONESIGNAL_REST_API_KEY = config('ONESIGNAL_REST_API_KEY', default='')
 
-# SMS Gateway Configuration
-INFOBIP_API_KEY = config('INFOBIP_API_KEY', default='')
-INFOBIP_BASE_URL = config('INFOBIP_BASE_URL', default='')
-INFOBIP_SENDER_ID = config('INFOBIP_SENDER_ID', default='InfoSMS')
+# SMS Gateway Configuration (https://messaging-service.co.tz)
+MESSAGING_SERVICE_TOKEN = config('MESSAGING_SERVICE_TOKEN', default='cedcce9becad866f59beac1fd5a235bc')
+MESSAGING_SERVICE_SENDER_ID = config('MESSAGING_SERVICE_SENDER_ID', default='TANZANIATIP')
 MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
 
 

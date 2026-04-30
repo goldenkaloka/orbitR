@@ -8,6 +8,7 @@ from api.views.driver import DriverViewSet, DeliveryProofViewSet
 from api.views.wallets import WalletViewSet
 from api.views.admin import AdminViewSet
 from api.views.reviews import ReviewViewSet
+from api.views.pools import PoolOrderViewSet
 from api.views.payments import AirpayWebhookView
 from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView
 
@@ -16,6 +17,7 @@ router.register(r'users', UserViewSet, basename='user')
 router.register(r'restaurants', RestaurantViewSet, basename='restaurant')
 router.register(r'products', FoodViewSet, basename='product')
 router.register(r'orders', OrderViewSet, basename='order')
+router.register(r'pools', PoolOrderViewSet, basename='pool')
 router.register(r'disputes', DisputeViewSet, basename='dispute')
 router.register(r'drivers', DriverViewSet, basename='driver')
 router.register(r'delivery-proofs', DeliveryProofViewSet, basename='delivery-proof')

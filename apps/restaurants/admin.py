@@ -13,6 +13,27 @@ class FoodInline(TabularInline):
     show_change_link = True
 
 
+from django.contrib.gis.admin import GISModelAdmin
+from .models import Restaurant, DeliveryZone
+
+class DeliveryZoneInline(TabularInline):
+    model = DeliveryZone
+    extra = 0
+    fields = ('name', 'fee', 'priority', 'is_active')
+
+@admin.register(DeliveryZone)
+class DeliveryZoneAdmin(GISModelAdmin, ModelAdmin):
+    list_display = ('name', 'restaurant', 'fee', 'priority', 'is_active')
+    list_filter = ('is_active', 'restaurant')
+    search_fields = ('name', 'restaurant__name')
+    gis_widget_kwargs = {
+        'attrs': {
+            'default_lat': -6.7924,
+            'default_lon': 39.2083,
+            'default_zoom': 12,
+        }
+    }
+
 @admin.register(Restaurant)
 class RestaurantAdmin(ModelAdmin):
     list_display = ('display_header', 'location', 'show_active', 'food_count', 'created_at')
@@ -23,7 +44,7 @@ class RestaurantAdmin(ModelAdmin):
     list_per_page = 25
     raw_id_fields = ('owner',)
     readonly_fields = ('id', 'created_at')
-    inlines = [FoodInline]
+    inlines = [FoodInline, DeliveryZoneInline]
 
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),

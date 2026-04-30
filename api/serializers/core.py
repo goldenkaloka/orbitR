@@ -154,3 +154,33 @@ class DisputeSerializer(serializers.ModelSerializer):
         model = Dispute
         fields = '__all__'
         read_only_fields = ['id', 'raised_by', 'created_at', 'updated_at']
+
+class PoolItemSerializer(serializers.ModelSerializer):
+    food_name = serializers.ReadOnlyField(source='food.name')
+    class Meta:
+        model = OrderItem # Note: reusing OrderItem model for convenience in serializer if possible, or use PoolItem
+        from apps.orders.models import PoolItem
+        model = PoolItem
+        fields = ['id', 'food', 'food_name', 'quantity', 'price_at_addition']
+
+class PoolMemberSerializer(serializers.ModelSerializer):
+    items = PoolItemSerializer(many=True, read_only=True)
+    username = serializers.ReadOnlyField(source='user.username')
+    class Meta:
+        from apps.orders.models import PoolMember
+        model = PoolMember
+        fields = ['id', 'user', 'username', 'status', 'delivery_fee_share', 'items_subtotal', 'items']
+
+class OrderPoolSerializer(serializers.ModelSerializer):
+    members = PoolMemberSerializer(many=True, read_only=True)
+    restaurant_name = serializers.ReadOnlyField(source='restaurant.name')
+    
+    class Meta:
+        from apps.orders.models import OrderPool
+        model = OrderPool
+        fields = [
+            'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
+            'status', 'delivery_address', 'delivery_location', 
+            'total_delivery_fee', 'members', 'created_at', 'expires_at'
+        ]
+        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator']

@@ -25,6 +25,7 @@ class Transaction(models.Model):
     tx_type = models.CharField(max_length=10, choices=TRANSACTION_TYPES, db_index=True)
     description = models.CharField(max_length=255)
     order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True)
+    pool = models.ForeignKey('orders.OrderPool', on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:

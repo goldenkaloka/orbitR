@@ -26,3 +26,19 @@ class Restaurant(models.Model):
 
     def __str__(self):
         return self.name
+
+class DeliveryZone(models.Model):
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='delivery_zones')
+    name = models.CharField(max_length=100) # e.g., "Inner City", "Suburbs"
+    
+    # PostGIS PolygonField stores the actual shape on the map
+    boundary = gis_models.PolygonField(geography=True, db_index=True)
+    
+    fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
+    priority = models.IntegerField(default=0, help_text="Higher priority zones take precedence if overlapping")
+    
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.restaurant.name} - {self.name} ({self.fee} TZS)"

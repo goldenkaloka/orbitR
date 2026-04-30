@@ -21,14 +21,28 @@ class PlaceOrderService:
         from decimal import Decimal
         from django.db import transaction
 
+        from domain.services.pricing_service import PricingService
+        from apps.restaurants.models import Restaurant
+
         items_data = validated_data.pop('items')
+        restaurant_id = validated_data.get('restaurant')
+        if isinstance(restaurant_id, Restaurant):
+            restaurant = restaurant_id
+        else:
+            restaurant = Restaurant.objects.get(id=restaurant_id)
+            
+        delivery_location = validated_data.get('delivery_location')
+        
+        # Calculate dynamic delivery fee
+        dynamic_fee = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+        
         otp = str(random.randint(1000, 9999))
         
         with transaction.atomic():
-            # 1. Create Order with synced delivery fee and OTP
+            # 1. Create Order with dynamic delivery fee and OTP
             order = Order.objects.create(
                 items_subtotal=Decimal('0.00'),
-                delivery_fee=Decimal('500.00'), 
+                delivery_fee=dynamic_fee, 
                 total_amount=Decimal('0.00'),
                 delivery_otp=otp,
                 **validated_data
@@ -63,6 +77,188 @@ class PlaceOrderService:
         ))
         
         return order
+
+class PoolOrderService:
+    @staticmethod
+    def create_pool(initiator, restaurant_id, delivery_address, delivery_location):
+        from apps.orders.models import OrderPool, PoolMember
+        from apps.restaurants.models import Restaurant
+        import random
+        import string
+        from django.utils import timezone
+        from datetime import timedelta
+
+        restaurant = Restaurant.objects.get(id=restaurant_id)
+        invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        
+        with transaction.atomic():
+            pool = OrderPool.objects.create(
+                initiator=initiator,
+                restaurant=restaurant,
+                invite_code=invite_code,
+                delivery_address=delivery_address,
+                delivery_location=delivery_location,
+                expires_at=timezone.now() + timedelta(hours=2)
+            )
+            # Add initiator as first member
+            PoolMember.objects.create(pool=pool, user=initiator)
+            
+        return pool
+
+    @staticmethod
+    def join_pool(user, invite_code):
+        from apps.orders.models import OrderPool, PoolMember
+        pool = OrderPool.objects.get(invite_code=invite_code, status='OPEN')
+        member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
+        return pool
+
+    @staticmethod
+    def add_item(user, pool_id, food_id, quantity):
+        from apps.orders.models import OrderPool, PoolMember, PoolItem
+        from apps.products.models import Food
+        
+        with transaction.atomic():
+            pool = OrderPool.objects.get(id=pool_id, status='OPEN')
+            member = PoolMember.objects.get(pool=pool, user=user)
+            food = Food.objects.get(id=food_id)
+            
+            if food.restaurant != pool.restaurant:
+                raise ValueError("Food must be from the same restaurant as the pool.")
+
+            PoolItem.objects.create(
+                member=member,
+                food=food,
+                quantity=quantity,
+                price_at_addition=food.price
+            )
+            
+            # Update member subtotal
+            member.items_subtotal += (food.price * quantity)
+            member.save()
+            return pool
+
+    @staticmethod
+    def lock_pool(pool_id):
+        """
+        Calculate final fees and split the delivery cost among members.
+        """
+        from apps.orders.models import OrderPool
+        from domain.services.pricing_service import PricingService
+        
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            pool.status = 'LOCKED'
+            
+            # Calculate total delivery fee for the location
+            total_fee = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location)
+            pool.total_delivery_fee = total_fee
+            
+            # Split fee among members
+            members = pool.members.all()
+            if members.exists():
+                share = total_fee / members.count()
+                for member in members:
+                    member.delivery_fee_share = share
+                    member.save()
+            
+            pool.save()
+            return pool
+
+    @staticmethod
+    def pay_share(user, pool_id):
+        """
+        Process an individual member's payment from their wallet.
+        """
+        from apps.orders.models import OrderPool, PoolMember
+        from apps.wallets.models import Wallet, Transaction
+        
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            if pool.status != 'LOCKED':
+                raise ValueError("Pool must be locked for payment.")
+            
+            member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
+            if member.status == 'PAID':
+                return pool
+            
+            total_owed = member.items_subtotal + member.delivery_fee_share
+            
+            wallet = Wallet.objects.select_for_update().get(user=user)
+            if wallet.balance < total_owed:
+                raise ValueError(f"Insufficient funds. Owed: {total_owed}, Balance: {wallet.balance}")
+            
+            # Debit Wallet
+            wallet.balance -= total_owed
+            wallet.save()
+            
+            Transaction.objects.create(
+                wallet=wallet,
+                amount=total_owed,
+                tx_type='DEBIT',
+                description=f"Payment for Pool Order {pool.invite_code}",
+                pool=pool
+            )
+            
+            member.status = 'PAID'
+            member.save()
+            
+            # Check if everyone has paid
+            all_paid = not pool.members.exclude(status='PAID').exists()
+            if all_paid:
+                # Use a callback or direct call to finalize
+                PoolOrderService.finalize_pool(pool.id)
+            
+            return pool
+
+    @staticmethod
+    def finalize_pool(pool_id):
+        """
+        Convert the paid pool into a single Order for the vendor/rider.
+        """
+        from apps.orders.models import OrderPool, Order, OrderItem
+        from domain.events.bus import EventBus
+        from domain.events.types import OrderCreated
+        
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            
+            # 1. Create a single master Order
+            master_order = Order.objects.create(
+                customer=pool.initiator, # Initiator is the primary contact
+                restaurant=pool.restaurant,
+                delivery_address=pool.delivery_address,
+                delivery_location=pool.delivery_location,
+                delivery_fee=pool.total_delivery_fee,
+                pool=pool,
+                status='CREATED'
+            )
+            
+            # 2. Transfer all pool items to order items
+            items_subtotal = Decimal('0.00')
+            for member in pool.members.all():
+                for item in member.items.all():
+                    OrderItem.objects.create(
+                        order=master_order,
+                        food=item.food,
+                        quantity=item.quantity,
+                        price=item.price_at_addition * item.quantity
+                    )
+                    items_subtotal += (item.price_at_addition * item.quantity)
+            
+            master_order.items_subtotal = items_subtotal
+            master_order.total_amount = items_subtotal + pool.total_delivery_fee
+            master_order.save()
+            
+            pool.status = 'COMPLETED'
+            pool.save()
+            
+            # 3. Publish Event
+            EventBus.publish(OrderCreated(
+                aggregate_id=master_order.id,
+                payload={'customer_id': str(master_order.customer.id), 'is_pool': True}
+            ))
+            
+            return master_order
 
 class ConfirmOrderService:
     @staticmethod
