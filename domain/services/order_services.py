@@ -445,20 +445,33 @@ class AssignBatchService:
     @staticmethod
     def execute(batch_id, driver_id, actor):
         from apps.orders.models import DeliveryBatch
+        import logging
+        logger = logging.getLogger(__name__)
+        
         with transaction.atomic():
+            # 1. Lock the batch to prevent concurrent assignment
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            
+            # 2. Validation: Prevent double assignment or assigning non-ready batches
+            if batch.status != 'CREATED':
+                logger.warning(f"Batch {batch_id} is already {batch.status}. Skipping assignment.")
+                return batch
+
             driver = Driver.objects.select_for_update().get(id=driver_id)
             
-            # Transition Batch
+            # 3. Transition Batch
             batch.status = 'ASSIGNED'
             batch.driver = driver
             batch.save()
             
-            # Transition all orders in the batch
+            # 4. Transition all orders in the batch
+            # We use a sub-loop with error handling so one bad order doesn't kill the batch
             for order in batch.orders.all():
-                if not order.driver:
-                    # We reuse the individual assignment logic to ensure events are triggered
-                    AssignDriverService.execute(order.id, driver.id, actor)
+                try:
+                    if not order.driver:
+                        AssignDriverService.execute(order.id, driver.id, actor)
+                except Exception as e:
+                    logger.error(f"Failed to assign order {order.id} in batch {batch_id}: {str(e)}")
             
             return batch
 
@@ -494,8 +507,9 @@ class DispatchService:
             )
             
             if best_driver:
-                # 3. Check if we should dispatch a batch or a single order
-                if order.batch and order.batch.status == 'CREATED':
+                # 3. Dispatch: Prefer batch if it exists
+                # AssignBatchService handles its own locking and state validation
+                if order.batch:
                     AssignBatchService.execute(order.batch.id, best_driver.id, system_user)
                 else:
                     AssignDriverService.execute(

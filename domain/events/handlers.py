@@ -213,6 +213,52 @@ def on_order_event(event):
     payload['aggregate_id'] = str(event.aggregate_id)
     fire_order_webhook.delay(event.event_type, payload)
 
+def on_order_status_update_batch_lifecycle(event):
+    """
+    Manages the lifecycle of a DeliveryBatch based on its member orders.
+    """
+    from apps.orders.models import Order, DeliveryBatch
+    from django.db import transaction
+    
+    try:
+        # 1. Fetch order and check if it belongs to a batch
+        order = Order.objects.select_related('batch').get(id=event.aggregate_id)
+        if not order.batch:
+            return
+
+        batch = order.batch
+        with transaction.atomic():
+            # 2. Lock the batch for state transition
+            batch = DeliveryBatch.objects.select_for_update().get(id=batch.id)
+            
+            if event.event_type == 'OrderPicked':
+                # Transition Batch to PICKED if it was just ASSIGNED
+                if batch.status == 'ASSIGNED':
+                    batch.status = 'PICKED'
+                    batch.save()
+                    logger.info(f"Batch {batch.id} transitioned to PICKED")
+            
+            elif event.event_type in ['OrderDelivered', 'OrderCancelled']:
+                # 3. Check if ALL orders in the batch have reached a terminal state
+                terminal_states = ['DELIVERED', 'CANCELLED']
+                remaining_active = batch.orders.exclude(status__in=terminal_states).exists()
+                
+                if not remaining_active:
+                    # If any order was delivered, the batch as a whole is COMPLETED
+                    if batch.orders.filter(status='DELIVERED').exists():
+                        batch.status = 'COMPLETED'
+                    else:
+                        # If everything was cancelled, the batch is CANCELLED
+                        batch.status = 'CANCELLED'
+                    
+                    batch.save()
+                    logger.info(f"Batch {batch.id} transitioned to {batch.status}")
+                    
+    except Order.DoesNotExist:
+        pass
+    except Exception as e:
+        logger.error(f"Error in batch lifecycle handler: {str(e)}")
+
 def on_dispatch_failed(event):
     order_id = event.payload.get('order_id')
     attempt_retry = event.payload.get('attempt_retry', True)
@@ -252,6 +298,11 @@ def register_all_handlers():
     EventBus.subscribe(OrderDelivered, on_order_delivered)
     EventBus.subscribe(PaymentReleaseRequested, on_payment_release_requested)
     EventBus.subscribe(DispatchFailed, on_dispatch_failed)
+    
+    # Batch Lifecycle
+    EventBus.subscribe(OrderPicked, on_order_status_update_batch_lifecycle)
+    EventBus.subscribe(OrderDelivered, on_order_status_update_batch_lifecycle)
+    EventBus.subscribe(OrderCancelled, on_order_status_update_batch_lifecycle)
     
     # Other Domain Events
     from domain.events.types import PaymentCollected, AuthOTPRequested, AuthUserVerified, AuthUserRegistered

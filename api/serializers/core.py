@@ -96,25 +96,14 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
 
-    @property
-    def estimated_arrival_minutes(self):
-        # Basic ETA calculation: 10 mins prep + 5 mins per km
-        # In production, use Mapbox Matrix API for real ETA
-        if not self.instance.restaurant or not self.instance.delivery_location:
+    def get_estimated_arrival_minutes(self, obj):
+        if not obj.restaurant or not obj.delivery_location:
             return 30
-            
-        from django.contrib.gis.geos import Point
-        # Extract coords from Point
-        r_lat = self.instance.restaurant.geo_location.y if self.instance.restaurant.geo_location else 0
-        r_lng = self.instance.restaurant.geo_location.x if self.instance.restaurant.geo_location else 0
-        
-        # Or better yet, use Distance if possible
-        # For simplicity in MVP:
-        return 25 # Default 25 mins
+        return 25 
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
-        data['estimated_arrival_minutes'] = self.estimated_arrival_minutes
+        data['estimated_arrival_minutes'] = self.get_estimated_arrival_minutes(instance)
         
         # Hide OTP from drivers (only customer should see it)
         request = self.context.get('request')

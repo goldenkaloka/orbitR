@@ -82,10 +82,15 @@ class AirpayGateway(PaymentGateway):
                 encrypted_resp = resp_data.get('response')
                 enc_key = self._get_encryption_key()
                 decrypted = AirpayTransformer.decrypt(encrypted_resp, enc_key)
-                token = decrypted.get('access_token')
-                expires = int(decrypted.get('expires_in', 300)) - 30
-                cache.set("airpay_access_token", token, timeout=expires)
-                return token
+                
+                if isinstance(decrypted, dict):
+                    token = decrypted.get('access_token')
+                    expires = int(decrypted.get('expires_in', 300)) - 30
+                    if token:
+                        cache.set("airpay_access_token", token, timeout=expires)
+                        return token
+                
+                logger.error(f"Airpay Auth Invalid Response Format: {decrypted}")
             
             logger.error(f"Airpay Auth Failed: {resp_data}")
         except Exception as e:
@@ -183,15 +188,20 @@ class AirpayGateway(PaymentGateway):
             
             if resp_json.get('status') == 'success' and 'response' in resp_json:
                 decrypted = AirpayTransformer.decrypt(resp_json.get('response'), enc_key)
-                # Verify decrypted ap_SecureHash
-                if AirpayTransformer.verify_secure_hash(decrypted.get('ap_SecureHash'), decrypted, self.config.get('USERNAME')):
-                    return {
-                        'success': True,
-                        'status': decrypted.get('transaction_payment_status'),
-                        'data': decrypted
-                    }
+                
+                if isinstance(decrypted, dict):
+                    # Verify decrypted ap_SecureHash
+                    if AirpayTransformer.verify_secure_hash(decrypted.get('ap_SecureHash'), decrypted, self.config.get('USERNAME')):
+                        return {
+                            'success': True,
+                            'status': decrypted.get('transaction_payment_status'),
+                            'data': decrypted
+                        }
+                    else:
+                        return {'success': False, 'error': 'SecureHash mismatch in verify response'}
                 else:
-                    return {'success': False, 'error': 'SecureHash mismatch in verify response'}
+                    logger.error(f"Airpay Verify Invalid Response Format: {decrypted}")
+                    return {'success': False, 'error': 'Invalid response format from Airpay'}
 
             return {'success': False, 'error': resp_json.get('message', 'Verify failed')}
         except Exception as e:

@@ -19,15 +19,16 @@ class BatchingService:
         from apps.orders.models import Order, DeliveryBatch
         
         with transaction.atomic():
-            # 1. Find READY orders for this combo that aren't already in a batch
-            orders_to_batch = Order.objects.select_for_update().filter(
+            # 1. Evaluate queryset into a list immediately while holding the lock
+            # This prevents inconsistent results between count() and iteration
+            orders = list(Order.objects.select_for_update().filter(
                 status='READY',
                 restaurant_id=restaurant_id,
                 zone_id=zone_id,
                 batch__isnull=True
-            )
+            ))
             
-            count = orders_to_batch.count()
+            count = len(orders)
             
             # 2. We only batch if there's more than one order
             if count > 1:
@@ -39,7 +40,7 @@ class BatchingService:
                     status='CREATED'
                 )
                 
-                for order in orders_to_batch:
+                for order in orders:
                     order.batch = batch
                     order.save()
                 
