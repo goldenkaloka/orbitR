@@ -211,9 +211,6 @@ AWS_S3_CUSTOM_DOMAIN = f"{MINIO_EXTERNAL_URL.split('://')[-1]}/{AWS_STORAGE_BUCK
 STORAGES = {
     "default": {
         "BACKEND": "apps.core.storage.CustomS3Storage",
-        "OPTIONS": {
-            "secure_urls": False,
-        },
     },
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
