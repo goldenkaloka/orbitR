@@ -170,7 +170,7 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'status', 'delivery_address', 'delivery_location', 
             'total_delivery_fee', 'members', 'created_at', 'expires_at'
         ]
-        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator']
+        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']
 
     def to_internal_value(self, data):
         """
@@ -180,8 +180,8 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         if isinstance(location_data, dict):
             from django.contrib.gis.geos import Point
             try:
-                lat = float(location_data.get('lat'))
-                lng = float(location_data.get('lng'))
+                lat = float(location_data.get('latitude') or location_data.get('lat'))
+                lng = float(location_data.get('longitude') or location_data.get('lng'))
                 data['delivery_location'] = Point(lng, lat)
             except (TypeError, ValueError):
                 pass
