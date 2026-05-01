@@ -171,3 +171,19 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'total_delivery_fee', 'members', 'created_at', 'expires_at'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator']
+
+    def to_internal_value(self, data):
+        """
+        Interprets delivery_location if it's sent as a {lat, lng} dict.
+        """
+        location_data = data.get('delivery_location')
+        if isinstance(location_data, dict):
+            from django.contrib.gis.geos import Point
+            try:
+                lat = float(location_data.get('lat'))
+                lng = float(location_data.get('lng'))
+                data['delivery_location'] = Point(lng, lat)
+            except (TypeError, ValueError):
+                pass
+        return super().to_internal_value(data)
+
