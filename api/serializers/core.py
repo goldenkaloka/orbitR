@@ -30,11 +30,13 @@ class FoodSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description', 'price', 'is_available', 'image', 'image_url']
 
     def get_image_url(self, obj):
-        # Handle both dict (from validated_data) and model instance
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
             try:
-                return image.url
+                url = image.url
+                if url and url.startswith('https://178.105.46.108'):
+                    return url.replace('https://', 'http://')
+                return url
             except (AttributeError, ValueError):
                 return None
         return None
@@ -55,11 +57,13 @@ class RestaurantSerializer(serializers.ModelSerializer):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
             try:
-                return image.url
+                url = image.url
+                if url and url.startswith('https://178.105.46.108'):
+                    return url.replace('https://', 'http://')
+                return url
             except (AttributeError, ValueError):
                 return None
         return None
-
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
     class Meta:
