@@ -33,10 +33,7 @@ class FoodSerializer(serializers.ModelSerializer):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
             try:
-                url = image.url
-                if url and url.startswith('https://178.105.46.108'):
-                    return url.replace('https://', 'http://')
-                return url
+                return image.url
             except (AttributeError, ValueError):
                 return None
         return None
@@ -57,10 +54,7 @@ class RestaurantSerializer(serializers.ModelSerializer):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
             try:
-                url = image.url
-                if url and url.startswith('https://178.105.46.108'):
-                    return url.replace('https://', 'http://')
-                return url
+                return image.url
             except (AttributeError, ValueError):
                 return None
         return None
