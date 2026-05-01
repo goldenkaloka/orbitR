@@ -23,12 +23,22 @@ def seed():
     restaurant_image_path = "media/restaurants/seed.png"
     food_image_path = "media/products/seed.png"
 
+    # Realistic coordinates for Dar es Salaam
+    base_lat = -6.7924
+    base_lng = 39.2026
+
     for i in range(5):
+        # Slightly vary the coordinates for each restaurant
+        lat = base_lat + (random.random() - 0.5) * 0.02
+        lng = base_lng + (random.random() - 0.5) * 0.02
+        
         restaurant = Restaurant.objects.create(
             owner=user,
             name=restaurant_names[i],
             description=f"Authentic {categories[i]} food in the heart of the city.",
             location=f"Street {i+1}, Dar es Salaam",
+            latitude=lat,
+            longitude=lng,
             category=categories[i],
             price_range="TSH 5k–15k",
             rating=random.uniform(4.0, 5.0)

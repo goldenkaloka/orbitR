@@ -24,6 +24,17 @@ class Restaurant(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
+    def save(self, *args, **kwargs):
+        # Sync Point field with Decimal fields
+        if self.geo_location:
+            self.longitude = self.geo_location.x
+            self.latitude = self.geo_location.y
+        elif self.latitude and self.longitude:
+            from django.contrib.gis.geos import Point
+            self.geo_location = Point(float(self.longitude), float(self.latitude))
+        
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.name
 

@@ -35,7 +35,7 @@ class DeliveryZoneAdmin(GISModelAdmin, ModelAdmin):
     }
 
 @admin.register(Restaurant)
-class RestaurantAdmin(ModelAdmin):
+class RestaurantAdmin(GISModelAdmin, ModelAdmin):
     list_display = ('display_header', 'location', 'show_active', 'food_count', 'created_at')
     list_filter = ('is_active', 'category', 'created_at')
     search_fields = ('name', 'location', 'owner__username', 'owner__email')
@@ -46,9 +46,18 @@ class RestaurantAdmin(ModelAdmin):
     readonly_fields = ('id', 'created_at')
     inlines = [FoodInline, DeliveryZoneInline]
 
+    gis_widget_kwargs = {
+        'attrs': {
+            'default_lat': -6.7924,
+            'default_lon': 39.2083,
+            'default_zoom': 14,
+        }
+    }
+
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
-        ('Details', {'fields': ('location', 'category', 'price_range', 'rating', 'is_active')}),
+        ('Location', {'fields': ('geo_location', ('latitude', 'longitude'), 'location')}),
+        ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),
         ('Timestamps', {'fields': ('created_at',)}),
     )
 
