@@ -142,3 +142,20 @@ class ManageRestaurantService:
             restaurant.is_active = not restaurant.is_active
             restaurant.save(update_fields=['is_active'])
             return restaurant
+
+    @staticmethod
+    def update_restaurant(restaurant_id: str, **kwargs):
+        with transaction.atomic():
+            restaurant = Restaurant.objects.select_for_update().get(id=restaurant_id)
+            for key, value in kwargs.items():
+                if value is not None:
+                    setattr(restaurant, key, value)
+            restaurant.save()
+            return restaurant
+
+    @staticmethod
+    def delete_restaurant(restaurant_id: str):
+        with transaction.atomic():
+            restaurant = Restaurant.objects.select_for_update().get(id=restaurant_id)
+            restaurant.delete()
+            return True

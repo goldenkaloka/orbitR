@@ -18,6 +18,15 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             models.Q(initiator=user) | models.Q(members__user=user)
         ).distinct().prefetch_related('members', 'members__user', 'members__items', 'members__items__food')
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            print(f"DEBUG: Pool Validation Errors: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def perform_create(self, serializer):
         # The service handles creation with initiator logic
         restaurant_id = self.request.data.get('restaurant') or self.request.data.get('restaurant_id') or self.request.data.get('restaurantId')

@@ -239,3 +239,50 @@ class AdminViewSet(viewsets.GenericViewSet):
             'message': f'Restaurant {restaurant.name} is now {"active" if restaurant.is_active else "inactive"}',
             'restaurant': RestaurantSerializer(restaurant).data,
         })
+
+    @action(detail=False, methods=['POST'], url_path='update-restaurant')
+    def update_restaurant(self, request):
+        """
+        Update restaurant details.
+        Body: { restaurant_id, name, location, latitude, longitude, description, category }
+        """
+        restaurant_id = request.data.get('restaurant_id')
+        if not restaurant_id:
+            return Response({'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from domain.services.admin_services import ManageRestaurantService
+        update_data = {
+            'name': request.data.get('name'),
+            'location': request.data.get('location'),
+            'latitude': request.data.get('latitude'),
+            'longitude': request.data.get('longitude'),
+            'description': request.data.get('description'),
+            'category': request.data.get('category'),
+            'image': request.FILES.get('image')
+        }
+        
+        try:
+            restaurant = ManageRestaurantService.update_restaurant(restaurant_id, **update_data)
+            return Response({
+                'message': f'Restaurant {restaurant.name} updated',
+                'restaurant': RestaurantSerializer(restaurant).data,
+            })
+        except Restaurant.DoesNotExist:
+            return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['POST'], url_path='delete-restaurant')
+    def delete_restaurant(self, request):
+        """
+        Delete a restaurant.
+        Body: { restaurant_id }
+        """
+        restaurant_id = request.data.get('restaurant_id')
+        if not restaurant_id:
+            return Response({'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from domain.services.admin_services import ManageRestaurantService
+        try:
+            ManageRestaurantService.delete_restaurant(restaurant_id)
+            return Response({'message': 'Restaurant deleted successfully'})
+        except Restaurant.DoesNotExist:
+            return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
