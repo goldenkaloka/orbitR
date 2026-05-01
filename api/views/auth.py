@@ -58,7 +58,12 @@ class RequestOTPView(APIView):
             payload={'phone': phone, 'otp': code}
         ))
         
-        return Response({'message': 'OTP requested successfully'})
+        from django.conf import settings
+        response_data = {'message': 'OTP sent successfully'}
+        if getattr(settings, 'DEBUG', False):
+            response_data['debug_otp'] = code  # Only visible in DEBUG mode
+        
+        return Response(response_data)
 
 class VerifyOTPView(APIView):
     """

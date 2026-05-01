@@ -7,9 +7,9 @@ class NotificationService:
     @staticmethod
     def send_sms(phone, message):
         """
-        Send SMS via Messaging Service Tanzania (messaging-service.co.tz)
+        Send SMS via Africa's Talking
         """
-        logger.info(f"📲 SENDING SMS TO {phone} via Messaging Service: {message}")
+        logger.info(f"📲 SENDING SMS TO {phone} via Africa's Talking: {message}")
         
         try:
             from django.conf import settings
@@ -23,39 +23,43 @@ class NotificationService:
                 
             import requests
             
-            # Format phone to E.164 (e.g., 255XXXXXXXXX)
+            # Format phone to include + (e.g., +255XXXXXXXXX)
             if phone.startswith('0'):
-                phone = '255' + phone[1:]
-            elif phone.startswith('+'):
-                phone = phone[1:]
-            elif not phone.startswith('255') and len(phone) == 9:
-                phone = '255' + phone
+                phone = '+255' + phone[1:]
+            elif not phone.startswith('+'):
+                phone = '+' + phone
 
-            api_token = getattr(settings, 'MESSAGING_SERVICE_TOKEN', '')
-            sender_id = getattr(settings, 'MESSAGING_SERVICE_SENDER_ID', 'TANZANIATIP')
+            username = getattr(settings, 'AFRICASTALKING_USERNAME', 'sandbox')
+            api_key = getattr(settings, 'AFRICASTALKING_API_KEY', '')
+            sender_id = getattr(settings, 'AFRICASTALKING_SENDER_ID', '')
 
-            if not api_token:
-                logger.warning("Messaging Service token not found. Skipping real SMS.")
+            if not api_key:
+                logger.warning("Africa's Talking API Key not found. Skipping real SMS.")
                 return False
 
-            url = "https://messaging-service.co.tz/api/sms/v2/text/single"
+            if username == 'sandbox':
+                url = "https://api.sandbox.africastalking.com/version1/messaging/bulk"
+            else:
+                url = "https://api.africastalking.com/version1/messaging/bulk"
 
             payload = {
-                "from": sender_id,
-                "to": phone,
-                "text": message,
-                "flash": 0
+                "username": username,
+                "to": phone, # In Africa's Talking JSON payload it's "phoneNumbers" instead of "to" based on curl example wait let's use phoneNumbers
+                "phoneNumbers": [phone],
+                "message": message,
             }
+            if sender_id:
+                payload["senderId"] = sender_id
 
             headers = {
-                "Authorization": f"Bearer {api_token}",
+                "apiKey": api_key,
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             }
 
             response = requests.post(url, json=payload, headers=headers, timeout=10)
             
-            if response.status_code == 200:
+            if response.status_code in [200, 201]:
                 logger.info(f"✅ SMS Sent successfully to {phone}")
                 return True
             else:

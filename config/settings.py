@@ -398,17 +398,18 @@ AIRPAY_CONFIG = {
     'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
     'SECRET_KEY': config('AIRPAY_SECRET_KEY', default='2da4b10b2a93a4fb99144f821bc38aa4'),
     'SANDBOX': config('AIRPAY_SANDBOX', default=True, cast=bool),
-    'MOCK': config('AIRPAY_MOCK', default=False, cast=bool),
+    'MOCK': config('AIRPAY_MOCK', default=True, cast=bool),
 }
 
 # Notifications Configuration
 ONESIGNAL_APP_ID = config('ONESIGNAL_APP_ID', default='')
 ONESIGNAL_REST_API_KEY = config('ONESIGNAL_REST_API_KEY', default='')
 
-# SMS Gateway Configuration (https://messaging-service.co.tz)
-MESSAGING_SERVICE_TOKEN = config('MESSAGING_SERVICE_TOKEN', default='09add4391eaf0ae8bb7639a8139cb68a')
-MESSAGING_SERVICE_SENDER_ID = config('MESSAGING_SERVICE_SENDER_ID', default='TANZANIATIP')
-MOCK_SMS = config('MOCK_SMS', default=False, cast=bool)
+# SMS Gateway Configuration (Africa's Talking)
+AFRICASTALKING_USERNAME = config('AFRICASTALKING_USERNAME', default='sandbox')
+AFRICASTALKING_API_KEY = config('AFRICASTALKING_API_KEY', default='')
+AFRICASTALKING_SENDER_ID = config('AFRICASTALKING_SENDER_ID', default='')
+MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
 
 
 CACHES = {
