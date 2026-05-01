@@ -108,6 +108,7 @@ class OrderPool(models.Model):
     total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
     expires_at = models.DateTimeField()
 
     def __str__(self):
@@ -128,6 +129,7 @@ class PoolMember(models.Model):
     items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     joined_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         unique_together = ('pool', 'user')
@@ -157,6 +159,7 @@ class DeliveryBatch(models.Model):
     
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     def __str__(self):
         return f"Batch {self.id} - {self.zone.name} ({self.status})"

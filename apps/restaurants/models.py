@@ -23,6 +23,7 @@ class Restaurant(models.Model):
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
     is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     def save(self, *args, **kwargs):
         # Sync Point field with Decimal fields
