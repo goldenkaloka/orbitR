@@ -30,6 +30,10 @@ class AdminViewSet(viewsets.GenericViewSet):
     All actions require the requesting user to have role='admin'.
     """
     permission_classes = [IsAuthenticated, IsAdmin]
+    
+    def __init__(self, *args, **kwargs):
+        print("DEBUG: AdminViewSet loaded with updated actions")
+        super().__init__(*args, **kwargs)
 
     @action(detail=False, methods=['GET'])
     def stats(self, request):
@@ -240,7 +244,7 @@ class AdminViewSet(viewsets.GenericViewSet):
             'restaurant': RestaurantSerializer(restaurant).data,
         })
 
-    @action(detail=False, methods=['POST'], url_path='update-restaurant')
+    @action(detail=False, methods=['POST'], url_path='update-restaurant', url_name='update-restaurant')
     def update_restaurant(self, request):
         """
         Update restaurant details.
@@ -270,7 +274,7 @@ class AdminViewSet(viewsets.GenericViewSet):
         except Restaurant.DoesNotExist:
             return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    @action(detail=False, methods=['POST'], url_path='delete-restaurant')
+    @action(detail=False, methods=['POST'], url_path='delete-restaurant', url_name='delete-restaurant')
     def delete_restaurant(self, request):
         """
         Delete a restaurant.
