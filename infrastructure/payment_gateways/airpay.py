@@ -104,7 +104,15 @@ class AirpayGateway(PaymentGateway):
         Returns the data needed to redirect the user or perform the POST.
         """
         if self.mock:
-            return {'success': True, 'transactionId': f'AIRPAY_MOCK_{order_reference}', 'redirect_url': 'http://mock.airpay'}
+            # Return a mock endpoint that the Flutter app recognizes as success
+            return {
+                'success': True, 
+                'endpoint': 'https://mwanachuoshop.com/api/payments/mock/success/',
+                'params': {
+                    'order_id': order_reference,
+                    'mock': 'true'
+                }
+            }
 
         token = self._get_access_token()
         

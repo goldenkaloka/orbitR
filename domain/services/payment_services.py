@@ -53,6 +53,20 @@ class InitiatePaymentService:
                 'gateway_response': response
             }
 
+        # Handle Mock Success side-effect (outside transaction to avoid lock issues if called recursively)
+        if response.get('success') and gateway.mock:
+            from domain.services.payment_services import CompletePaymentService
+            CompletePaymentService.execute(
+                provider_reference=f"MOCK_REF_{order_id}",
+                success=True,
+                order_id=order_id
+            )
+            
+        return {
+            'payment': payment,
+            'gateway_response': response
+        }
+
 
 class CompletePaymentService:
     @staticmethod
@@ -74,6 +88,11 @@ class CompletePaymentService:
                 payment.provider_reference = provider_reference
                 payment.rrn = rrn
                 payment.save()
+                
+                # Mark Order as Paid to toggle visibility
+                order = payment.order
+                order.is_paid = True
+                order.save(update_fields=['is_paid'])
                 
                 # Ledger Entry: Customer -> Platform (Held in Escrow)
                 Transaction.objects.create(

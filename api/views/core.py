@@ -173,9 +173,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         if user.role == 'customer':
             return queryset.filter(customer=user)
         elif user.role == 'vendor':
-            return queryset.filter(restaurant__owner=user)
+            return queryset.filter(restaurant__owner=user, is_paid=True)
         elif user.role == 'driver':
-            return queryset.filter(driver__user=user)
+            return queryset.filter(driver__user=user, is_paid=True)
         return queryset
 
     @action(detail=False, methods=['GET'])
@@ -194,7 +194,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         data = {}
         if user.role == 'vendor':
-            orders = Order.objects.filter(restaurant__owner=user, created_at__date=today)
+            orders = Order.objects.filter(restaurant__owner=user, created_at__date=today, is_paid=True)
             revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
             count = orders.count()
             data = {
@@ -205,7 +205,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "pending_payout": float(wallet.pending_balance)
             }
         elif user.role == 'driver':
-            orders = Order.objects.filter(driver__user=user, created_at__date=today)
+            orders = Order.objects.filter(driver__user=user, created_at__date=today, is_paid=True)
             earnings = orders.filter(status='DELIVERED').aggregate(Sum('delivery_fee'))['delivery_fee__sum'] or 0
             count = orders.count()
             data = {
@@ -215,9 +215,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 "wallet_balance": float(wallet.balance)
             }
         elif user.role == 'admin':
-            total_orders = Order.objects.filter(created_at__date=today).count()
-            total_revenue = Order.objects.filter(
-                status='DELIVERED', created_at__date=today
+            paid_today = Order.objects.filter(created_at__date=today, is_paid=True)
+            total_orders = paid_today.count()
+            total_revenue = paid_today.filter(
+                status='DELIVERED'
             ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
             active_drivers = Driver.objects.filter(status='ONLINE').count()
             data = {
@@ -235,8 +236,8 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['GET'], url_path='available-jobs')
     def available_jobs(self, request):
-        # Orders that are READY and don't have a driver assigned
-        orders = Order.objects.select_related('restaurant', 'restaurant__owner', 'customer').prefetch_related('items', 'items__food').filter(status='READY', driver__isnull=True)
+        # Orders that are READY, PAID, and don't have a driver assigned
+        orders = Order.objects.select_related('restaurant', 'restaurant__owner', 'customer').prefetch_related('items', 'items__food').filter(status='READY', is_paid=True, driver__isnull=True)
         return Response(OrderSerializer(orders, many=True).data)
 
     @action(detail=True, methods=['POST'], url_path='claim-job')
