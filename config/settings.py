@@ -103,6 +103,7 @@ SIMPLE_JWT = {
 
 
 MIDDLEWARE = [
+    'apps.core.middleware.ForceHTTPImagesMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
