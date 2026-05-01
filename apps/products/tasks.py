@@ -23,11 +23,11 @@ def process_food_image(food_id):
         thumb_io = BytesIO()
         img.save(thumb_io, format='JPEG', quality=85)
         
-        # Update the image field without triggering signals again if possible
-        # Or just save normally if we handle signal recursion
+        # Update the image field without triggering signals again
         filename = os.path.basename(food.image.name)
-        food.image.save(filename, ContentFile(thumb_io.getvalue()), save=True)
-        
+        food.image.save(filename, ContentFile(thumb_io.getvalue()), save=False)
+        food._skip_signal = True
+        food.save(update_fields=['image'])        
         return f"Processed image for {food.name}"
     except Exception as e:
         return f"Error processing image: {str(e)}"
