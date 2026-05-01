@@ -10,7 +10,7 @@ class CustomS3Storage(S3Boto3Storage):
         url = super().url(name, parameters, expire, http_method)
         
         # Force HTTP if the URL contains our VPS IP and we are not using SSL
-        if '178.105.46.108' in url and ':9000' in url:
+        if url and '178.105.46.108' in url and ':9000' in url:
             if url.startswith('https://'):
                 return url.replace('https://', 'http://', 1)
             elif url.startswith('//'):
