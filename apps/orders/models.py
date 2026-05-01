@@ -42,6 +42,7 @@ class Order(models.Model):
     delivery_otp = models.CharField(max_length=6, null=True, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     class Meta:
         indexes = [

@@ -18,7 +18,7 @@ def expire_unassigned_orders_task():
     stale_orders = Order.objects.filter(
         status='READY',
         driver__isnull=True,
-        updated_at__lt=cutoff
+        created_at__lt=cutoff
     )
     
     count = stale_orders.count()
