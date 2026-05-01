@@ -99,8 +99,14 @@ class PoolOrderService:
         from django.utils import timezone
         from datetime import timedelta
 
+        from django.contrib.gis.geos import Point
+        
         restaurant = Restaurant.objects.get(id=restaurant_id)
         invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        
+        # Convert dict location to Point if necessary
+        if isinstance(delivery_location, dict):
+            delivery_location = Point(delivery_location.get('lng', 0), delivery_location.get('lat', 0))
         
         with transaction.atomic():
             pool = OrderPool.objects.create(

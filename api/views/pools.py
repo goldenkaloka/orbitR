@@ -20,9 +20,11 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         # The service handles creation with initiator logic
+        restaurant_id = self.request.data.get('restaurant') or self.request.data.get('restaurant_id') or self.request.data.get('restaurantId')
+        
         pool = PoolOrderService.create_pool(
             initiator=self.request.user,
-            restaurant_id=self.request.data.get('restaurant'),
+            restaurant_id=restaurant_id,
             delivery_address=self.request.data.get('delivery_address'),
             delivery_location=self.request.data.get('delivery_location')
         )
