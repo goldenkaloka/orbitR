@@ -102,7 +102,7 @@ services:
 
   celery-beat:
     build: .
-    command: celery -A config beat -l info
+    command: celery -A config beat -l info --schedule /tmp/celerybeat-schedule
     volumes:
       - .:/app
     env_file:
