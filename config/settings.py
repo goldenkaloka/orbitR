@@ -202,6 +202,7 @@ AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = 'public-read'
 AWS_QUERYSTRING_AUTH = False
 AWS_S3_SECURE_URLS = False
+AWS_S3_URL_PROTOCOL = 'http:'
 
 # External URL generation for Flutter/Web
 MINIO_EXTERNAL_URL = config('MINIO_EXTERNAL_URL', default='http://localhost:9000')
