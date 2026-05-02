@@ -1,5 +1,6 @@
 from celery import shared_task
 import logging
+from django.db.models import Q
 from apps.orders.models import Order
 from domain.services.order_services import CancelOrderService
 
@@ -54,6 +55,7 @@ def expire_unassigned_orders_task():
     from django.utils import timezone
     from datetime import timedelta
     from django.db import transaction
+    from django.db.models import Q
     from django.contrib.auth import get_user_model
     User = get_user_model()
     
@@ -69,7 +71,8 @@ def expire_unassigned_orders_task():
         stale_orders = Order.objects.select_for_update(skip_locked=True).filter(
             status='READY',
             driver__isnull=True,
-            ready_at__lt=cutoff
+        ).filter(
+            Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff),
         )
         
         count = stale_orders.count()
