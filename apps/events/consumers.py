@@ -11,11 +11,36 @@ class OrderConsumer(AsyncWebsocketConsumer):
             return
 
         self.order_id = self.scope['url_route']['kwargs']['order_id']
+        
+        # Security: Check if user has permission to watch this order
+        is_authorized = await self._check_order_authorization(user, self.order_id)
+        if not is_authorized:
+            await self.close()
+            return
+
         self.room_group_name = f'order_{self.order_id}'
         self._notified_nearby = False
 
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
+
+    @database_sync_to_async
+    def _check_order_authorization(self, user, order_id):
+        from apps.orders.models import Order
+        try:
+            order = Order.objects.get(id=order_id)
+            # Authorization: Customer, Driver, or Restaurant Owner
+            if order.customer == user:
+                return True
+            if order.driver and order.driver.user == user:
+                return True
+            if order.restaurant and order.restaurant.owner == user:
+                return True
+            if user.is_staff:
+                return True
+            return False
+        except Order.DoesNotExist:
+            return False
 
     async def disconnect(self, close_code):
         if hasattr(self, 'room_group_name'):

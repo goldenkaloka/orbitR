@@ -13,7 +13,7 @@ class Wallet(models.Model):
     def __str__(self):
         return f"Wallet: {self.user.username} ({self.balance})"
 
-class Transaction(models.Model):
+class WalletTransaction(models.Model):
     TRANSACTION_TYPES = (
         ('CREDIT', 'Credit'),
         ('DEBIT', 'Debit'),

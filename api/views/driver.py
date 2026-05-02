@@ -46,39 +46,61 @@ class DriverViewSet(viewsets.ModelViewSet):
             return Response({"error": "lat and lng are required"}, status=400)
         
         driver = request.user.driver_profile
+        
+        from django.contrib.gis.geos import Point
+        from django.core.cache import cache
+        from django.utils import timezone
+        
+        # 1. Throttling: 1 update per 10 seconds per driver
+        cache_key = f"driver_loc_throttle_{driver.id}"
+        if cache.get(cache_key):
+            return Response({'status': 'throttled', 'message': 'Location updates too frequent'}, status=200)
+        
+        # 2. Status Check: Only active/busy drivers broadcast location
+        if driver.status not in ['AVAILABLE', 'DELIVERING']:
+             return Response({'status': 'ignored', 'message': 'Driver is offline or inactive'}, status=200)
+
+        new_loc = Point(float(lng), float(lat), srid=4326)
+        
+        # 3. Distance Threshold: Only save if moved > 50 meters
+        if driver.location:
+            # PostGIS geography.distance() returns meters
+            dist = driver.location.distance(new_loc)
+            if dist < 50:
+                # Still set cache to throttle even if we don't save to DB
+                cache.set(cache_key, True, 10)
+                return Response({'status': 'skipped', 'message': 'Movement below threshold'}, status=200)
+
+        # 4. Persistence and Sync
+        driver.location = new_loc
         driver.latitude = lat
         driver.longitude = lng
+        driver.save(update_fields=['location', 'latitude', 'longitude', 'updated_at'])
         
-        # Update PostGIS point
-        from django.contrib.gis.geos import Point
-        new_location = Point(float(lng), float(lat), srid=4326)
-        driver.location = new_location
-        driver.save()
+        cache.set(cache_key, True, 10)
         
         # --- Arrival Notifications Logic ---
-        # Find active orders in transit for this driver
         from apps.orders.models import Order
         from infrastructure.notifications.service import NotificationService
-        from django.core.cache import cache
         
-        active_orders = Order.objects.filter(driver=driver, status='PICKED_UP')
+        active_orders = Order.objects.filter(driver=driver, status='PICKED')
         for order in active_orders:
             if order.delivery_location:
-                # Calculate distance in meters (geography=True)
-                distance = new_location.distance(order.delivery_location)
-                if distance < 300: # 300 meters
+                # Fixed variable name from new_location to new_loc
+                dist_to_customer = new_loc.distance(order.delivery_location)
+                if dist_to_customer < 300: # 300 meters
                     # Check cache to avoid duplicate notifications within 10 mins
-                    cache_key = f"nearby_notif_{order.id}"
-                    if not cache.get(cache_key):
+                    notif_cache_key = f"nearby_notif_{order.id}"
+                    if not cache.get(notif_cache_key):
                         NotificationService.send_push(
                             user_id=str(order.customer.id),
                             title="Rider Nearby! 🛵",
                             body="Your rider is almost at your location. Please get ready!",
                             data={"order_id": str(order.id), "type": "rider_nearby"}
                         )
-                        cache.set(cache_key, True, 600)
+                        cache.set(notif_cache_key, True, 600)
         
-        return Response(DriverSerializer(driver).data)
+        return Response({'status': 'location updated'})
 
 class DeliveryProofViewSet(viewsets.ModelViewSet):
     queryset = DeliveryProof.objects.all()

@@ -45,7 +45,11 @@ class InitiatePaymentService:
                 
                 EventBus.publish(PaymentInitiated(
                     aggregate_id=payment.id,
-                    payload={'order_id': str(order.id), 'provider': provider}
+                    payload={
+                        'order_id': str(order.id),
+                        'amount': float(payment.amount),
+                        'gateway': 'Airpay'
+                    }
                 ))
             
             return {
@@ -53,67 +57,90 @@ class InitiatePaymentService:
                 'gateway_response': response
             }
 
-        # Handle Mock Success side-effect (outside transaction to avoid lock issues if called recursively)
-        if response.get('success') and gateway.mock:
-            from domain.services.payment_services import CompletePaymentService
-            CompletePaymentService.execute(
-                provider_reference=f"MOCK_REF_{order_id}",
-                success=True,
-                order_id=order_id
-            )
-            
-        return {
-            'payment': payment,
-            'gateway_response': response
-        }
-
 
 class CompletePaymentService:
+    """
+    Handles payment completion for BOTH order payments and marketplace listing fee payments.
+    Called by the Airpay webhook and the Mock payment endpoint.
+    """
     @staticmethod
-    def execute(provider_reference, success=True, order_id=None, rrn=None):
-        with transaction.atomic():
-            payment = None
-            if provider_reference:
-                payment = Payment.objects.filter(provider_reference=provider_reference).first()
-            
-            if not payment and order_id:
-                payment = Payment.objects.filter(order_id=order_id).first()
-            
-            if not payment:
-                raise ValueError(f"No payment found for Ref: {provider_reference} or Order: {order_id}")
-            
-            if success:
-                new_state = PaymentFSM.transition(payment.status, 'COLLECTED')
-                payment.status = new_state
-                payment.provider_reference = provider_reference
-                payment.rrn = rrn
-                payment.save()
+    def execute(order_id=None, provider_reference=None, metadata=None):
+        try:
+            with transaction.atomic():
+                payment = None
+                if provider_reference:
+                    payment = Payment.objects.select_for_update().filter(provider_reference=provider_reference).first()
                 
-                # Mark Order as Paid to toggle visibility
-                order = payment.order
-                order.is_paid = True
-                order.save(update_fields=['is_paid'])
+                if not payment and order_id:
+                    # Try order-based lookup first, then marketplace product-based
+                    payment = Payment.objects.select_for_update().filter(order_id=order_id).first()
+                    if not payment:
+                        payment = Payment.objects.select_for_update().filter(marketplace_product_id=order_id).first()
                 
-                # Ledger Entry: Customer -> Platform (Held in Escrow)
-                Transaction.objects.create(
-                    payment=payment,
-                    from_wallet=payment.order.customer,
-                    to_wallet=None, # Platform incoming
-                    amount=payment.amount,
-                    transaction_type='customer_to_platform',
-                    status='COMPLETED'
-                )
+                if not payment:
+                    raise ValueError(f"No payment found for Ref: {provider_reference} or Order: {order_id}")
                 
-                EventBus.publish(PaymentCollected(
-                    aggregate_id=payment.id,
-                    payload={'order_id': str(payment.order.id)}
-                ))
-            else:
-                new_state = PaymentFSM.transition(payment.status, 'FAILED')
-                payment.status = new_state
-                payment.save()
+                # Idempotency check: If already paid, just return it
+                if payment.status in ['COLLECTED', 'RELEASE_READY', 'DISBURSED']:
+                    return payment
                 
-            return payment
+                if success:
+                    new_state = PaymentFSM.transition(payment.status, 'COLLECTED')
+                    payment.status = new_state
+                    payment.provider_reference = provider_reference
+                    payment.rrn = rrn
+                    payment.save()
+                    
+                    # --- Branch: Order Payment ---
+                    if payment.order:
+                        order = payment.order
+                        order.is_paid = True
+                        order.save(update_fields=['is_paid'])
+                        
+                        # Ledger Entry: Customer -> Platform (Held in Escrow)
+                        Transaction.objects.create(
+                            payment=payment,
+                            from_wallet=order.customer,
+                            to_wallet=None,
+                            amount=payment.amount,
+                            transaction_type='customer_to_platform',
+                            status='COMPLETED'
+                        )
+                        
+                        EventBus.publish(PaymentCollected(
+                            aggregate_id=payment.id,
+                            payload={'order_id': str(order.id)}
+                        ))
+                    
+                    # --- Branch: Marketplace Listing Fee Payment ---
+                    elif payment.marketplace_product:
+                        from domain.services.marketplace_services import MarketplaceService
+                        product = payment.marketplace_product
+                        MarketplaceService.activate_product(
+                            product_id=str(product.id),
+                            actor=product.seller
+                        )
+                        
+                        # Ledger Entry: Seller -> Platform (Listing Fee)
+                        Transaction.objects.create(
+                            payment=payment,
+                            from_wallet=product.seller,
+                            to_wallet=None,
+                            amount=payment.amount,
+                            transaction_type='seller_listing_fee',
+                            status='COMPLETED'
+                        )
+                else:
+                    new_state = PaymentFSM.transition(payment.status, 'FAILED')
+                    payment.status = new_state
+                    payment.save()
+                    
+                return payment
+        except Exception as e:
+            # Re-raise for the view to handle, but with context
+            import logging
+            logging.getLogger(__name__).error(f"CompletePaymentService failed: {str(e)}")
+            raise
 
 
 class ReleasePaymentService:
@@ -122,8 +149,9 @@ class ReleasePaymentService:
     """
     @staticmethod
     def execute(payment_id):
+        from domain.services.wallet_services import WalletDomainService
         with transaction.atomic():
-            payment = Payment.objects.select_related(
+            payment = Payment.objects.select_for_update().select_related(
                 'order', 
                 'order__restaurant__owner', 
                 'order__driver__user'
@@ -133,17 +161,17 @@ class ReleasePaymentService:
             gateway = AirpayGateway()
             
             # Define Splits
-            restaurant_payout = float(order.items_subtotal * Decimal('0.90'))
-            driver_payout = float(order.delivery_fee) if order.driver else 0.0
-            platform_cut = float(payment.amount) - restaurant_payout - driver_payout
+            restaurant_payout = Decimal(str(order.items_subtotal)) * Decimal('0.90')
+            driver_payout = Decimal(str(order.delivery_fee)) if order.driver else Decimal('0')
+            platform_cut = payment.amount - restaurant_payout - driver_payout
 
             splits = [
-                {'identifier': 'PLATFORM_ESCROW', 'value': platform_cut},
-                {'identifier': order.restaurant.owner.phone, 'value': restaurant_payout},
+                {'identifier': 'PLATFORM_ESCROW', 'value': float(platform_cut)},
+                {'identifier': order.restaurant.owner.phone, 'value': float(restaurant_payout)},
             ]
             
             if order.driver:
-                splits.append({'identifier': order.driver.user.phone, 'value': driver_payout})
+                splits.append({'identifier': order.driver.user.phone, 'value': float(driver_payout)})
 
             # Trigger Airpay Split Settlement
             response = gateway.split_settlement(
@@ -156,7 +184,22 @@ class ReleasePaymentService:
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
                 
-                # Create detailed transactions
+                # 1. Credit Restaurant Wallet
+                WalletDomainService.credit(
+                    order.restaurant.owner, 
+                    restaurant_payout, 
+                    f"Earnings from Order #{order.id}"
+                )
+                
+                # 2. Credit Driver Wallet
+                if order.driver:
+                    WalletDomainService.credit(
+                        order.driver.user, 
+                        driver_payout, 
+                        f"Delivery fee for Order #{order.id}"
+                    )
+                
+                # Ledger transactions
                 Transaction.objects.create(
                     payment=payment,
                     from_wallet=None,
@@ -187,6 +230,7 @@ class ReleasePaymentService:
                     amount=restaurant_payout,
                     transaction_type='split_settlement_failure',
                     reason=response.get('error', 'Unknown Error'),
+                    error_code=response.get('error_code', 'UNKNOWN'),
                     retry_count=1
                 )
             

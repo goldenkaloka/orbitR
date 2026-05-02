@@ -14,13 +14,6 @@ from apps.orders.models import Order, OrderItem
 from apps.delivery.models import Driver
 from apps.payments.models import Payment, Transaction
 
-@override_settings(AZAMPAY_CONFIG={
-    'CLIENT_ID': 'test_id',
-    'CLIENT_SECRET': 'test_secret',
-    'API_KEY': 'test_key',
-    'APP_NAME': 'Test',
-    'SANDBOX': True
-})
 class OrderLifecycleE2ETest(APITransactionTestCase):
 
 

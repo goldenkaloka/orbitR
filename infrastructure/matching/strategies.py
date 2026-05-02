@@ -1,4 +1,5 @@
 import math
+from decimal import Decimal
 from abc import ABC, abstractmethod
 from apps.delivery.models import Driver
 
@@ -52,45 +53,57 @@ class PostgisRadiusStrategy(LocationMatcher):
     High-performance spatial matching using PostGIS DWithin.
     """
     def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=15):
+        """
+        Primary strategy: Spatial query with weighted scoring and row-level locking.
+        """
+        from apps.delivery.models import Driver
         from django.contrib.gis.geos import Point
         from django.contrib.gis.db.models.functions import Distance
         from django.db.models import Count, Q, F
-        
-        # 1. Create spatial point
-        pnt = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
-        
-        # 2. Filter using spatial index
-        # We search within distance (in meters) and check if driver is under their capacity limit
-        drivers = Driver.objects.filter(
-            status='AVAILABLE',
-            location__dwithin=(pnt, max_radius_km * 1000)
-        ).annotate(
-            distance=Distance('location', pnt),
-            active_count=Count('orders', filter=Q(orders__status__in=['ASSIGNED', 'PICKED', 'PICKED_UP']))
-        ).filter(
-            active_count__lt=F('max_active_orders')
-        )
-        
-        if not drivers.exists():
-            return None
+        from django.db import transaction
+        from decimal import Decimal
 
-        # 3. Calculate weighted score (Lower is better)
-        # Factors: Distance (40%), Rating (30%), Load (30%)
-        # Score = (dist_km * 0.4) + (1/rating * 0.3) + (active_count * 0.3)
-        scored_drivers = []
-        for driver in drivers:
-            # Avoid division by zero for rating
-            rating_factor = 1.0 / float(max(driver.rating, Decimal('0.1')))
-            
-            score = (
-                float(driver.distance.km) * 0.4 +
-                rating_factor * 0.3 +
-                float(driver.active_count) * 0.3
+        # Use a transaction to lock the potential drivers
+        with transaction.atomic():
+            # 1. Create spatial point
+            pnt = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
+
+            # 2. Filter available drivers within radius
+            # select_for_update(skip_locked=True) ensures we don't pick a driver
+            # being processed by another dispatch task.
+            drivers = Driver.objects.select_for_update(skip_locked=True).filter(
+                status='AVAILABLE',
+                location__dwithin=(pnt, max_radius_km * 1000)
+            ).annotate(
+                distance=Distance('location', pnt),
+                active_count=Count('orders', filter=Q(orders__status__in=['ASSIGNED', 'PICKED']))
+            ).filter(
+                active_count__lt=F('max_active_orders')
             )
-            scored_drivers.append((score, driver))
-            
-        # Sort by score ascending
-        scored_drivers.sort(key=lambda x: x[0])
-        
-        return scored_drivers[0][1]
+
+            if not drivers.exists():
+                return None
+
+            # 3. Weighted Scoring (Load-balanced)
+            # Factors: Distance (20%), Rating (20%), Load (60%)
+            best_driver = None
+            min_score = float('inf')
+
+            for driver in drivers:
+                # Avoid division by zero for rating
+                rating_factor = 1.0 / float(max(driver.rating, Decimal('0.1')))
+                
+                # Formula: Load-heavy to ensure busy drivers are deprioritized
+                # Load (60%) weight ensures distance doesn't overwhelm capacity on campus scale
+                score = (
+                    float(driver.distance.km) * 0.2 +
+                    rating_factor * 0.2 +
+                    float(driver.active_count) * 0.6
+                )
+                
+                if score < min_score:
+                    min_score = score
+                    best_driver = driver
+
+            return best_driver
 

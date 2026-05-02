@@ -101,7 +101,7 @@ class AirpayTransformer:
             s(data_dict.get('orderid')) + " : " +
             s(data_dict.get('ap_transactionid')) + " : " +
             s(data_dict.get('amount')) + " : " +
-            s(data_dict.get('transaction_status')) + " : " +
+            s(data_dict.get('transaction_payment_status')) + " : " +
             s(data_dict.get('message')) + " : " +
             s(data_dict.get('merchant_id')) + " : " +
             s(username)

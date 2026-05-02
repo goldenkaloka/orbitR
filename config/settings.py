@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 from django.urls import reverse_lazy
 from django.utils.translation import gettext_lazy as _
 
+import os
 from pathlib import Path
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -80,6 +81,8 @@ INSTALLED_APPS = [
     'apps.wallets',
     'apps.payments',
     'apps.events',
+    'apps.geo',
+    'apps.marketplace',
     'django.contrib.gis',
     'apps.reviews',
 ]
@@ -391,15 +394,15 @@ UNFOLD = {
 
 
 AIRPAY_CONFIG = {
-    'MERCHANT_ID': config('AIRPAY_MERCHANT_ID', default=''),
-    'USERNAME': config('AIRPAY_USERNAME', default=''),
-    'PASSWORD': config('AIRPAY_PASSWORD', default=''),
-    'SECRET': config('AIRPAY_SECRET', default=''),
-    'CLIENT_ID': config('AIRPAY_CLIENT_ID', default='d0e53f'),
-    'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
-    'SECRET_KEY': config('AIRPAY_SECRET_KEY', default='2da4b10b2a93a4fb99144f821bc38aa4'),
-    'SANDBOX': config('AIRPAY_SANDBOX', default=True, cast=bool),
-    'MOCK': config('AIRPAY_MOCK', default=True, cast=bool),
+    'MERCHANT_ID': os.getenv('AIRPAY_MERCHANT_ID', 'MWANACHUO_DEMO'),
+    'SECRET_KEY': os.getenv('AIRPAY_SECRET', 'demo_secret_123'),
+    'USERNAME': os.getenv('AIRPAY_USERNAME', 'demo_user'),
+    'PASSWORD': os.getenv('AIRPAY_PASSWORD', 'demo_pass'),
+    'SECRET': os.getenv('AIRPAY_PRIVATE_SECRET', 'demo_private'),
+    'CLIENT_ID': os.getenv('AIRPAY_CLIENT_ID', 'demo_client'),
+    'CLIENT_SECRET': os.getenv('AIRPAY_CLIENT_SECRET', 'demo_client_secret'),
+    'SANDBOX': os.getenv('PAYMENT_SANDBOX', 'True') == 'True',
+    'MOCK': os.getenv('PAYMENT_MOCK', 'True') == 'True',
 }
 
 # Notifications Configuration
@@ -441,6 +444,14 @@ CELERY_BEAT_SCHEDULE = {
     'reset-daily-earnings-midnight': {
         'task': 'domain.services.dispatch_tasks.daily_earnings_reset_task',
         'schedule': crontab(hour=0, minute=0),
+    },
+    'retry-failed-payouts-every-15-mins': {
+        'task': 'apps.payments.tasks.retry_failed_payouts',
+        'schedule': crontab(minute='*/15'),
+    },
+    'cleanup-expired-payments-hourly': {
+        'task': 'apps.payments.tasks.cleanup_expired_payments',
+        'schedule': crontab(minute=0, hour='*'),
     },
 }
 

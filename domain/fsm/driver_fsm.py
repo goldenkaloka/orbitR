@@ -11,8 +11,8 @@ class DriverFSM:
     ALLOWED_TRANSITIONS = {
         'OFFLINE': ['AVAILABLE'],
         'AVAILABLE': ['OFFLINE', 'ASSIGNED'],
-        'ASSIGNED': ['AVAILABLE', 'DELIVERING', 'OFFLINE'],  # Can be unassigned or go offline in an emergency
-        'DELIVERING': ['AVAILABLE', 'OFFLINE']
+        'ASSIGNED': ['AVAILABLE', 'DELIVERING'],
+        'DELIVERING': ['AVAILABLE']
     }
 
     @staticmethod

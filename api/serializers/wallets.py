@@ -1,9 +1,9 @@
 from rest_framework import serializers
-from apps.wallets.models import Wallet, Transaction
+from apps.wallets.models import Wallet, WalletTransaction
 
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Transaction
+        model = WalletTransaction
         fields = ['id', 'amount', 'tx_type', 'description', 'created_at']
 
 class WalletSerializer(serializers.ModelSerializer):

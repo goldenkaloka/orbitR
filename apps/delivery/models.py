@@ -26,6 +26,8 @@ class Driver(models.Model):
     
     # PostGIS Location Field
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
     max_active_orders = models.PositiveIntegerField(default=3)
@@ -46,6 +48,17 @@ class Driver(models.Model):
     total_claim_attempts = models.PositiveIntegerField(default=0)
     total_claims_accepted = models.PositiveIntegerField(default=0)
     
+    def save(self, *args, **kwargs):
+        # Sync Point field with Decimal fields
+        if self.location:
+            self.longitude = self.location.x
+            self.latitude = self.location.y
+        elif self.latitude and self.longitude:
+            from django.contrib.gis.geos import Point
+            self.location = Point(float(self.longitude), float(self.latitude))
+        
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"Driver: {self.user.username} ({self.driver_type})"
 

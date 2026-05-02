@@ -14,7 +14,7 @@ class PaymentFSM:
         'INITIATED': ['COLLECTED', 'FAILED'],
         'COLLECTED': ['RELEASE_READY', 'DISBURSED', 'REFUNDED', 'FAILED'],
 
-        'RELEASE_READY': ['DISBURSED', 'FAILED'],
+        'RELEASE_READY': ['DISBURSED', 'REFUNDED', 'FAILED'],
         'DISBURSED': [],
         'FAILED': ['INITIATED']  # Retry transitions back to initiated
     }

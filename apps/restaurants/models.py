@@ -41,16 +41,31 @@ class Restaurant(models.Model):
 
 class DeliveryZone(models.Model):
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='delivery_zones')
-    name = models.CharField(max_length=100) # e.g., "Inner City", "Suburbs"
+    operational_zone = models.ForeignKey('geo.OperationalZone', on_delete=models.SET_NULL, null=True, blank=True, related_name='delivery_zone_subscriptions')
+    name = models.CharField(max_length=100)
     
     # PostGIS PolygonField stores the actual shape on the map
-    boundary = gis_models.PolygonField(geography=True, db_index=True)
+    # Can be null if operational_zone is used
+    boundary = gis_models.PolygonField(geography=True, db_index=True, null=True, blank=True)
     
     fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
     priority = models.IntegerField(default=0, help_text="Higher priority zones take precedence if overlapping")
     
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.operational_zone:
+            # Sync boundary from generic zone if not manually overridden
+            if not self.boundary:
+                self.boundary = self.operational_zone.boundary
+            if not self.name:
+                self.name = self.operational_zone.name
+        
+        if not self.boundary:
+            raise ValueError("A DeliveryZone must have a boundary or be linked to an OperationalZone.")
+            
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.restaurant.name} - {self.name} ({self.fee} TZS)"

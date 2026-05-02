@@ -1,3 +1,5 @@
+import logging
+from django.db import transaction
 from apps.orders.models import Order
 from apps.delivery.models import Driver, DeliveryAssignment
 from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
@@ -9,7 +11,7 @@ from domain.events.types import (
 )
 from apps.events.utils import broadcast_order_status
 
-from django.db import transaction
+logger = logging.getLogger(__name__)
 
 class PlaceOrderService:
     @staticmethod
@@ -48,44 +50,51 @@ class PlaceOrderService:
         
         otp = str(random.randint(1000, 9999))
         
+        if not restaurant.is_active:
+            raise ValueError(f"Restaurant {restaurant.name} is currently not accepting orders.")
+
+        # 2. Prepare items and calculate subtotal
+        items_subtotal = Decimal('0.00')
+        for item_data in items_data:
+            food = item_data['food']
+            if not food.is_available:
+                raise ValueError(f"Item {food.name} is currently unavailable.")
+            
+            quantity = item_data['quantity']
+            items_subtotal += (food.price * quantity)
+            
+        total_amount = items_subtotal + dynamic_fee
+        otp = str(random.randint(1000, 9999))
+        
         with transaction.atomic():
-            # 1. Create Order with dynamic delivery fee, OTP, and Zone
+            # 1. Create Order with calculated amounts, OTP, and Zone
             order = Order.objects.create(
-                items_subtotal=Decimal('0.00'),
+                items_subtotal=items_subtotal,
                 delivery_fee=dynamic_fee, 
-                total_amount=Decimal('0.00'),
+                total_amount=total_amount,
                 delivery_otp=otp,
                 zone=zone,
                 **validated_data
             )
             
-            # 2. Prepare items and calculate subtotal
-            items_subtotal = Decimal('0.00')
+            # 2. Bulk create items
             order_items = []
             for item_data in items_data:
                 food = item_data['food']
                 quantity = item_data['quantity']
-                item_price = food.price * quantity
-                
                 order_items.append(OrderItem(
                     order=order,
                     food=food,
                     quantity=quantity,
-                    price=item_price
+                    price=food.price * quantity
                 ))
-                items_subtotal += item_price
-            
-            # 3. Bulk create items and finalize totals
             OrderItem.objects.bulk_create(order_items)
-            order.items_subtotal = items_subtotal
-            order.total_amount = items_subtotal + order.delivery_fee
-            order.save()
             
-        # 4. Trigger Event
-        EventBus.publish(OrderCreated(
-            aggregate_id=order.id,
-            payload={'customer_id': str(order.customer.id)}
-        ))
+            # 3. Trigger Event (On commit to avoid race conditions)
+            transaction.on_commit(lambda: EventBus.publish(OrderCreated(
+                aggregate_id=order.id,
+                payload={'customer_id': str(order.customer.id)}
+            )))
         
         return order
 
@@ -106,7 +115,10 @@ class PoolOrderService:
         
         # Convert dict location to Point if necessary
         if isinstance(delivery_location, dict):
-            delivery_location = Point(delivery_location.get('lng', 0), delivery_location.get('lat', 0))
+            from api.serializers.utils import parse_coordinate_dict
+            delivery_location = parse_coordinate_dict({'loc': delivery_location}, 'loc')
+            if not delivery_location:
+                raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
         
         with transaction.atomic():
             pool = OrderPool.objects.create(
@@ -222,8 +234,9 @@ class PoolOrderService:
             # Check if everyone has paid
             all_paid = not pool.members.exclude(status='PAID').exists()
             if all_paid:
-                # Use a callback or direct call to finalize
-                PoolOrderService.finalize_pool(pool.id)
+                # Security: Call finalize on commit to prevent race conditions or rollbacks
+                # that would leave members marked as PAID but order not created.
+                transaction.on_commit(lambda: PoolOrderService.finalize_pool(pool.id))
             
             return pool
 
@@ -239,6 +252,13 @@ class PoolOrderService:
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id)
             
+            if pool.status != 'OPEN':
+                raise ValueError(f"Cannot finalize pool in {pool.status} state")
+            
+            # Check if all members have paid
+            if pool.members.filter(status='PENDING').exists():
+                raise ValueError("All pool members must pay before finalization")
+            
             from apps.restaurants.models import DeliveryZone
             zone = DeliveryZone.objects.filter(
                 restaurant=pool.restaurant, 
@@ -247,12 +267,16 @@ class PoolOrderService:
             ).order_by('-priority').first()
             
             # 1. Create a single master Order
+            import random
+            otp = str(random.randint(1000, 9999))
+            
             master_order = Order.objects.create(
                 customer=pool.initiator, # Initiator is the primary contact
                 restaurant=pool.restaurant,
                 delivery_address=pool.delivery_address,
                 delivery_location=pool.delivery_location,
                 delivery_fee=pool.total_delivery_fee,
+                delivery_otp=otp,
                 pool=pool,
                 zone=zone,
                 status='CREATED'
@@ -290,6 +314,10 @@ class ConfirmOrderService:
     def execute(order_id, actor):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
+            
+            if not order.is_paid:
+                raise ValueError("Cannot confirm an unpaid order")
+                
             # Only customer can confirm (usually after payment) or system
             new_state = OrderFSM.transition(order.status, 'CONFIRMED')
             order.status = new_state
@@ -321,14 +349,42 @@ class CancelOrderService:
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
             
+            # Role-based validation
+            if actor.role == 'customer' and order.customer == actor:
+                if order.status not in ['CREATED', 'CONFIRMED']:
+                    raise PermissionError("Customers can only cancel orders before they are prepared.")
+            elif actor.role == 'vendor' and order.restaurant.owner == actor:
+                pass # Vendors can cancel their own orders (e.g. out of stock)
+            elif actor.role == 'admin':
+                pass
+            else:
+                raise PermissionError("You do not have permission to cancel this order.")
+            
             new_state = OrderFSM.transition(order.status, 'CANCELLED')
             order.status = new_state
+            
+            # 2. Critical: Refund if already paid
+            if order.is_paid:
+                from domain.services.payment_services import RefundPaymentService
+                try:
+                    RefundPaymentService.execute(order.id)
+                except Exception as e:
+                    # Log but don't block cancellation; might need manual refund retry
+                    logger.error(f"Automated refund failed for Order {order.id}: {str(e)}")
+
+            # 3. Critical: Release driver back to AVAILABLE
+            if order.driver:
+                from domain.fsm.driver_fsm import DriverFSM
+                if order.driver.status != 'AVAILABLE':
+                    order.driver.status = DriverFSM.transition(order.driver.status, 'AVAILABLE')
+                    order.driver.save(update_fields=['status'])
+            
             order.save()
             
-            EventBus.publish(OrderCancelled(aggregate_id=order.id, payload={
+            transaction.on_commit(lambda: EventBus.publish(OrderCancelled(aggregate_id=order.id, payload={
                 'actor_id': str(actor.id),
                 'reason': reason
-            }))
+            })))
             return order
 
 class MarkReadyService:
@@ -369,14 +425,21 @@ class AssignDriverService:
             new_state = OrderFSM.transition(order.status, 'ASSIGNED')
             order.status = new_state
             order.driver = driver
-            order.save()
+            # Transition Driver: Skip if already ASSIGNED (e.g. in a batch)
+            if driver.status != 'ASSIGNED':
+                driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
+                driver.save(update_fields=['status'])
             
-            # Transition Driver
-            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-            driver.save(update_fields=['status'])
+            # Use update_or_create to ensure assignment record matches the current order driver
+            DeliveryAssignment.objects.update_or_create(
+                order=order, 
+                defaults={'driver': driver}
+            )
             
-            DeliveryAssignment.objects.get_or_create(order=order, defaults={'driver': driver})
-            EventBus.publish(DriverAssigned(aggregate_id=order.id, payload={'driver_id': str(driver.id), 'actor_id': str(actor.id)}))
+            transaction.on_commit(lambda: EventBus.publish(DriverAssigned(
+                aggregate_id=order.id, 
+                payload={'driver_id': str(driver.id), 'actor_id': str(actor.id)}
+            )))
             return order
 
 class PickupOrderService:
@@ -384,6 +447,9 @@ class PickupOrderService:
     def execute(order_id, actor, bypass_geofence=False):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
+            if actor.role != 'driver':
+                raise PermissionError("Only drivers can perform order pickups.")
+            
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 raise PermissionError("Only the assigned driver can pickup this order.")
             
@@ -416,6 +482,9 @@ class DeliverOrderService:
     def execute(order_id, actor, otp=None, bypass_geofence=False):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
+            if actor.role != 'driver':
+                raise PermissionError("Only drivers can perform delivery completions.")
+                
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 raise PermissionError("Only the assigned driver can complete this delivery.")
             
@@ -471,19 +540,16 @@ class AssignBatchService:
             batch.save()
             
             # 4. Transition all orders in the batch
-            # We use a sub-loop with error handling so one bad order doesn't kill the batch
+            # If any assignment fails, the outer transaction will roll back the whole batch
             for order in batch.orders.all():
-                try:
-                    if not order.driver:
-                        AssignDriverService.execute(order.id, driver.id, actor)
-                except Exception as e:
-                    logger.error(f"Failed to assign order {order.id} in batch {batch_id}: {str(e)}")
+                if order.driver != driver:
+                    AssignDriverService.execute(order.id, driver.id, actor)
             
             return batch
 
 class DispatchService:
     @staticmethod
-    def execute(order_id, is_retry=False):
+    def execute(order_id, is_retry=False, radius_km=15.0):
         """
         The core of the Automated Dispatch Logic.
         Finds the closest available driver and assigns them to the order.
@@ -493,8 +559,14 @@ class DispatchService:
         from domain.events.types import DispatchFailed
         User = get_user_model()
         
-        # System user for assignment audit trail
-        system_user, _ = User.objects.get_or_create(username='system_dispatcher')
+        from django.core.cache import cache
+        system_user = cache.get('system_dispatcher_user')
+        if not system_user:
+            system_user, _ = User.objects.get_or_create(
+                username='system_dispatcher',
+                defaults={'role': 'admin', 'is_staff': True}
+            )
+            cache.set('system_dispatcher_user', system_user, 3600)
 
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
@@ -506,10 +578,20 @@ class DispatchService:
             strategy = PostgisRadiusStrategy()
             
             # 2. Find best driver based on restaurant location
+            # Prefer PostGIS Point field over legacy Decimals
+            res = order.restaurant
+            if res.geo_location:
+                rlat, rlng = res.geo_location.y, res.geo_location.x
+            elif res.latitude and res.longitude:
+                rlat, rlng = res.latitude, res.longitude
+            else:
+                logging.getLogger(__name__).error(f"Restaurant {res.id} has no coordinates. Dispatch failed.")
+                return order
+
             best_driver = strategy.find_best_driver(
-                restaurant_lat=order.restaurant.latitude,
-                restaurant_lng=order.restaurant.longitude,
-                max_radius_km=15
+                restaurant_lat=rlat,
+                restaurant_lng=rlng,
+                max_radius_km=radius_km
             )
             
             if best_driver:

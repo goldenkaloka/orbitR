@@ -2,7 +2,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from apps.users.models import User
 from apps.orders.models import Order
-from .models import Wallet, Transaction
+from .models import Wallet, WalletTransaction
 from django.db import transaction
 from decimal import Decimal
 
@@ -34,7 +34,7 @@ def handle_order_wallet_updates(sender, instance, created, **kwargs):
                 vendor_wallet.balance += vendor_share
                 vendor_wallet.save()
                 
-                Transaction.objects.create(
+                WalletTransaction.objects.create(
                     wallet=vendor_wallet,
                     amount=vendor_share,
                     tx_type='CREDIT',
@@ -50,7 +50,7 @@ def handle_order_wallet_updates(sender, instance, created, **kwargs):
                 driver_wallet.balance += driver_share
                 driver_wallet.save()
                 
-                Transaction.objects.create(
+                WalletTransaction.objects.create(
                     wallet=driver_wallet,
                     amount=driver_share,
                     tx_type='CREDIT',
@@ -68,7 +68,7 @@ def handle_order_wallet_updates(sender, instance, created, **kwargs):
                 driver_wallet.balance += instance.delivery_fee
                 driver_wallet.save()
                 
-                Transaction.objects.create(
+                WalletTransaction.objects.create(
                     wallet=driver_wallet,
                     amount=instance.delivery_fee,
                     tx_type='CREDIT',

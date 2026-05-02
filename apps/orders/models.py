@@ -44,6 +44,17 @@ class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
+    def save(self, *args, **kwargs):
+        # Sync Point field with Decimal fields
+        if self.delivery_location:
+            self.delivery_longitude = self.delivery_location.x
+            self.delivery_latitude = self.delivery_location.y
+        elif self.delivery_latitude and self.delivery_longitude:
+            from django.contrib.gis.geos import Point
+            self.delivery_location = Point(float(self.delivery_longitude), float(self.delivery_latitude))
+        
+        super().save(*args, **kwargs)
+
     class Meta:
         indexes = [
             models.Index(fields=['restaurant', 'status'], name='order_vendor_status_idx'),
@@ -56,7 +67,7 @@ class Order(models.Model):
 class OrderItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
-    food = models.ForeignKey(Food, on_delete=models.DO_NOTHING)
+    food = models.ForeignKey(Food, on_delete=models.SET_NULL, null=True, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2) # snapshot price at order time
 
@@ -110,6 +121,11 @@ class OrderPool(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
     expires_at = models.DateTimeField()
+
+    @property
+    def is_expired(self):
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
 
     def __str__(self):
         return f"Pool {self.invite_code} at {self.restaurant.name}"

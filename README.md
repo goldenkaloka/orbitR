@@ -20,7 +20,7 @@ This project adheres to **Domain-Driven Design (DDD)** and **Event-Driven Archit
 
 ## 🌟 Key Features
 - ** Marketplace & Food Delivery**: Multi-vendor support with complex order lifecycles.
-- ** Multi-Gateway Payments**: Integrated with **AirPay, AzamPay, ZenoPay, and PesaPal**.
+- **Gateway Payments**: Integrated with **AirPay** for secure production transactions.
 - ** Real-time Tracking**: WebSockets via **Django Channels** for live rider tracking.
 - ** Robust Security**: JWT Authentication, Idempotency keys for all financial operations, and strict validation.
 - ** Notifications**: Multi-channel alerts via **OneSignal** (Push) and **Infobip** (SMS).

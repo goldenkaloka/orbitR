@@ -152,6 +152,32 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 
+    @action(detail=True, methods=['GET'], url_path='delivery-fee')
+    def delivery_fee(self, request, pk=None):
+        """
+        Calculate delivery fee for a specific restaurant and location.
+        Query params: lat, lng
+        """
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        
+        if not lat or not lng:
+            return Response({'error': 'lat and lng are required'}, status=400)
+            
+        restaurant = self.get_object()
+        from django.contrib.gis.geos import Point
+        try:
+            point = Point(float(lng), float(lat))
+            from domain.services.pricing_service import PricingService
+            fee = PricingService.calculate_delivery_fee(restaurant, point)
+            return Response({
+                'restaurant_id': restaurant.id,
+                'delivery_fee': float(fee),
+                'currency': 'TSh'
+            })
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid lat or lng'}, status=400)
+
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
@@ -173,7 +199,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         if user.role == 'customer':
             return queryset.filter(customer=user)
         elif user.role == 'vendor':
-            return queryset.filter(restaurant__owner=user, is_paid=True)
+            # Vendors see orders for their restaurant(s). Show CREATED orders too.
+            return queryset.filter(restaurant__owner=user)
         elif user.role == 'driver':
             return queryset.filter(driver__user=user, is_paid=True)
         return queryset
@@ -193,79 +220,102 @@ class OrderViewSet(viewsets.ModelViewSet):
         wallet, _ = Wallet.objects.get_or_create(user=user)
         
         data = {}
-        if user.role == 'vendor':
-            orders = Order.objects.filter(restaurant__owner=user, created_at__date=today, is_paid=True)
-            revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
-            count = orders.count()
-            data = {
-                "revenue_today": float(revenue),
-                "orders_today": count,
-                "avg_prep_time": "08:45",
-                "wallet_balance": float(wallet.balance),
-                "pending_payout": float(wallet.pending_balance)
-            }
-        elif user.role == 'driver':
-            orders = Order.objects.filter(driver__user=user, created_at__date=today, is_paid=True)
-            earnings = orders.filter(status='DELIVERED').aggregate(Sum('delivery_fee'))['delivery_fee__sum'] or 0
-            count = orders.count()
-            data = {
-                "earnings_today": float(earnings),
-                "trips_today": count,
-                "online_time": "04:20",
-                "wallet_balance": float(wallet.balance)
-            }
-        elif user.role == 'admin':
-            paid_today = Order.objects.filter(created_at__date=today, is_paid=True)
-            total_orders = paid_today.count()
-            total_revenue = paid_today.filter(
-                status='DELIVERED'
-            ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
-            active_drivers = Driver.objects.filter(status='ONLINE').count()
-            data = {
-                'today_orders': total_orders,
-                'today_revenue': float(total_revenue),
-                'active_drivers': active_drivers,
-                'total_users': User.objects.count(),
-                'total_restaurants': Restaurant.objects.count(),
-            }
-        
-        if data:
-            cache.set(cache_key, data, 300) # Cache for 5 minutes
+        try:
+            if user.role == 'vendor':
+                orders = Order.objects.filter(restaurant__owner=user, created_at__date=today, is_paid=True)
+                revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
+                count = orders.count()
+                data = {
+                    "revenue_today": float(revenue),
+                    "orders_today": count,
+                    "avg_prep_time": "08:45",
+                    "wallet_balance": float(wallet.balance),
+                    "pending_payout": float(wallet.pending_balance)
+                }
+            elif user.role == 'driver':
+                orders = Order.objects.filter(driver__user=user, created_at__date=today, is_paid=True)
+                earnings = orders.filter(status='DELIVERED').aggregate(Sum('delivery_fee'))['delivery_fee__sum'] or 0
+                count = orders.count()
+                data = {
+                    "earnings_today": float(earnings),
+                    "trips_today": count,
+                    "online_time": "04:20",
+                    "wallet_balance": float(wallet.balance)
+                }
+            else:
+                return Response({"error": "Stats not available for this role"}, status=400)
+            
+            cache.set(cache_key, data, 300)
             return Response(data)
-        return Response({"error": "Stats not available for this role"}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @action(detail=False, methods=['GET'], url_path='available-jobs')
     def available_jobs(self, request):
         # Orders that are READY, PAID, and don't have a driver assigned
-        orders = Order.objects.select_related('restaurant', 'restaurant__owner', 'customer').prefetch_related('items', 'items__food').filter(status='READY', is_paid=True, driver__isnull=True)
+        limit = int(request.query_params.get('limit', 20))
+        offset = int(request.query_params.get('offset', 0))
+        
+        orders = Order.objects.select_related(
+            'restaurant', 
+            'restaurant__owner', 
+            'customer'
+        ).prefetch_related('items', 'items__food').filter(
+            status='READY', 
+            is_paid=True, 
+            driver__isnull=True
+        ).order_by('-created_at')[offset:offset+limit]
+        
         return Response(OrderSerializer(orders, many=True).data)
 
     @action(detail=True, methods=['POST'], url_path='claim-job')
     def claim_job(self, request, pk=None):
+        from django.db import transaction
         try:
-            driver = Driver.objects.get(user=request.user)
-            # Track attempt
-            driver.total_claim_attempts += 1
-            driver.save()
-            
-            order = AssignDriverService.execute(pk, driver.id, request.user)
-            return Response(OrderSerializer(order).data)
+            with transaction.atomic():
+                driver = Driver.objects.select_for_update().get(user=request.user)
+                # Security: Lock order and check if it's READY for claiming
+                order = Order.objects.select_for_update().get(id=pk)
+                if order.status != 'READY':
+                    return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
+                
+                order = AssignDriverService.execute(pk, driver.id, request.user)
+                
+                # Track successful claim attempt
+                driver.total_claim_attempts += 1
+                driver.save(update_fields=['total_claim_attempts'])
+                
+                return Response(OrderSerializer(order).data)
         except Driver.DoesNotExist:
             return Response({"error": "You are not registered as a driver"}, status=403)
-        except Exception as e:
+        except ValueError as e:
             return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": "This job is no longer available or another driver claimed it first."}, status=409)
 
     @action(detail=True, methods=['POST'])
     def confirm(self, request, pk=None):
         try:
+            # Security: Manual check if restaurant owner
+            order = Order.objects.get(id=pk)
+            if order.restaurant.owner != request.user:
+                return Response({"error": "Not authorized to confirm this order"}, status=403)
+                
             order = ConfirmOrderService.execute(pk, request.user)
             return Response(OrderSerializer(order).data)
-        except InvalidStateTransitionError as e:
-            return Response({"error": str(e)}, status=400)
+        except (InvalidStateTransitionError, PermissionError) as e:
+            return Response({"error": str(e)}, status=403 if isinstance(e, PermissionError) else 400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @action(detail=True, methods=['POST'], url_path='start-preparing')
     def start_preparing(self, request, pk=None):
         try:
+            # Security: Manual check if restaurant owner
+            order = Order.objects.get(id=pk)
+            if order.restaurant.owner != request.user:
+                return Response({"error": "Not authorized to prepare this order"}, status=403)
+                
             order = StartPreparingService.execute(pk, request.user)
             return Response(OrderSerializer(order).data)
         except InvalidStateTransitionError as e:
@@ -296,9 +346,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             order = PickupOrderService.execute(pk, request.user, bypass_geofence=bypass)
             return Response(OrderSerializer(order).data)
-        except (ValueError, PermissionError) as e:
-            return Response({"error": str(e)}, status=400)
-        except InvalidStateTransitionError as e:
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
 
     @action(detail=True, methods=['POST'])
@@ -309,9 +359,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             order = DeliverOrderService.execute(pk, request.user, otp=otp, bypass_geofence=bypass)
             return Response(OrderSerializer(order).data)
-        except (ValueError, PermissionError) as e:
-            return Response({"error": str(e)}, status=400)
-        except InvalidStateTransitionError as e:
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
 
     @action(detail=True, methods=['POST'])
@@ -320,8 +370,12 @@ class OrderViewSet(viewsets.ModelViewSet):
             from domain.services.order_services import CancelOrderService
             order = CancelOrderService.execute(pk, request.user, reason='Rejected by restaurant')
             return Response(OrderSerializer(order).data)
-        except InvalidStateTransitionError as e:
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (InvalidStateTransitionError, ValueError) as e:
             return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
 
     @action(detail=True, methods=['POST'], url_path='assign-temp-driver')
     def assign_temp_driver(self, request, pk=None):

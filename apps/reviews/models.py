@@ -9,17 +9,19 @@ class Review(models.Model):
     REVIEW_TYPE_CHOICES = (
         ('restaurant', 'Restaurant Review'),
         ('driver', 'Driver Review'),
+        ('marketplace', 'Marketplace Product Review'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='reviews')
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='reviews', null=True, blank=True)
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reviews_given')
     
     review_type = models.CharField(max_length=20, choices=REVIEW_TYPE_CHOICES)
     
-    # Target can be either a restaurant or a driver
+    # Targets
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, null=True, blank=True, related_name='reviews')
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, null=True, blank=True, related_name='reviews')
+    marketplace_product = models.ForeignKey('marketplace.MarketplaceProduct', on_delete=models.CASCADE, null=True, blank=True, related_name='reviews')
     
     rating = models.PositiveSmallIntegerField() # 1 to 5
     comment = models.TextField(blank=True, null=True)
@@ -27,11 +29,24 @@ class Review(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        # Prevent multiple reviews of the same type for the same order
-        unique_together = ('order', 'review_type')
+        constraints = [
+            # Standard order reviews (one per order type)
+            models.UniqueConstraint(
+                fields=['order', 'review_type'],
+                name='unique_order_review',
+                condition=models.Q(order__isnull=False)
+            ),
+            # Marketplace product reviews (one per customer per product)
+            models.UniqueConstraint(
+                fields=['customer', 'marketplace_product'],
+                name='unique_marketplace_product_review',
+                condition=models.Q(marketplace_product__isnull=False)
+            )
+        ]
         indexes = [
             models.Index(fields=['restaurant', 'rating']),
             models.Index(fields=['driver', 'rating']),
+            models.Index(fields=['marketplace_product', 'rating']),
         ]
 
     def __str__(self):

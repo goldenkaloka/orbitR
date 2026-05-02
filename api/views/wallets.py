@@ -2,8 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from apps.wallets.models import Wallet
-from api.serializers.wallets import WalletSerializer
+from apps.wallets.models import Wallet, WalletTransaction
+from api.serializers.wallets import WalletSerializer, TransactionSerializer
 
 class WalletViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
@@ -30,8 +30,7 @@ class WalletViewSet(viewsets.GenericViewSet):
         wallet.balance = 0
         wallet.save()
         
-        from apps.wallets.models import Transaction
-        Transaction.objects.create(
+        WalletTransaction.objects.create(
             wallet=wallet,
             amount=amount,
             tx_type='DEBIT',

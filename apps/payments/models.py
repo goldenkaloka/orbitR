@@ -5,9 +5,13 @@ import uuid
 
 class Payment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment')
+    
+    # Polymorphic-like associations
+    order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
+    marketplace_product = models.ForeignKey('marketplace.MarketplaceProduct', on_delete=models.CASCADE, related_name='listing_payments', null=True, blank=True)
+    
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=50, default='INITIATED', db_index=True) # Handled by Payment FSM
+    status = models.CharField(max_length=50, default='INITIATED', db_index=True)
     provider_reference = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     rrn = models.CharField(max_length=255, null=True, blank=True)
     refund_id = models.CharField(max_length=255, null=True, blank=True)
@@ -31,5 +35,6 @@ class FailedPayout(models.Model):
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     transaction_type = models.CharField(max_length=50) # 'platform_to_restaurant' or 'platform_to_driver'
     reason = models.TextField(blank=True, null=True)
+    error_code = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     retry_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)

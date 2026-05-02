@@ -107,7 +107,7 @@ class AirpayGateway(PaymentGateway):
             # Return a mock endpoint that the Flutter app recognizes as success
             return {
                 'success': True, 
-                'endpoint': 'https://mwanachuoshop.com/api/payments/mock/success/',
+                'endpoint': '/api/payments/mock/success/',
                 'params': {
                     'order_id': order_reference,
                     'mock': 'true'

@@ -123,3 +123,18 @@ class FoodDeleted(DomainEvent):
 class DispatchFailed(DomainEvent):
     aggregate_type = 'Order'
     event_type = 'DispatchFailed'
+
+@dataclass
+class MarketplaceProductCreated(DomainEvent):
+    aggregate_type = 'MarketplaceProduct'
+    event_type = 'MarketplaceProductCreated'
+
+@dataclass
+class MarketplaceProductActivated(DomainEvent):
+    aggregate_type = 'MarketplaceProduct'
+    event_type = 'MarketplaceProductActivated'
+
+@dataclass
+class MarketplaceProductExpired(DomainEvent):
+    aggregate_type = 'MarketplaceProduct'
+    event_type = 'MarketplaceProductExpired'

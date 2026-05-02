@@ -54,22 +54,27 @@ def on_payment_collected(event):
     logger.info(f"Payment collected for order {order_id}")
     try:
         from apps.orders.models import Order
-        order = Order.objects.get(id=order_id)
-        # Pass the customer as the actor for payment confirmation
-        ConfirmOrderService.execute(order_id, order.customer)
+        from django.db import transaction
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if order.status != 'CREATED':
+                logger.info(f"Order {order_id} already in {order.status} state. Skipping.")
+                return
+            
+            order.is_paid = True
+            order.save(update_fields=['is_paid', 'updated_at'])
+            # Pass the customer as the actor for payment confirmation
+            ConfirmOrderService.execute(order_id, order.customer)
     except Exception as e:
         logger.error(f"Failed to confirm order after payment: {str(e)}")
 
 def on_order_confirmed_dispatch(event: OrderConfirmed):
     """
-    Hook to trigger automated dispatch when an order is confirmed
+    Trigger automated dispatch when an order is confirmed.
+    Restored from FoodReady to allow driver travel to overlap with prep time.
     """
-    order_id = event.aggregate_id
-    logger.info(f"Triggering automated dispatch for order {order_id}")
-    try:
-        DispatchService.execute(order_id)
-    except Exception as e:
-        logger.error(f"Automated dispatch failed for order {order_id}: {str(e)}")
+    from domain.services.dispatch_tasks import dispatch_order_task
+    dispatch_order_task.delay(str(event.aggregate_id))
 
 def on_payment_initiated(event: PaymentInitiated):
     logger.info(f"Payment initiated for order {event.payload.get('order_id')}")

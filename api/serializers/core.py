@@ -9,6 +9,7 @@ from apps.delivery.models import Driver, DeliveryProof
 from apps.core.models import Notification
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
+from api.serializers.utils import parse_coordinate_dict
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -95,9 +96,17 @@ class OrderSerializer(serializers.ModelSerializer):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
 
     def get_estimated_arrival_minutes(self, obj):
-        if not obj.restaurant or not obj.delivery_location:
+        if not obj.restaurant or not obj.delivery_location or not obj.restaurant.geo_location:
             return 30
-        return 25 
+        
+        try:
+            # Distance in km
+            dist_km = obj.restaurant.geo_location.distance(obj.delivery_location) / 1000
+            # Estimate: 8 mins base (prep) + 4 mins per km
+            est = 8 + (dist_km * 4)
+            return int(max(15, min(60, est)))
+        except Exception:
+            return 30
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -173,17 +182,9 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']
 
     def to_internal_value(self, data):
-        """
-        Interprets delivery_location if it's sent as a {lat, lng} dict.
-        """
-        location_data = data.get('delivery_location')
-        if isinstance(location_data, dict):
-            from django.contrib.gis.geos import Point
-            try:
-                lat = float(location_data.get('latitude') or location_data.get('lat'))
-                lng = float(location_data.get('longitude') or location_data.get('lng'))
-                data['delivery_location'] = Point(lng, lat)
-            except (TypeError, ValueError):
-                pass
+        """Handle coordinate dictionary conversion using shared utility."""
+        point = parse_coordinate_dict(data, 'delivery_location')
+        if point:
+            data['delivery_location'] = point
         return super().to_internal_value(data)
 

@@ -28,9 +28,5 @@ class EventBus:
     @classmethod
     def _dispatch(cls, event):
         for handler in cls._handlers[type(event)]:
-            try:
-                handler(event)
-            except Exception as e:
-                import logging
-                logging.error(f"Event handler failed for {event.event_type}: {str(e)}")
+            handler(event)
 
