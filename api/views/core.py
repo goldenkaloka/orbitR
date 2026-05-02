@@ -129,7 +129,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             cache.set(cache_key, data, 3600) # Cache for 1 hour
             return Response(data)
         except Restaurant.DoesNotExist:
-            return Response({'error': 'No restaurant found for this user'}, status=404)
+            return Response(None, status=200)
 
     @action(detail=True, methods=['POST'], url_path='register-temp-driver')
     def register_temp_driver(self, request, pk=None):
