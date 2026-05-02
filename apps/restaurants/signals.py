@@ -24,5 +24,5 @@ def invalidate_food_cache(sender, instance, **kwargs):
     """
     Invalidate restaurant detail cache when food items change.
     """
-    if instance.restaurant:
-        cache.delete(f'restaurant_detail_{instance.restaurant.id}')
+    if hasattr(instance, 'vendor') and instance.vendor:
+        cache.delete(f'restaurant_detail_{instance.vendor.id}')
