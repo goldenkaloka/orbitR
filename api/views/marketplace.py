@@ -49,10 +49,11 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # Use Domain Service to create product and handle images
         images = self.request.FILES.getlist('images')
-        MarketplaceService.create_product(
+        product = MarketplaceService.create_product(
             validated_data={**serializer.validated_data, 'seller': self.request.user},
             images=images
         )
+        serializer.instance = product
 
     @action(detail=True, methods=['POST'])
     def pay(self, request, pk=None):

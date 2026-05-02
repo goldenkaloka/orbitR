@@ -190,3 +190,38 @@ class RidersPoolConsumer(AsyncWebsocketConsumer):
 
     async def new_order_ping(self, event):
         await self.send(text_data=json.dumps(event))
+
+class OrderPoolConsumer(AsyncWebsocketConsumer):
+    async def connect(self):
+        user = self.scope.get('user')
+        if not user or user.is_anonymous:
+            await self.close()
+            return
+
+        self.pool_id = self.scope['url_route']['kwargs']['pool_id']
+        
+        # Security: Check if user is a member of this pool
+        is_authorized = await self._check_pool_authorization(user, self.pool_id)
+        if not is_authorized:
+            await self.close()
+            return
+
+        self.room_group_name = f'pool_{self.pool_id}'
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+        await self.accept()
+
+    @database_sync_to_async
+    def _check_pool_authorization(self, user, pool_id):
+        from apps.orders.models import OrderPool
+        try:
+            pool = OrderPool.objects.get(id=pool_id)
+            return pool.members.filter(user=user).exists() or user.is_staff
+        except OrderPool.DoesNotExist:
+            return False
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'room_group_name'):
+            await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+
+    async def pool_update(self, event):
+        await self.send(text_data=json.dumps(event))
