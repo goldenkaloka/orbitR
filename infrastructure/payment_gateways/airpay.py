@@ -132,7 +132,7 @@ class AirpayGateway(PaymentGateway):
             
             # Airpay requires 'privatekey' for payment initiation
             # Formula: sha256(secret . '@' . username . ':|:' . password)
-            pk_base = f"{self.config.get('SECRET')}@{self.config.get('USERNAME')}:|:{self.config.get('PASSWORD')}"
+            pk_base = f"{self.config.get('SECRET_KEY')}@{self.config.get('USERNAME')}:|:{self.config.get('PASSWORD')}"
             privatekey = hashlib.sha256(pk_base.encode('utf-8')).hexdigest()
 
             endpoint = self.payment_url
