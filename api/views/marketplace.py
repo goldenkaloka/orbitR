@@ -60,7 +60,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         """
         Initiates payment for the marketplace listing fee via Airpay.
         """
-        from infrastructure.payment_gateways.airpay import AirpayGateway
+        from infrastructure.payment_gateways.factory import get_payment_gateway
         from apps.payments.models import Payment
         
         product = self.get_object()
@@ -68,7 +68,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             return Response({'message': 'Product is already active'}, status=400)
             
         fee = product.calculate_listing_fee()
-        gateway = AirpayGateway()
+        gateway = get_payment_gateway()
         
         # Create a Pending Payment record
         payment, _ = Payment.objects.get_or_create(
@@ -102,7 +102,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         """
         Initiates payment for reactivation of an expired product.
         """
-        from infrastructure.payment_gateways.airpay import AirpayGateway
+        from infrastructure.payment_gateways.factory import get_payment_gateway
         from apps.payments.models import Payment
 
         product = self.get_object()
@@ -112,7 +112,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         # Switch listing type to renewal for fee calculation
         product.listing_type = 'RENEWAL'
         fee = product.calculate_listing_fee()
-        gateway = AirpayGateway()
+        gateway = get_payment_gateway()
 
         payment = Payment.objects.create(
             marketplace_product=product,

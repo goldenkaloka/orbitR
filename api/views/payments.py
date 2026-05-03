@@ -67,38 +67,4 @@ class AirpayWebhookView(APIView):
             return Response({"error": str(e)}, status=500)
 
         return Response({"error": "Invalid Payload"}, status=400)
-class MockPaymentSuccessView(APIView):
-    permission_classes = [AllowAny]
-    
-    def get(self, request, *args, **kwargs):
-        """
-        Mock Success Page for Development
-        Automatically completes the payment in the DB.
-        """
-        order_id = request.query_params.get('order_id')
-        if not order_id:
-            return Response({"error": "order_id required"}, status=400)
-            
-        # Security: Disable in production even if MOCK is True
-        if not settings.DEBUG and not settings.AIRPAY_CONFIG.get('ALLOW_MOCK_IN_PROD', False):
-             logger.warning(f"Mock payment attempted in production for order {order_id}")
-             return Response({"error": "Mock payments are strictly disabled in production"}, status=403)
 
-        if not settings.AIRPAY_CONFIG.get('MOCK', False):
-            return Response({"error": "Mock payments are disabled in this environment"}, status=403)
-            
-        logger.info(f"MOCK PAYMENT SUCCESS for order {order_id}")
-        try:
-            CompletePaymentService.execute(
-                provider_reference=f"MOCK_TXN_{order_id}",
-                success=True,
-                order_id=order_id,
-                rrn=f"MOCK_RRN_{order_id}"
-            )
-            return Response({
-                "status": "success",
-                "message": "MOCK PAYMENT SUCCESSFUL",
-                "detail": f"Order {order_id} has been marked as paid."
-            })
-        except Exception as e:
-            return Response({"error": str(e)}, status=500)

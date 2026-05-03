@@ -425,6 +425,7 @@ AIRPAY_CONFIG = {
     'CLIENT_SECRET': os.getenv('AIRPAY_CLIENT_SECRET', 'demo_client_secret'),
     'SANDBOX': os.getenv('PAYMENT_SANDBOX', 'True') == 'True',
     'MOCK': os.getenv('PAYMENT_MOCK', 'True') == 'True',
+    'ALLOW_MOCK_IN_PROD': os.getenv('ALLOW_MOCK_IN_PROD', 'False') == 'True',
 }
 
 # Notifications Configuration

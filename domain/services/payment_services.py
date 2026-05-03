@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.utils import timezone
 from apps.orders.models import Order
 from domain.fsm.payment_fsm import PaymentFSM
-from infrastructure.payment_gateways.airpay import AirpayGateway
+from infrastructure.payment_gateways.factory import get_payment_gateway
 from domain.events.bus import EventBus
 from domain.events.types import PaymentCollected, PaymentInitiated, PaymentDisbursed, PaymentRefunded
 
@@ -29,7 +29,7 @@ class InitiatePaymentService:
                 raise ValueError("A completed transaction already exists for this order.")
 
             # Use Airpay for all flows (Redirect based)
-            gateway = AirpayGateway()
+            gateway = get_payment_gateway(provider=provider)
 
             response = gateway.collect(
                 amount=payment.amount,
@@ -39,7 +39,18 @@ class InitiatePaymentService:
             )
             
             # Update payment with provider info if returned
-            if response.get('success'):
+            if response.get('instant_success'):
+                # Handle instant success from MockPaymentGateway
+                payment.provider_reference = response.get('transactionId')
+                payment.save()
+                
+                # Directly mark it as collected
+                CompletePaymentService.execute(
+                    provider_reference=payment.provider_reference,
+                    success=True,
+                    rrn=f"MOCK_RRN_{payment.id}"
+                )
+            elif response.get('success'):
                 payment.provider_reference = response.get('transactionId') or response.get('provider_ref')
                 payment.save()
                 
@@ -158,7 +169,7 @@ class ReleasePaymentService:
             ).get(id=payment_id)
             
             order = payment.order
-            gateway = AirpayGateway()
+            gateway = get_payment_gateway()
             
             # Define Splits
             restaurant_payout = Decimal(str(order.items_subtotal)) * Decimal('0.90')
@@ -248,7 +259,7 @@ class RefundPaymentService:
             if not payment:
                 raise ValueError("No refundable payment found for this order")
                 
-            gateway = AirpayGateway()
+            gateway = get_payment_gateway()
             
             response = gateway.refund(
                 airpay_id=payment.provider_reference,

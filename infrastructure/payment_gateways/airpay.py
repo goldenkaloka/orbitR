@@ -18,7 +18,7 @@ class AirpayGateway(PaymentGateway):
     def __init__(self):
         self.config = settings.AIRPAY_CONFIG
         self.sandbox = self.config.get('SANDBOX', True)
-        self.mock = self.config.get('MOCK', False)
+        self.sandbox = self.config.get('SANDBOX', True)
         
         if self.sandbox:
             self.base_url = "https://kraken.airpay.tz/airpay/pay/v1/api"
@@ -49,8 +49,8 @@ class AirpayGateway(PaymentGateway):
         if cached_token:
             return cached_token
 
-        if self.mock:
-            return "mock_access_token"
+        if not self.config.get('CLIENT_ID'):
+            return None
 
         payload = {
             "client_id": self.config.get('CLIENT_ID'),
@@ -103,20 +103,14 @@ class AirpayGateway(PaymentGateway):
         Initiates a payment collection (Simple Transaction).
         Returns the data needed to redirect the user or perform the POST.
         """
-        if self.mock:
-            # Return a mock endpoint that the Flutter app recognizes as success
-            return {
-                'success': True, 
-                'endpoint': '/api/payments/mock/success/',
-                'params': {
-                    'order_id': order_reference,
-                    'mock': 'true'
-                }
-            }
+
 
         token = self._get_access_token()
         
         # Prepare payload
+        # Check if provider is MNO
+        chmod_val = 'mmoney' if kwargs.get('provider') in ['Mpesa', 'Tigo', 'Airtel', 'Halopesa'] else ''
+        
         data = {
             "merchant_id": str(self.config.get('MERCHANT_ID')),
             "orderid": order_reference,
@@ -127,7 +121,8 @@ class AirpayGateway(PaymentGateway):
             "buyer_phone": phone,
             "buyer_firstname": kwargs.get('firstname', 'System'),
             "buyer_lastname": kwargs.get('lastname', 'User'),
-            "kittype": "server_side_sdk"
+            "kittype": "server_side_sdk",
+            "chmod": chmod_val
         }
 
         try:
@@ -144,6 +139,9 @@ class AirpayGateway(PaymentGateway):
             if token:
                 endpoint = f"{endpoint}/?token={token}"
 
+            # Generate AES DES Key for native SDK decryption
+            aes_des_key = f"{self.config.get('USERNAME')}~:~{self.config.get('PASSWORD')}"
+
             return {
                 'success': True,
                 'endpoint': endpoint,
@@ -151,7 +149,12 @@ class AirpayGateway(PaymentGateway):
                     'merchant_id': self.config.get('MERCHANT_ID'),
                     'encdata': encdata,
                     'checksum': checksum,
-                    'privatekey': privatekey
+                    'privatekey': privatekey,
+                    'client_id': self.config.get('CLIENT_ID'),
+                    'client_secret': self.config.get('CLIENT_SECRET'),
+                    'aesDeskey': aes_des_key,
+                    'domain': 'kraken.airpay.tz',
+                    'chmod': 'mmoney' if kwargs.get('provider') in ['Mpesa', 'Tigo', 'Airtel', 'Halopesa'] else ''
                 }
             }
         except Exception as e:
@@ -163,8 +166,6 @@ class AirpayGateway(PaymentGateway):
         Pull transaction status from Airpay.
         Requires either orderid or ap_transactionid.
         """
-        if self.mock:
-            return {'success': True, 'status': 'SUCCESS', 'message': 'Mock success'}
 
         token = self._get_access_token()
         if not token:
@@ -221,8 +222,7 @@ class AirpayGateway(PaymentGateway):
         Escrow Release: Distributes funds to multiple parties.
         'splits' should be list of dicts: {'identifier': '...', 'value': 10.0}
         """
-        if self.mock:
-            return {'success': True, 'message': 'Mock Split Successful'}
+
 
         # Split settlement needs a special HMAC token
         request_id = kwargs.get('request_id', airpay_id)
@@ -279,16 +279,12 @@ class AirpayGateway(PaymentGateway):
         For Airpay, we primarily use split_settlement for escrow release.
         """
         # This could be mapped to a payout API if needed.
-        if self.mock:
-            return {'success': True, 'payout_id': f'MOCK_DISB_{reference}'}
         return {'success': False, 'error': 'Single disbursement not implemented for Airpay gateway. Use split_settlement.'}
 
     def refund(self, airpay_id, amount):
         """
         Escrow Refund: Calls the refund API.
         """
-        if self.mock:
-            return {'success': True, 'refund_id': 'MOCK_REFUND_123'}
 
         token = self._get_access_token()
         
