@@ -153,7 +153,7 @@ class AirpayGateway(PaymentGateway):
                     'client_id': self.config.get('CLIENT_ID'),
                     'client_secret': self.config.get('CLIENT_SECRET'),
                     'aesDeskey': aes_des_key,
-                    'domain': 'https://kraken.airpay.tz',
+                    'domain': 'https://kraken.airpay.tz/',
                     'chmod': 'mmoney' if kwargs.get('provider') in ['Mpesa', 'Tigo', 'Airtel', 'Halopesa'] else ''
                 }
             }
