@@ -354,6 +354,23 @@ UNFOLD = {
                 ],
             },
             {
+                "title": _("Geography"),
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": _("Operational Zones"),
+                        "icon": "map",
+                        "link": reverse_lazy("admin:geo_operationalzone_changelist"),
+                    },
+                    {
+                        "title": _("Delivery Zones"),
+                        "icon": "local_shipping",
+                        "link": reverse_lazy("admin:restaurants_deliveryzone_changelist"),
+                    },
+                ],
+            },
+            {
                 "title": _("Finance"),
                 "separator": True,
                 "collapsible": True,
