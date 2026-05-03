@@ -17,3 +17,6 @@ class OperationalZoneAdmin(ModelAdmin, GISModelAdmin):
             'default_zoom': 14,
         }
     }
+
+    class Media:
+        js = ('admin/js/geo_locate.js',)

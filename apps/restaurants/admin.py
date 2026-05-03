@@ -34,6 +34,9 @@ class DeliveryZoneAdmin(GISModelAdmin, ModelAdmin):
         }
     }
 
+    class Media:
+        js = ('admin/js/geo_locate.js',)
+
 @admin.register(Restaurant)
 class RestaurantAdmin(GISModelAdmin, ModelAdmin):
     list_display = ('display_header', 'location', 'show_active', 'food_count', 'created_at')
@@ -53,6 +56,9 @@ class RestaurantAdmin(GISModelAdmin, ModelAdmin):
             'default_zoom': 14,
         }
     }
+
+    class Media:
+        js = ('admin/js/geo_locate.js',)
 
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
