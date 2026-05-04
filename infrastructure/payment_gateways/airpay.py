@@ -60,6 +60,7 @@ class AirpayGateway(PaymentGateway):
                     # Extra fields for the official Flutter SDK to handle its own OAuth/Encryption
                     'secret_key': self.secret,
                     'aes_key': aes_des_key,
+                    'proto_domain': 'https://payments.airpay.tz/',
                 }
             }
 
