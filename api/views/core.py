@@ -199,11 +199,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         if user.role == 'customer':
             return queryset.filter(customer=user)
         elif user.role == 'vendor':
-            # Vendors see orders for their restaurant(s). Show CREATED orders too.
-            return queryset.filter(restaurant__owner=user)
+            # Vendors only see paid orders
+            return queryset.filter(restaurant__owner=user, is_paid=True)
         elif user.role == 'driver':
             return queryset.filter(driver__user=user, is_paid=True)
-        return queryset
+        return queryset.filter(is_paid=True)
 
     @action(detail=False, methods=['GET'])
     def stats(self, request):

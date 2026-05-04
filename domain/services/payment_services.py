@@ -95,7 +95,9 @@ class CompletePaymentService:
                     if payment.order:
                         order = payment.order
                         order.is_paid = True
-                        order.save(update_fields=['is_paid'])
+                        from domain.fsm.order_fsm import OrderFSM
+                        order.status = OrderFSM.transition(order.status, 'CREATED')
+                        order.save(update_fields=['is_paid', 'status'])
                         
                         # Ledger Entry: Customer -> Platform (Held in Escrow)
                         Transaction.objects.create(

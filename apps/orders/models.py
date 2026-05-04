@@ -16,7 +16,7 @@ class Order(models.Model):
     zone = models.ForeignKey('restaurants.DeliveryZone', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     batch = models.ForeignKey('DeliveryBatch', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     
-    status = models.CharField(max_length=50, default='CREATED', db_index=True) 
+    status = models.CharField(max_length=50, default='PENDING_PAYMENT', db_index=True) 
     is_paid = models.BooleanField(default=False, db_index=True)
     is_settled = models.BooleanField(default=False, db_index=True)
     

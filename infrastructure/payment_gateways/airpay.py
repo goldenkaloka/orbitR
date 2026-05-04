@@ -61,8 +61,31 @@ class AirpayGateway(PaymentGateway):
                     'secret_key': self.secret,
                     'aes_key': aes_des_key,
                     'proto_domain': 'https://payments.airpay.tz/',
+                    'success_url': 'https://mwanachuo.tz/payment/success',
+                    'failed_url': 'https://mwanachuo.tz/payment/failed',
                 }
             }
+
+            # 3. Add Checksum (Required for Tanzania v4)
+            checksum_data = {
+                'mercid': self.mercid,
+                'orderid': order_reference,
+                'amount': formatted_amount,
+                'buyerEmail': result['params']['buyer_email'],
+                'buyerPhone': phone,
+                'buyerFirstName': result['params']['buyer_firstname'],
+                'buyerLastName': result['params']['buyer_lastname'],
+                'buyerAddress': result['params']['buyer_address'],
+                'buyerCity': result['params']['buyer_city'],
+                'buyerState': result['params']['buyer_state'],
+                'buyerCountry': 'Tanzania',
+                'buyerPinCode': '0000',
+                'currency': '834',
+                'isocurrency': 'TZS',
+                'chmod': result['params']['chmod'],
+            }
+            result['params']['checksum'] = self.transformer.checksum_cal(checksum_data)
+            return result
 
         except Exception as e:
             logger.error(f"Airpay Initiation Error: {str(e)}")
