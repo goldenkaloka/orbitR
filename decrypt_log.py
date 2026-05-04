@@ -15,8 +15,8 @@ def decrypt_string(encrypted_data, username, password):
     decrypted_data = cipher.decrypt(base64.b64decode(encrypted_data))
     return unpad(decrypted_data, AES.block_size).decode()
 
-# Log from the latest failure
-response_log = "f38c9413c19d94ebwb5gVmJ/Mr1/YpuDtUyXz+ENm8dyzt6n/Cjk6kB3uyI/7hODLSFeMKl7C71cuOQZDIQruPHGoNLr7Gb++yrf+4/khNVRusBwZfxLpPJ2Sxs5fkGRzJK/mD+DBWZ0pu3PRyYDLUskCN2105JFRFqGt7WqxCTQPgMLQKRGNd0UHrS2t37P8bq2PQ+6zKGXjQfVTtClRgQE4Ggs5nmeqcFvQ1monIlFj7/ojIr9EC1AGJjyi02bazRO3AquBU33MMoeOVOzuMLCVRO1B2yMUS3XpA=="
+# Log from the user request
+response_log = "892152d66f5394eak3Bqr9xIqw+IWAavt2b9/2QGiCfxVB8Di/euHZBSRwyAYUrVtnsm7FCOcjzlEII5T4mnnPnQY4vb9zPNUuWRKIB7KJb03phXCs/vt77UasG4GFYw0e4+luRMq7e+gX4IcmWGTLSIIIRdtLeTAx/P94h/UwVNegYDagWd4ww2yzg="
 
 try:
     print(decrypt_string(response_log, USERNAME, PASSWORD))
