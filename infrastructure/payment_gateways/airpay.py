@@ -22,6 +22,7 @@ class AirpayGateway(PaymentGateway):
         self.secret = self.config.get('SECRET_KEY')
         self.client_id = self.config.get('CLIENT_ID')
         self.client_secret = self.config.get('CLIENT_SECRET')
+        self.merchant_domain = self.config.get('MERCHANT_DOMAIN', 'mwanachuo.tz').replace('https://', '').replace('http://', '').split('/')[0]
         
         self.payment_url = 'https://payments.airpay.tz/pay/v1/index.php'
         self.embedded_url = 'https://payments.airpay.tz/pay/v1/embedded'
@@ -61,7 +62,7 @@ class AirpayGateway(PaymentGateway):
                 'walletflg': 'N',
                 'channel': 'pg',
                 'txnsubtype': '2',
-                'mer_dom': base64.b64encode('https://mwanachuo.tz'.encode()).decode()
+                'mer_dom': base64.b64encode(self.merchant_domain.encode()).decode()
             }
             
             # 3. Generate Security Keys

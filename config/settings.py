@@ -422,6 +422,7 @@ AIRPAY_CONFIG = {
     'SECRET_KEY': config('AIRPAY_SECRET_KEY', default=''),
     'CLIENT_ID': config('AIRPAY_CLIENT_ID', default=''),
     'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
+    'MERCHANT_DOMAIN': config('AIRPAY_MERCHANT_DOMAIN', default='mwanachuo.tz'),
     'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
 }
 
