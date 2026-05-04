@@ -134,7 +134,8 @@ class AirpayGateway(PaymentGateway):
         }
         
         # Calculate Checksum for OAuth (Alphabetical: client_id, client_secret, grant_type, merchant_id)
-        current_date = timezone.now().strftime("%Y-%m-%d")
+        # Use System Local Time (matching the successful test_airpay_token.py)
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
         all_data = f"{self.client_id}{self.client_secret}client_credentials{self.mercid}{current_date}"
         checksum = hashlib.sha256(all_data.encode()).hexdigest()
         
@@ -149,15 +150,24 @@ class AirpayGateway(PaymentGateway):
             }, timeout=10)
             
             if response.status_code == 200:
-                res_data = response.json()
-                # Note: Response might be encrypted, but usually oauth2 response is plain JSON if successful
-                if res_data.get('status') == 'success':
-                    token = res_data.get('data', {}).get('access_token')
-                    if token:
-                        cache.set(cache_key, token, 3500) # Expire slightly before 1 hour
-                        return token
-            
-            logger.error(f"Airpay Token Fetch Failed: {response.text}")
+                res_json = response.json()
+                if 'response' in res_json:
+                    decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
+                    res_data = json.loads(decrypted)
+                    
+                    if res_data.get('status') == 'success' or res_data.get('data', {}).get('status') == 'success':
+                        token = res_data.get('data', {}).get('access_token')
+                        if token:
+                            cache.set(cache_key, token, 3500)
+                            return token
+                    
+                    # Detailed Error Logging
+                    error_msg = res_data.get('data', {}).get('message') or res_data.get('message')
+                    logger.error(f"Airpay Auth Failed: {error_msg} (Ref: {res_data.get('data', {}).get('error_code')})")
+                else:
+                    logger.error(f"Airpay Response missing 'response' field: {res_json}")
+            else:
+                logger.error(f"Airpay Kraken HTTP {response.status_code}: {response.text}")
             return ""
         except Exception as e:
             logger.error(f"Airpay Token Error: {str(e)}")
