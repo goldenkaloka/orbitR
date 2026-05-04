@@ -20,6 +20,8 @@ class AirpayGateway(PaymentGateway):
         self.username = self.config.get('USERNAME')
         self.password = self.config.get('PASSWORD')
         self.secret = self.config.get('SECRET_KEY')
+        self.client_id = self.config.get('CLIENT_ID')
+        self.client_secret = self.config.get('CLIENT_SECRET')
         
         self.payment_url = 'https://payments.airpay.tz/pay/v1/index.php'
         self.embedded_url = 'https://payments.airpay.tz/pay/v1/embedded'
@@ -34,58 +36,49 @@ class AirpayGateway(PaymentGateway):
         try:
             formatted_amount = "{:.2f}".format(float(amount))
             
-            # 1. Generate core params that the SDK needs
-            # The Flutter SDK (UserRequest) needs these to recalculate hashes if needed
+            # 1. Fetch OAuth Token (Required for Embedded v1)
+            token = self._get_token()
+            
+            # 2. Prepare Data for Encryption
+            payload = {
+                'orderid': order_reference,
+                'amount': formatted_amount,
+                'currency_code': '834',
+                'iso_currency': 'tzs',
+                'buyer_email': kwargs.get('buyer_email', 'customer@mwanachuo.tz'),
+                'buyer_phone': phone,
+                'buyer_firstname': kwargs.get('buyer_firstname', 'Mwanachuo'),
+                'buyer_lastname': kwargs.get('buyer_lastname', 'User'),
+                'buyer_address': kwargs.get('buyer_address', 'Dar es Salaam'),
+                'buyer_city': kwargs.get('buyer_city', 'Dar es Salaam'),
+                'buyer_state': kwargs.get('buyer_state', 'Dar es Salaam'),
+                'buyer_country': 'Tanzania',
+                'buyer_pincode': '0000',
+                'chmod': kwargs.get('chmod', ''), # Blank for all options
+                'walletflg': 'N',
+                'channel': 'pg',
+                'txnsubtype': '2',
+                'mer_dom': base64.b64encode('https://mwanachuo.tz'.encode()).decode()
+            }
+            
+            # 3. Generate Security Keys
             private_key = self.transformer.encrypt_sha(self.username + ":|:" + self.password, self.secret)
+            enc_data = self.transformer.encrypt_string(json.dumps(payload), self.username, self.password)
+            checksum = self.transformer.checksum_cal(payload)
             
-            # The 'aesDeskey' expected by Flutter SDK is the raw string that gets MD5ed
-            aes_des_key = f"{self.username}~:~{self.password}"
-            
-            # 2. Return parameters for Flutter SDK
             return {
                 'success': True,
                 'params': {
                     'merchant_id': self.mercid,
                     'privatekey': private_key,
-                    'order_id': order_reference,
-                    'amount': formatted_amount,
-                    'buyer_phone': phone,
-                    'buyer_email': kwargs.get('buyer_email', 'customer@mwanachuo.tz'),
-                    'buyer_firstname': kwargs.get('buyer_firstname', 'Mwanachuo'),
-                    'buyer_lastname': kwargs.get('buyer_lastname', 'User'),
-                    'buyer_address': kwargs.get('buyer_address', 'Dar es Salaam'),
-                    'buyer_city': kwargs.get('buyer_city', 'Dar es Salaam'),
-                    'buyer_state': kwargs.get('buyer_state', 'Dar es Salaam'),
-                    'chmod': kwargs.get('chmod', ''),
-                    # Extra fields for the official Flutter SDK to handle its own OAuth/Encryption
-                    'secret_key': self.secret,
-                    'aes_key': aes_des_key,
-                    'proto_domain': 'https://payments.airpay.tz/',
+                    'encdata': enc_data,
+                    'checksum': checksum,
+                    'token': token,
+                    'order_id': order_reference, # For UI/Tracking
                     'success_url': 'https://mwanachuo.tz/payment/success',
                     'failed_url': 'https://mwanachuo.tz/payment/failed',
                 }
             }
-
-            # 3. Add Checksum (Required for Tanzania v4)
-            checksum_data = {
-                'mercid': self.mercid,
-                'orderid': order_reference,
-                'amount': formatted_amount,
-                'buyerEmail': result['params']['buyer_email'],
-                'buyerPhone': phone,
-                'buyerFirstName': result['params']['buyer_firstname'],
-                'buyerLastName': result['params']['buyer_lastname'],
-                'buyerAddress': result['params']['buyer_address'],
-                'buyerCity': result['params']['buyer_city'],
-                'buyerState': result['params']['buyer_state'],
-                'buyerCountry': 'Tanzania',
-                'buyerPinCode': '0000',
-                'currency': '834',
-                'isocurrency': 'TZS',
-                'chmod': result['params']['chmod'],
-            }
-            result['params']['checksum'] = self.transformer.checksum_cal(checksum_data)
-            return result
 
         except Exception as e:
             logger.error(f"Airpay Initiation Error: {str(e)}")
@@ -118,3 +111,54 @@ class AirpayGateway(PaymentGateway):
 
     def refund(self, transaction_id, amount):
         return {'success': False, 'error': 'Refund not yet implemented'}
+
+    def _get_token(self):
+        """
+        Fetches OAuth2 token from Kraken Tanzania.
+        """
+        cache_key = f"airpay_token_{self.mercid}"
+        token = cache.get(cache_key)
+        if token:
+            return token
+
+        import datetime
+        from django.utils import timezone
+        
+        oauth_url = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth2/"
+        
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "client_credentials",
+            "merchant_id": int(self.mercid)
+        }
+        
+        # Calculate Checksum for OAuth (Alphabetical: client_id, client_secret, grant_type, merchant_id)
+        current_date = timezone.now().strftime("%Y-%m-%d")
+        all_data = f"{self.client_id}{self.client_secret}client_credentials{self.mercid}{current_date}"
+        checksum = hashlib.sha256(all_data.encode()).hexdigest()
+        
+        # Encrypt Payload
+        enc_data = self.transformer.encrypt_string(json.dumps(payload), self.username, self.password)
+        
+        try:
+            response = requests.post(oauth_url, data={
+                'merchant_id': self.mercid,
+                'checksum': checksum,
+                'encdata': enc_data
+            }, timeout=10)
+            
+            if response.status_code == 200:
+                res_data = response.json()
+                # Note: Response might be encrypted, but usually oauth2 response is plain JSON if successful
+                if res_data.get('status') == 'success':
+                    token = res_data.get('data', {}).get('access_token')
+                    if token:
+                        cache.set(cache_key, token, 3500) # Expire slightly before 1 hour
+                        return token
+            
+            logger.error(f"Airpay Token Fetch Failed: {response.text}")
+            return ""
+        except Exception as e:
+            logger.error(f"Airpay Token Error: {str(e)}")
+            return ""

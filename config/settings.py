@@ -420,6 +420,8 @@ AIRPAY_CONFIG = {
     'USERNAME': os.getenv('AIRPAY_USERNAME', ''),
     'PASSWORD': os.getenv('AIRPAY_PASSWORD', ''),
     'SECRET_KEY': os.getenv('AIRPAY_SECRET_KEY', ''),
+    'CLIENT_ID': os.getenv('AIRPAY_CLIENT_ID', ''),
+    'CLIENT_SECRET': os.getenv('AIRPAY_CLIENT_SECRET', ''),
     'SANDBOX': os.getenv('PAYMENT_SANDBOX', 'True') == 'True',
 }
 
