@@ -416,13 +416,13 @@ UNFOLD = {
 
 
 AIRPAY_CONFIG = {
-    'MERCHANT_ID': os.getenv('AIRPAY_MERCHANT_ID', ''),
-    'USERNAME': os.getenv('AIRPAY_USERNAME', ''),
-    'PASSWORD': os.getenv('AIRPAY_PASSWORD', ''),
-    'SECRET_KEY': os.getenv('AIRPAY_SECRET_KEY', ''),
-    'CLIENT_ID': os.getenv('AIRPAY_CLIENT_ID', ''),
-    'CLIENT_SECRET': os.getenv('AIRPAY_CLIENT_SECRET', ''),
-    'SANDBOX': os.getenv('PAYMENT_SANDBOX', 'True') == 'True',
+    'MERCHANT_ID': config('AIRPAY_MERCHANT_ID', default=''),
+    'USERNAME': config('AIRPAY_USERNAME', default=''),
+    'PASSWORD': config('AIRPAY_PASSWORD', default=''),
+    'SECRET_KEY': config('AIRPAY_SECRET_KEY', default=''),
+    'CLIENT_ID': config('AIRPAY_CLIENT_ID', default=''),
+    'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
+    'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
 }
 
 # SMS & Notifications
