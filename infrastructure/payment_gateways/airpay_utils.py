@@ -1,131 +1,103 @@
 import hashlib
 import json
 import base64
-from datetime import datetime
+import datetime
+import logging
+import zlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
-import os
+from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 class AirpayTransformer:
     """
-    Utility class for Airpay Tanzania's Cryptography requirements:
-    - AES-256-CBC Encryption (PKCS5Padding)
-    - Checksum generation (SHA-256)
+    Official Airpay Python Integration Logic (v4)
+    Ref: airpay_pythont_tz_v4/sendtoairpaypage.py and responsefromairpay.py
     """
 
     @staticmethod
-    def encrypt(data_str: str, secret_key: str) -> str:
+    def encrypt_string(my_string, username, password):
         """
-        Encrypts data using AES-256-CBC.
-        Implementation matches Airpay PHP sample:
-        1. Generate 8 random bytes, hex encode to get 16-byte IV.
-        2. Encrypt with PKCS5 padding.
-        3. Prepend hex-IV to base64-encoded encrypted data.
+        Official encryption logic using AES-CBC with a hardcoded IV.
         """
-        # Generate random 8 bytes and hex encode to get 16 chars (16 bytes for IV)
-        iv_hex = os.urandom(8).hex() # 16 chars
-        iv_bytes = iv_hex.encode('utf-8')
+        secret_key = hashlib.md5((username + "~:~" + password).encode()).hexdigest()
         
-        # Key must be 32 bytes for AES-256
-        # According to docs, the key is md5(username . "~:~" . password)
-        # Note: If secret_key is already the MD5, use it. 
-        # But we'll ensure it's handled.
-        key_bytes = secret_key.encode('utf-8')
-        
-        cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
-        
-        # Pad data (PKCS5 is equivalent to PKCS7 with block size 16)
-        padded_data = pad(data_str.encode('utf-8'), AES.block_size)
-        
-        encrypted_bytes = cipher.encrypt(padded_data)
-        
-        # Airpay format: IV_HEX + Base64(Encrypted_Bytes)
-        return iv_hex + base64.b64encode(encrypted_bytes).decode('utf-8')
+        # Official sample uses this hardcoded IV
+        iv = 'c0f9e2d16031b0ce'  
+
+        # Pad the request data and encrypt using AES-CBC with the generated key and IV
+        cipher = AES.new(secret_key.encode(), AES.MODE_CBC, iv.encode())
+        encrypted_data = cipher.encrypt(pad(my_string.encode(), AES.block_size))
+
+        # Combine IV and encrypted data, then base64 encode
+        data = iv + base64.b64encode(encrypted_data).decode()
+        return data
 
     @staticmethod
-    def decrypt(encrypted_str: str, secret_key: str) -> dict:
+    def decrypt_string(encrypted_data, username, password):
         """
-        Decrypts data from Airpay response.
-        1. Extract first 16 chars as IV.
-        2. Decrypt the rest (Base64 decoded).
+        Official decryption logic.
         """
-        try:
-            iv_hex = encrypted_str[:16]
-            iv_bytes = iv_hex.encode('utf-8')
-            
-            encrypted_payload = encrypted_str[16:]
-            encrypted_bytes = base64.b64decode(encrypted_payload)
-            
-            key_bytes = secret_key.encode('utf-8')
-            
-            cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
-            
-            decrypted_padded = cipher.decrypt(encrypted_bytes)
-            decrypted_data = unpad(decrypted_padded, AES.block_size)
-            
-            return json.loads(decrypted_data.decode('utf-8'))
-        except Exception as e:
-            raise ValueError(f"Airpay Decryption Failed: {str(e)}")
+        secret_key = hashlib.md5((username + "~:~" + password).encode()).hexdigest()
+        iv = encrypted_data[:16]
+        encrypted_data = encrypted_data[16:]
+
+        # Decrypt the data using AES-CBC with the given IV and secret key
+        cipher = AES.new(secret_key.encode(), AES.MODE_CBC, iv.encode())
+        decrypted_data = cipher.decrypt(base64.b64decode(encrypted_data))
+
+        # Remove padding from the decrypted data
+        unpadded_data = unpad(decrypted_data, AES.block_size)
+        return unpadded_data.decode()
 
     @staticmethod
-    def calculate_checksum(data_dict: dict, date_str: str = None) -> str:
+    def encrypt_sha(data, salt):
         """
-        Generates checksum for Airpay Tanzania.
-        Formula: SHA-256(Concatenated Values of Sorted Keys + YYYY-MM-DD)
+        Official SHA-256 wrapper.
+        Used for Private Key: sha256(secret + "@" + data)
         """
-        if date_str is None:
-            date_str = datetime.now().strftime('%Y-%m-%d')
-            
-        # Sort keys alphabetically
-        sorted_keys = sorted(data_dict.keys())
-        # Concatenate all values
-        combined_values = "".join(str(data_dict[k]) for k in sorted_keys)
-        
-        checksum_base = combined_values + date_str
-        return hashlib.sha256(checksum_base.encode('utf-8')).hexdigest()
+        key = hashlib.sha256((salt + '@' + data).encode()).hexdigest()
+        return key
 
     @staticmethod
-    def verify_secure_hash(received_hash, data_dict, username):
+    def checksum_cal(post_data):
         """
-        Verifies Airpay ap_SecureHash using CRC32.
-        Formula: crc32(TRANSACTIONID. : .APTRANSACTIONID. : .AMOUNT. : .TRANSACTIONSTATUS. : .MESSAGE. : .MID. : .USERNAME)
-        Note: Separator is " : "
+        Official checksum calculation for initiation.
+        SHA-256 of sorted values + date.
         """
-        import zlib
-        
-        # Ensure values are strings and handle None
-        def s(val): return str(val) if val is not None else ""
-        
-        # The fields must be in this specific order
-        base_str = (
-            s(data_dict.get('orderid')) + " : " +
-            s(data_dict.get('ap_transactionid')) + " : " +
-            s(data_dict.get('amount')) + " : " +
-            s(data_dict.get('transaction_payment_status')) + " : " +
-            s(data_dict.get('message')) + " : " +
-            s(data_dict.get('merchant_id')) + " : " +
-            s(username)
-        )
-        
-        # Calculate CRC32 and compare
-        calculated_hash = zlib.crc32(base_str.encode('utf-8')) & 0xFFFFFFFF
-        return str(received_hash) == str(calculated_hash)
+        sorted_data = sorted(post_data.items(), key=lambda x: x[0])
+        data_str = ''.join([str(value) for _, value in sorted_data])
+        # Append current date in YYYY-MM-DD
+        data_to_hash = data_str + datetime.datetime.now().strftime("%Y-%m-%d")
+        return hashlib.sha256(data_to_hash.encode()).hexdigest()
 
     @staticmethod
-    def generate_token(username, password, secret, transaction_id, api_key):
+    def verify_checksum_v4(data, mercid, username):
         """
-        Special Token logic for Airpay Split Payout API:
-        PRIVATE_KEY = hash('SHA256', APIKEY.'@'.USERNAME.’:|:’.PASSWORD);
-        Token generation logic = hash_hmac('sha256',PRIVATE_KEY.TRANSACTION_ID,APIKEY);
+        Official callback verification logic using CRC32.
+        Ref: responsefromairpay.py:87
         """
-        import hmac
+        transaction_id = data.get('orderid', '').strip()
+        ap_transaction_id = data.get('ap_transactionid', '').strip()
+        amount = data.get('amount', '').strip()
+        status = data.get('transaction_status', '').strip()
+        message = data.get('message', '').strip()
+        received_hash = str(data.get('ap_securehash', '')).strip()
         
-        # Step 1: Private Key
-        pk_base = f"{api_key}@{username}:|:{password}"
-        private_key = hashlib.sha256(pk_base.encode('utf-8')).hexdigest()
+        chmod = data.get('chmod', '').strip()
+        customervpa = ""
+        if chmod.lower() == "upi":
+            vpa = data.get('CUSTOMERVPA', '').strip()
+            if vpa:
+                customervpa = ":" + vpa
+
+        # Official string format for CRC32
+        hash_string = f"{transaction_id}:{ap_transaction_id}:{amount}:{status}:{message}:{mercid}:{username}{customervpa}"
         
-        # Step 2: Hmac SHA256
-        msg = f"{private_key}{transaction_id}"
-        token = hmac.new(api_key.encode('utf-8'), msg.encode('utf-8'), hashlib.sha256).hexdigest()
+        # Calculating the CRC32 hash
+        merchant_secure_hash = zlib.crc32(hash_string.encode())
+        # Converting to unsigned integer
+        merchant_secure_hash = merchant_secure_hash & 0xffffffff
         
-        return token
+        return str(merchant_secure_hash) == received_hash

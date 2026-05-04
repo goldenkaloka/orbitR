@@ -39,18 +39,7 @@ class InitiatePaymentService:
             )
             
             # Update payment with provider info if returned
-            if response.get('instant_success'):
-                # Handle instant success from MockPaymentGateway
-                payment.provider_reference = response.get('transactionId')
-                payment.save()
-                
-                # Directly mark it as collected
-                CompletePaymentService.execute(
-                    provider_reference=payment.provider_reference,
-                    success=True,
-                    rrn=f"MOCK_RRN_{payment.id}"
-                )
-            elif response.get('success'):
+            if response.get('success'):
                 payment.provider_reference = response.get('transactionId') or response.get('provider_ref')
                 payment.save()
                 
@@ -75,7 +64,7 @@ class CompletePaymentService:
     Called by the Airpay webhook and the Mock payment endpoint.
     """
     @staticmethod
-    def execute(order_id=None, provider_reference=None, metadata=None):
+    def execute(order_id=None, provider_reference=None, success=True, rrn=None):
         try:
             with transaction.atomic():
                 payment = None

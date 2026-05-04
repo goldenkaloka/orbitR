@@ -416,27 +416,23 @@ UNFOLD = {
 
 
 AIRPAY_CONFIG = {
-    'MERCHANT_ID': os.getenv('AIRPAY_MERCHANT_ID', 'MWANACHUO_DEMO'),
-    'SECRET_KEY': os.getenv('AIRPAY_SECRET', 'demo_secret_123'),
-    'USERNAME': os.getenv('AIRPAY_USERNAME', 'demo_user'),
-    'PASSWORD': os.getenv('AIRPAY_PASSWORD', 'demo_pass'),
-    'SECRET': os.getenv('AIRPAY_PRIVATE_SECRET', 'demo_private'),
-    'CLIENT_ID': os.getenv('AIRPAY_CLIENT_ID', 'demo_client'),
-    'CLIENT_SECRET': os.getenv('AIRPAY_CLIENT_SECRET', 'demo_client_secret'),
+    'MERCHANT_ID': os.getenv('AIRPAY_MERCHANT_ID', ''),
+    'USERNAME': os.getenv('AIRPAY_USERNAME', ''),
+    'PASSWORD': os.getenv('AIRPAY_PASSWORD', ''),
+    'SECRET_KEY': os.getenv('AIRPAY_SECRET_KEY', ''),
     'SANDBOX': os.getenv('PAYMENT_SANDBOX', 'True') == 'True',
-    'MOCK': os.getenv('PAYMENT_MOCK', 'True') == 'True',
-    'ALLOW_MOCK_IN_PROD': os.getenv('ALLOW_MOCK_IN_PROD', 'False') == 'True',
 }
 
-# Notifications Configuration
-ONESIGNAL_APP_ID = config('ONESIGNAL_APP_ID', default='')
-ONESIGNAL_REST_API_KEY = config('ONESIGNAL_REST_API_KEY', default='')
+# SMS & Notifications
+BEEM_CONFIG = {
+    'API_KEY': os.getenv('BEEM_API_KEY', ''),
+    'SECRET_KEY': os.getenv('BEEM_SECRET_KEY', ''),
+    'SENDER_ID': os.getenv('BEEM_SENDER_ID', 'INFO'),
+}
 
-# SMS Gateway Configuration (Africa's Talking)
-AFRICASTALKING_USERNAME = config('AFRICASTALKING_USERNAME', default='sandbox')
-AFRICASTALKING_API_KEY = config('AFRICASTALKING_API_KEY', default='')
-AFRICASTALKING_SENDER_ID = config('AFRICASTALKING_SENDER_ID', default='')
-MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
+# OneSignal
+ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID', '')
+ONESIGNAL_REST_API_KEY = os.getenv('ONESIGNAL_REST_API_KEY', '')
 
 
 CACHES = {

@@ -6,65 +6,61 @@ from infrastructure.payment_gateways.airpay import AirpayGateway
 from infrastructure.payment_gateways.airpay_utils import AirpayTransformer
 from django.conf import settings
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
 class AirpayWebhookView(APIView):
+    """
+    Airpay Tanzania Webhook Handler (v4 Official Logic).
+    """
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
-        """
-        Airpay Callback Handler
-        Decrypts the response and completes the payment.
-        """
-        encrypted_response = request.data.get('response')
-        if not encrypted_response:
-            return Response({"error": "Missing response"}, status=400)
+        # Airpay v4 usually sends a POST with a 'response' field containing encrypted data
+        response_data = request.data.get('response')
+        
+        if not response_data:
+            logger.error("Airpay Webhook: No 'response' field found in payload")
+            return Response({"status": "error", "message": "Missing response"}, status=400)
 
+        gateway = AirpayGateway()
+        
         try:
-            # Decrypt the Airpay payload
-            data = AirpayTransformer.decrypt(encrypted_response, settings.AIRPAY_CONFIG['SECRET_KEY'])
-            logger.info(f"Airpay Webhook Decrypted: {data}")
-
-            # Verify Secure Hash (CRC32)
-            received_hash = data.get('ap_SecureHash')
-            if not received_hash:
-                logger.warning("Airpay Webhook received without ap_SecureHash field.")
-                return Response({"error": "Missing Secure Hash"}, status=401)
-                
-            is_valid = AirpayTransformer.verify_secure_hash(
-                received_hash, 
-                data, 
-                settings.AIRPAY_CONFIG['USERNAME']
+            # 1. Decrypt and Verify
+            # The Gateway.verify method now handles decryption and CRC32 verification
+            decrypted_json = AirpayTransformer.decrypt_string(
+                response_data, 
+                gateway.username, 
+                gateway.password
             )
-            if not is_valid:
-                logger.warning(f"Airpay SecureHash Mismatch! Received: {received_hash}")
-                return Response({"error": "Invalid Secure Hash"}, status=401)
+            data_dict = json.loads(decrypted_json)
+            actual_data = data_dict.get('data', {})
+            
+            logger.info(f"Airpay Webhook Decrypted: {actual_data}")
 
-            order_id = data.get('orderid')
-            ap_transactionid = data.get('ap_transactionid')
-            rrn = data.get('rrn')
-            status_desc = str(data.get('transaction_payment_status')).upper()
+            # 2. Check CRC32 Hash
+            if not AirpayTransformer.verify_checksum_v4(actual_data, gateway.mercid, gateway.username):
+                logger.error("Airpay Webhook: CRC32 Verification Failed")
+                return Response({"status": "error", "message": "Invalid Secure Hash"}, status=400)
 
-            if order_id or ap_transactionid:
-                from apps.payments.models import Payment
-                # Idempotency check at view level
-                if ap_transactionid and Payment.objects.filter(provider_reference=ap_transactionid, status__in=['COLLECTED', 'RELEASE_READY', 'DISBURSED']).exists():
-                    logger.info(f"Duplicate Airpay webhook for {ap_transactionid} ignored.")
-                    return Response({"status": "success", "detail": "Already processed"}, status=200)
+            # 3. Extract Order Details
+            status = actual_data.get('transaction_status')
+            order_id = actual_data.get('orderid')
+            ap_transaction_id = actual_data.get('ap_transactionid')
+            
+            success = status == '200'
 
-                success = status_desc == 'SUCCESS'
-                CompletePaymentService.execute(
-                    provider_reference=ap_transactionid,
-                    success=success,
-                    order_id=order_id,
-                    rrn=rrn
-                )
-                return Response({"status": "success"}, status=200)
+            CompletePaymentService.execute(
+                provider_reference=ap_transaction_id,
+                success=success,
+                order_id=order_id,
+            )
+            
+            return Response({"status": "success"}, status=200)
 
         except Exception as e:
             logger.error(f"Error processing Airpay webhook: {str(e)}")
             return Response({"error": str(e)}, status=500)
 
-        return Response({"error": "Invalid Payload"}, status=400)
 

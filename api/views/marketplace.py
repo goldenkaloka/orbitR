@@ -58,7 +58,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def pay(self, request, pk=None):
         """
-        Initiates payment for the marketplace listing fee via Airpay.
+        Initiates payment for the marketplace listing fee via EasyPay.
         """
         from infrastructure.payment_gateways.factory import get_payment_gateway
         from apps.payments.models import Payment
@@ -79,7 +79,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             }
         )
         
-        # Initiate via Airpay
+        # Initiate via EasyPay
         response = gateway.collect(
             amount=fee,
             phone=request.user.phone,

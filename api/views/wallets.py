@@ -20,7 +20,7 @@ class WalletViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['POST'])
     def cashout(self, request):
-        # This is where we would call the Airpay Payout API
+        # This is where we would call the EasyPay Payout API
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
         if wallet.balance <= 0:
             return Response({"error": "Insufficient balance"}, status=400)
