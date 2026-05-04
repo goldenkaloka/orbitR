@@ -5,7 +5,7 @@ import json
 import base64
 from django.conf import settings
 from django.core.cache import cache
-from .payment_gateway import PaymentGateway
+from .base import PaymentGateway
 from .airpay_utils import AirpayTransformer
 
 logger = logging.getLogger(__name__)
@@ -83,6 +83,14 @@ class AirpayGateway(PaymentGateway):
                 return False
         
         return self.transformer.verify_checksum_v4(response_data, self.mercid, self.username)
+
+    def disburse(self, amount, account_info, reference, **kwargs):
+        logger.warning(f"Airpay Disburse called for {reference}, but not yet implemented.")
+        return {'success': False, 'error': 'Split settlement / Disbursement not yet implemented for Airpay v4'}
+
+    def get_status(self, provider_reference):
+        logger.warning(f"Airpay Get Status called for {provider_reference}, but not yet implemented.")
+        return {'success': False, 'error': 'Status query not yet implemented'}
 
     def refund(self, transaction_id, amount):
         return {'success': False, 'error': 'Refund not yet implemented'}
