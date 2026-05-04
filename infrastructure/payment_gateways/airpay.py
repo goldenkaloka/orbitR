@@ -40,8 +40,11 @@ class AirpayGateway(PaymentGateway):
             token = self._get_token()
             
             # 2. Prepare Data for Encryption
+            # Sanitize order_reference for Airpay (Alphanumeric 1-30)
+            sanitized_order_id = str(order_reference).replace('-', '')[:20]
+            
             payload = {
-                'orderid': order_reference,
+                'orderid': sanitized_order_id,
                 'amount': formatted_amount,
                 'currency_code': '834',
                 'iso_currency': 'tzs',
