@@ -111,6 +111,7 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
     'apps.core.middleware.ForceHTTPImagesMiddleware',
+    'apps.core.perf_middleware.RequestTimingMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
@@ -451,6 +452,23 @@ CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/
 CELERY_RESULT_BACKEND = config('CELERY_BROKER_URL', default='redis://127.0.0.1:6379/0')
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+
+# Keep Redis result backend bounded
+CELERY_RESULT_EXPIRES = config('CELERY_RESULT_EXPIRES', default=3600, cast=int)  # seconds
+
+# Worker safety + fairness defaults (can be overridden per environment)
+CELERY_WORKER_PREFETCH_MULTIPLIER = config('CELERY_WORKER_PREFETCH_MULTIPLIER', default=1, cast=int)
+CELERY_TASK_ACKS_LATE = config('CELERY_TASK_ACKS_LATE', default=True, cast=bool)
+CELERY_TASK_REJECT_ON_WORKER_LOST = config('CELERY_TASK_REJECT_ON_WORKER_LOST', default=True, cast=bool)
+CELERY_WORKER_MAX_TASKS_PER_CHILD = config('CELERY_WORKER_MAX_TASKS_PER_CHILD', default=200, cast=int)
+CELERY_TASK_SOFT_TIME_LIMIT = config('CELERY_TASK_SOFT_TIME_LIMIT', default=60, cast=int)
+CELERY_TASK_TIME_LIMIT = config('CELERY_TASK_TIME_LIMIT', default=120, cast=int)
+CELERY_TASK_DEFAULT_QUEUE = config('CELERY_TASK_DEFAULT_QUEUE', default='default')
+CELERY_TASK_ROUTES = {
+    'apps.payments.tasks.*': {'queue': 'payments'},
+    'domain.services.dispatch_tasks.*': {'queue': 'dispatch'},
+}
 
 # Production: Route tasks to Celery workers for true async processing
 CELERY_TASK_ALWAYS_EAGER = False
@@ -481,6 +499,36 @@ CHANNEL_LAYERS = {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
             "hosts": [config('REDIS_URL', default='redis://127.0.0.1:6379/1')],
+        },
+    },
+}
+
+PERF_SLOW_REQUEST_MS = config("PERF_SLOW_REQUEST_MS", default=700, cast=int)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "default": {
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "default",
+        }
+    },
+    "loggers": {
+        "perf.request": {
+            "handlers": ["console"],
+            "level": config("PERF_REQUEST_LOG_LEVEL", default="WARNING"),
+            "propagate": False,
+        },
+        "perf.celery": {
+            "handlers": ["console"],
+            "level": config("PERF_CELERY_LOG_LEVEL", default="INFO"),
+            "propagate": False,
         },
     },
 }

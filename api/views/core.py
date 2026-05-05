@@ -13,12 +13,12 @@ from apps.delivery.models import Driver
 from apps.wallets.models import Wallet
 from apps.core.models import Notification
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, get_neighbors
-import h3
+from apps.core.cache_keys import stable_cache_key
 
 from api.serializers.core import (
     UserSerializer, RestaurantSerializer, OrderSerializer, 
     DriverSerializer, FoodSerializer, NotificationSerializer,
-    DisputeSerializer
+    DisputeSerializer, RestaurantListSerializer
 )
 
 from django.core.cache import cache
@@ -99,8 +99,16 @@ class FoodViewSet(viewsets.ModelViewSet):
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
 
+    def get_serializer_class(self):
+        # Avoid heavy nested payloads on list endpoints.
+        if getattr(self, "action", None) == "list":
+            return RestaurantListSerializer
+        return RestaurantSerializer
+
     def get_queryset(self):
-        queryset = Restaurant.objects.select_related('owner').prefetch_related('foods').filter(is_active=True)
+        queryset = Restaurant.objects.select_related('owner').filter(is_active=True)
+        if getattr(self, "action", None) in ("retrieve", "mine"):
+            queryset = queryset.prefetch_related('foods')
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
@@ -113,12 +121,27 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             if user_h3:
                 # Include neighbors for a better user experience
                 neighbor_cells = get_neighbors(user_h3, 1)
-                queryset = queryset.filter(h3_index__in=neighbor_cells)
+                if neighbor_cells:
+                    queryset = queryset.filter(h3_index__in=neighbor_cells)
         return queryset
 
     def list(self, request, *args, **kwargs):
         category = request.query_params.get('category', 'all').lower()
-        cache_key = f"restaurant_list_{category}"
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION) if (lat and lng) else None
+        limit = request.query_params.get('limit')
+        offset = request.query_params.get('offset')
+
+        cache_key = stable_cache_key(
+            "restaurant_list",
+            {
+                "category": category,
+                "h3": user_h3 or "none",
+                "limit": limit or "default",
+                "offset": offset or "0",
+            },
+        )
         cached_data = cache.get(cache_key)
         if cached_data:
             return Response(cached_data)
@@ -136,7 +159,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(cached_data)
 
         try:
-            restaurant = Restaurant.objects.get(owner=request.user)
+            restaurant = Restaurant.objects.select_related('owner').prefetch_related('foods').get(owner=request.user)
             data = RestaurantSerializer(restaurant).data
             cache.set(cache_key, data, 3600) # Cache for 1 hour
             return Response(data)
@@ -226,7 +249,9 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         from django.db.models import Sum, Count
         from django.utils import timezone
-        today = timezone.now().date()
+        now = timezone.now()
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + timezone.timedelta(days=1)
         
         user = request.user
         wallet, _ = Wallet.objects.get_or_create(user=user)
@@ -234,7 +259,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         data = {}
         try:
             if user.role == 'vendor':
-                orders = Order.objects.filter(restaurant__owner=user, created_at__date=today, is_paid=True)
+                orders = Order.objects.filter(
+                    restaurant__owner=user,
+                    created_at__gte=start_of_day,
+                    created_at__lt=end_of_day,
+                    is_paid=True,
+                )
                 revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
                 count = orders.count()
                 data = {
@@ -245,7 +275,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "pending_payout": float(wallet.pending_balance)
                 }
             elif user.role == 'driver':
-                orders = Order.objects.filter(driver__user=user, created_at__date=today, is_paid=True)
+                orders = Order.objects.filter(
+                    driver__user=user,
+                    created_at__gte=start_of_day,
+                    created_at__lt=end_of_day,
+                    is_paid=True,
+                )
                 earnings = orders.filter(status='DELIVERED').aggregate(Sum('delivery_fee'))['delivery_fee__sum'] or 0
                 count = orders.count()
                 data = {
@@ -274,7 +309,10 @@ class OrderViewSet(viewsets.ModelViewSet):
             if driver.h3_index:
                 # Show jobs in driver's cell and immediate neighbors
                 neighbor_cells = get_neighbors(driver.h3_index, 1)
-                queryset = Order.objects.filter(h3_index__in=neighbor_cells)
+                if neighbor_cells:
+                    queryset = Order.objects.filter(h3_index__in=neighbor_cells)
+                else:
+                    queryset = Order.objects.all()
             else:
                 queryset = Order.objects.all()
         except Driver.DoesNotExist:

@@ -103,6 +103,19 @@ Run the test suite using `pytest`:
 pytest
 ```
 
+### Load testing (Locust)
+Use Locust to baseline p95/p99 latency on critical endpoints:
+```bash
+locust -f loadtests/locustfile.py --host http://localhost:8000
+```
+Then open [http://localhost:8089](http://localhost:8089), run 20-100 users, and compare p95 after each optimization.
+
+### Performance logging
+Set these environment variables to tune runtime observability:
+- `PERF_SLOW_REQUEST_MS` (default `700`) for slow HTTP request warnings
+- `PERF_REQUEST_LOG_LEVEL` (`WARNING`/`INFO`)
+- `PERF_CELERY_LOG_LEVEL` (`INFO`/`WARNING`)
+
 ---
 
 ## 📖 API Documentation

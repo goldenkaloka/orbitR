@@ -1,10 +1,13 @@
 from celery import shared_task
 import logging
 from django.db.models import Q
+from django.core.cache import cache
 from apps.orders.models import Order
 from domain.services.order_services import CancelOrderService
 
 logger = logging.getLogger(__name__)
+MAX_DISPATCH_ATTEMPTS = 3
+DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
 
 @shared_task(name='domain.services.dispatch_tasks.dispatch_order_task')
 def dispatch_order_task(order_id):
@@ -32,16 +35,18 @@ def retry_dispatch_task(order_id, attempt=1):
         # Pass radius_km to expand the search area
         order = DispatchService.execute(order_id, is_retry=True, radius_km=radius)
         
-        if not order.driver and attempt < 3:
+        if not order.driver and attempt < MAX_DISPATCH_ATTEMPTS:
             # Schedule next retry with backoff
-            delays = {1: 120, 2: 300, 3: 900} 
             next_attempt = attempt + 1
-            retry_dispatch_task.apply_async(
-                args=[order_id, next_attempt],
-                countdown=delays.get(attempt, 600)
-            )
-        elif not order.driver and attempt >= 3:
-            logger.error(f"Dispatch permanently failed for Order {order_id} after 3 attempts.")
+            lock_key = f"dispatch_retry_scheduled:{order_id}:{next_attempt}"
+            # Prevent duplicate queueing from concurrent workers or duplicate triggers.
+            if cache.add(lock_key, "1", timeout=DISPATCH_RETRY_DELAYS.get(attempt, 600) + 120):
+                retry_dispatch_task.apply_async(
+                    args=[order_id, next_attempt],
+                    countdown=DISPATCH_RETRY_DELAYS.get(attempt, 600),
+                )
+        elif not order.driver and attempt >= MAX_DISPATCH_ATTEMPTS:
+            logger.error(f"Dispatch permanently failed for Order {order_id} after {MAX_DISPATCH_ATTEMPTS} attempts.")
             
     except Exception as e:
         logger.error(f"Retry task error for order {order_id}: {str(e)}")
@@ -68,22 +73,23 @@ def expire_unassigned_orders_task():
     )
     
     with transaction.atomic():
-        stale_orders = Order.objects.select_for_update(skip_locked=True).filter(
+        stale_order_ids = list(
+            Order.objects.select_for_update(skip_locked=True).filter(
             status='READY',
             driver__isnull=True,
         ).filter(
             Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff),
+            ).values_list('id', flat=True)
         )
-        
-        count = stale_orders.count()
-        if count > 0:
-            logger.info(f"Auto-expiring {count} unassigned orders.")
-            for order in stale_orders:
-                try:
-                    CancelOrderService.execute(
-                        order.id, 
-                        system_user, 
-                        reason="Expired: No driver found within 30 minutes."
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to auto-expire order {order.id}: {str(e)}")
+
+    if stale_order_ids:
+        logger.info(f"Auto-expiring {len(stale_order_ids)} unassigned orders.")
+    for order_id in stale_order_ids:
+        try:
+            CancelOrderService.execute(
+                order_id,
+                system_user,
+                reason="Expired: No driver found within 30 minutes."
+            )
+        except Exception as e:
+            logger.error(f"Failed to auto-expire order {order_id}: {str(e)}")

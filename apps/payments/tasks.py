@@ -5,6 +5,8 @@ from domain.services.payment_services import ReleasePaymentService
 import logging
 
 logger = logging.getLogger(__name__)
+RETRY_BATCH_SIZE = 100
+MAX_RETRY_COUNT = 5
 
 @shared_task(name='apps.payments.tasks.retry_failed_payouts')
 def retry_failed_payouts():
@@ -12,9 +14,16 @@ def retry_failed_payouts():
     Background task to retry failed split settlements.
     Retries payouts with retry_count < 5.
     """
-    failed_payouts = FailedPayout.objects.filter(retry_count__lt=5)
-    
-    for payout in failed_payouts:
+    with transaction.atomic():
+        payout_ids = list(
+            FailedPayout.objects.select_for_update(skip_locked=True)
+            .filter(retry_count__lt=MAX_RETRY_COUNT)
+            .order_by('created_at')
+            .values_list('id', flat=True)[:RETRY_BATCH_SIZE]
+        )
+
+    processed = 0
+    for payout in FailedPayout.objects.filter(id__in=payout_ids).select_related('payment'):
         try:
             logger.info(f"Retrying payout for payment {payout.payment.id} (Attempt {payout.retry_count + 1})")
             
@@ -28,11 +37,14 @@ def retry_failed_payouts():
             # If successful (no exception), delete the failure record
             payout.delete()
             logger.info(f"Successfully retried payout for payment {payout.payment.id}")
+            processed += 1
             
         except Exception as e:
             logger.error(f"Retry failed for payout {payout.id}: {str(e)}")
             payout.reason = f"Last failure: {str(e)}"
             payout.save(update_fields=['reason'])
+    if processed:
+        logger.info(f"Processed {processed} payout retries")
 
 @shared_task(name='apps.payments.tasks.cleanup_expired_payments')
 def cleanup_expired_payments():
@@ -44,12 +56,6 @@ def cleanup_expired_payments():
     from datetime import timedelta
     
     expiry_time = timezone.now() - timedelta(minutes=30)
-    stale_payments = Payment.objects.filter(status='INITIATED', created_at__lt=expiry_time)
-    
-    for payment in stale_payments:
-        try:
-            logger.info(f"Expiring stale payment {payment.id}")
-            payment.status = 'FAILED' 
-            payment.save(update_fields=['status'])
-        except Exception as e:
-            logger.error(f"Failed to expire payment {payment.id}: {str(e)}")
+    updated = Payment.objects.filter(status='INITIATED', created_at__lt=expiry_time).update(status='FAILED')
+    if updated:
+        logger.info(f"Expired {updated} stale payments")

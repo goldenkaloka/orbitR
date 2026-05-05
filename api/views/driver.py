@@ -8,12 +8,12 @@ from apps.delivery.models import Driver, DeliveryProof
 
 from domain.fsm.driver_fsm import DriverFSM
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
-import h3
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.utils import timezone
 from apps.orders.models import Order
 from infrastructure.notifications.service import NotificationService
+import math
 
 class DriverViewSet(viewsets.ModelViewSet):
     queryset = Driver.objects.all()
@@ -51,6 +51,17 @@ class DriverViewSet(viewsets.ModelViewSet):
         lng = request.data.get('lng')
         if lat is None or lng is None:
             return Response({"error": "lat and lng are required"}, status=400)
+
+        # Validate numeric + finite + range to avoid 500s and bad geospatial writes
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid lat or lng"}, status=400)
+        if not (math.isfinite(lat_f) and math.isfinite(lng_f)):
+            return Response({"error": "Invalid lat or lng"}, status=400)
+        if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
+            return Response({"error": "lat/lng out of range"}, status=400)
         
         driver = request.user.driver_profile
         
@@ -63,7 +74,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         if driver.status not in ['AVAILABLE', 'DELIVERING']:
              return Response({'status': 'ignored', 'message': 'Driver is offline or inactive'}, status=200)
 
-        new_loc = Point(float(lng), float(lat), srid=4326)
+        new_loc = Point(lng_f, lat_f, srid=4326)
         
         # 3. Distance Threshold: Only save if moved > 50 meters
         if driver.location:
@@ -76,9 +87,9 @@ class DriverViewSet(viewsets.ModelViewSet):
 
         # 4. Persistence and Sync
         driver.location = new_loc
-        driver.latitude = lat
-        driver.longitude = lng
-        driver.h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+        driver.latitude = lat_f
+        driver.longitude = lng_f
+        driver.h3_index = latlng_to_h3(lat_f, lng_f, ZONE_RESOLUTION)
         driver.save(update_fields=['location', 'latitude', 'longitude', 'h3_index', 'updated_at'])
         
         cache.set(cache_key, True, 10)

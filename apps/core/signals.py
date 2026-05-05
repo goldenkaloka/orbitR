@@ -22,7 +22,7 @@ def invalidate_restaurant_cache(sender, instance, **kwargs):
     """Invalidate restaurant 'mine' and list cache when updated."""
     cache.delete(f"restaurant_mine_{instance.owner.id}")
     try:
-        cache.delete_pattern("restaurant_list_*")
+        cache.delete_pattern("restaurant_list:*")
     except AttributeError:
         # delete_pattern is specific to django-redis
         cache.clear()
@@ -32,6 +32,6 @@ def invalidate_menu_cache(sender, instance, **kwargs):
     """Invalidate restaurant cache when menu items change."""
     cache.delete(f"restaurant_mine_{instance.vendor.owner.id}")
     try:
-        cache.delete_pattern("restaurant_list_*")
+        cache.delete_pattern("restaurant_list:*")
     except AttributeError:
         cache.clear()

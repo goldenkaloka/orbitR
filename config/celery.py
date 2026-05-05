@@ -8,7 +8,6 @@ app.config_from_object('django.conf:settings', namespace='CELERY')
 from django.conf import settings
 app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
 app.conf.imports = (
-    'domain.events.tasks',
     'domain.services.dispatch_tasks',
-    'apps.events.webhooks',
+    'apps.payments.tasks',
 )

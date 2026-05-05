@@ -87,7 +87,22 @@ services:
 
   celery-worker:
     build: .
-    command: celery -A config worker -l info
+    command: celery -A config worker -l info -Q default,dispatch --concurrency ${CELERY_CONCURRENCY:-2} --prefetch-multiplier ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child ${CELERY_WORKER_MAX_TASKS_PER_CHILD:-200}
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment: *backend-env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery-worker-payments:
+    build: .
+    command: celery -A config worker -l info -Q payments --concurrency ${CELERY_PAYMENTS_CONCURRENCY:-1} --prefetch-multiplier ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child ${CELERY_WORKER_MAX_TASKS_PER_CHILD:-200}
     volumes:
       - .:/app
     env_file:

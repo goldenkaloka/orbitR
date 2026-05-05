@@ -54,3 +54,4 @@ urllib3==2.3.0
 idna==3.10
 charset-normalizer==3.4.1
 h3
+locust
