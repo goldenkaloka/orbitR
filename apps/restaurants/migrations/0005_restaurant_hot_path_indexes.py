@@ -8,6 +8,11 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.AddField(
+            model_name="restaurant",
+            name="h3_index",
+            field=models.CharField(max_length=20, null=True, blank=True, db_index=True),
+        ),
         migrations.AddIndex(
             model_name="restaurant",
             index=models.Index(
