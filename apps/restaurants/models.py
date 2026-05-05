@@ -57,7 +57,7 @@ class DeliveryZone(models.Model):
     name = models.CharField(max_length=100)
     
     # H3 cell index that represents this zone
-    h3_index = models.CharField(max_length=20, db_index=True)
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
     priority = models.IntegerField(default=0, help_text="Higher priority zones take precedence if overlapping")
