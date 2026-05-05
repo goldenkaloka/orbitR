@@ -13,8 +13,8 @@ class MarketplaceCategoryAdmin(ModelAdmin):
 
 @admin.register(MarketplaceProduct)
 class MarketplaceProductAdmin(ModelAdmin):
-    list_display = ('name', 'seller', 'price', 'status', 'listing_type', 'zone', 'expiry_date')
-    list_filter = ('status', 'listing_type', 'zone', 'category')
+    list_display = ('name', 'seller', 'price', 'status', 'listing_type', 'h3_index', 'expiry_date')
+    list_filter = ('status', 'listing_type', 'category')
     search_fields = ('name', 'description', 'seller__username')
     inlines = [ProductImageInline]
     
