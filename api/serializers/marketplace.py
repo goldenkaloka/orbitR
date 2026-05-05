@@ -44,3 +44,12 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
         if point:
             data['location'] = point
         return super().to_internal_value(data)
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if not attrs.get('location'):
+            raise serializers.ValidationError({
+                'location': 'Valid coordinates are required. Send location as {"latitude","longitude"} '
+                            'or flat latitude/longitude fields.'
+            })
+        return attrs

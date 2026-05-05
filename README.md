@@ -69,7 +69,12 @@ This project adheres to **Domain-Driven Design (DDD)** and **Event-Driven Archit
    python manage.py migrate
    ```
 
-5. **Start Development Server**:
+5. **Seed Operational Zones (required for `/api/geo/zones/resolve/`)**:
+   ```bash
+   python seed_operational_zones.py
+   ```
+
+6. **Start Development Server**:
    ```bash
    # Terminal 1: Django
    python manage.py runserver
