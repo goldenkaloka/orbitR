@@ -27,6 +27,14 @@ def parse_coordinate_dict(data, key='location'):
         lng = float(data.get('longitude') or data.get('lng'))
         return Point(lng, lat)
     except (TypeError, ValueError):
+        pass
+
+    # Multipart/form-data clients may encode nested values as bracket keys.
+    try:
+        lat = float(data.get(f'{key}[latitude]') or data.get(f'{key}[lat]'))
+        lng = float(data.get(f'{key}[longitude]') or data.get(f'{key}[lng]'))
+        return Point(lng, lat)
+    except (TypeError, ValueError):
         return None
 
     return None
