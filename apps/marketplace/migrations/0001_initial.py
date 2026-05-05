@@ -12,7 +12,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('geo', '__first__'),
+        ('restaurants', '0004_deliveryzone_operational_zone_and_more'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
@@ -46,7 +46,7 @@ class Migration(migrations.Migration):
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('category', models.ForeignKey(null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='products', to='marketplace.marketplacecategory')),
                 ('seller', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='marketplace_products', to=settings.AUTH_USER_MODEL)),
-                ('zone', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='products', to='geo.operationalzone')),
+                ('zone', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='products', to='restaurants.operationalzone')),
             ],
         ),
         migrations.CreateModel(
