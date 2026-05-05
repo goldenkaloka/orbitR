@@ -28,7 +28,7 @@ class FoodSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Food
-        fields = ['id', 'name', 'description', 'price', 'is_available', 'image', 'image_url']
+        fields = ['id', 'name', 'description', 'price', 'category', 'is_available', 'image', 'image_url']
 
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')

@@ -81,6 +81,7 @@ class FoodViewSet(viewsets.ModelViewSet):
                 name=serializer.validated_data['name'],
                 price=serializer.validated_data['price'],
                 description=serializer.validated_data.get('description', ''),
+                category=serializer.validated_data.get('category', 'MAIN'),
                 is_available=serializer.validated_data.get('is_available', True),
                 image=serializer.validated_data.get('image')
             )

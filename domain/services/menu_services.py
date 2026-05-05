@@ -6,7 +6,7 @@ from domain.events.types import FoodCreated, FoodDeleted
 
 class MenuService:
     @staticmethod
-    def create_food(owner_user, name, price, description='', is_available=True, image=None):
+    def create_food(owner_user, name, price, description='', category='MAIN', is_available=True, image=None):
         with transaction.atomic():
             try:
                 restaurant = Restaurant.objects.get(owner=owner_user)
@@ -18,6 +18,7 @@ class MenuService:
                 name=name,
                 price=price,
                 description=description,
+                category=category,
                 is_available=is_available,
                 image=image
             )
