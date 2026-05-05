@@ -8,7 +8,6 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('geo', '__first__'),
         ('restaurants', '0003_restaurant_updated_at'),
     ]
 
@@ -16,7 +15,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name='deliveryzone',
             name='operational_zone',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='delivery_zone_subscriptions', to='geo.operationalzone'),
+            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='delivery_zone_subscriptions', to='restaurants.operationalzone'),
         ),
         migrations.AlterField(
             model_name='deliveryzone',
