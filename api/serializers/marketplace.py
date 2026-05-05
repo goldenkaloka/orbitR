@@ -1,6 +1,5 @@
 from rest_framework import serializers
 from apps.marketplace.models import MarketplaceProduct, ProductImage, MarketplaceCategory
-from api.serializers.geo import OperationalZoneSerializer
 from api.serializers.utils import parse_coordinate_dict
 
 class MarketplaceCategorySerializer(serializers.ModelSerializer):
@@ -16,7 +15,6 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class MarketplaceProductSerializer(serializers.ModelSerializer):
     images = ProductImageSerializer(many=True, read_only=True)
     seller_name = serializers.ReadOnlyField(source='seller.username')
-    zone_name = serializers.ReadOnlyField(source='zone.name')
     listing_fee = serializers.SerializerMethodField()
     whatsapp_url = serializers.SerializerMethodField()
 
@@ -25,10 +23,10 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'seller', 'seller_name', 'category', 'name', 'description', 
             'price', 'condition', 'whatsapp_number', 'whatsapp_url',
-            'location', 'zone', 'zone_name', 'status', 'expiry_date', 
+            'location', 'h3_index', 'status', 'expiry_date', 
             'listing_fee', 'is_fee_paid', 'images', 'created_at'
         ]
-        read_only_fields = ['seller', 'status', 'expiry_date', 'is_fee_paid', 'zone']
+        read_only_fields = ['seller', 'status', 'expiry_date', 'is_fee_paid', 'h3_index']
 
     def get_listing_fee(self, obj):
         return float(obj.calculate_listing_fee())

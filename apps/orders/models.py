@@ -5,6 +5,7 @@ from apps.products.models import Food
 import uuid
 
 from django.contrib.gis.db import models as gis_models
+from apps.core.geo_utils import latlng_to_h3
 
 class Order(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -34,6 +35,9 @@ class Order(models.Model):
     delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     
+    # H3 Spatial Indexing
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
+    
     notes = models.TextField(null=True, blank=True)
     driver = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders', db_index=True)
     ready_at = models.DateTimeField(null=True, blank=True)
@@ -53,6 +57,11 @@ class Order(models.Model):
             from django.contrib.gis.geos import Point
             self.delivery_location = Point(float(self.delivery_longitude), float(self.delivery_latitude))
         
+        if self.delivery_latitude and self.delivery_longitude:
+            new_h3 = latlng_to_h3(self.delivery_latitude, self.delivery_longitude)
+            if self.h3_index != new_h3:
+                self.h3_index = new_h3
+
         super().save(*args, **kwargs)
 
     class Meta:
@@ -115,12 +124,28 @@ class OrderPool(models.Model):
     # Shared delivery details
     delivery_address = models.TextField()
     delivery_location = gis_models.PointField(geography=True, db_index=True)
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
     expires_at = models.DateTimeField()
+
+    def save(self, *args, **kwargs):
+        if self.delivery_location:
+            new_h3 = latlng_to_h3(self.delivery_location.y, self.delivery_location.x)
+            if self.h3_index != new_h3:
+                self.h3_index = new_h3
+        super().save(*args, **kwargs)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['status', 'expires_at'], name='pool_status_expires_idx'),
+        ]
+        constraints = [
+            models.UniqueConstraint(fields=['initiator'], condition=models.Q(status='OPEN'), name='unique_open_pool_per_user')
+        ]
 
     @property
     def is_expired(self):

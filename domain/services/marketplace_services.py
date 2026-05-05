@@ -1,5 +1,4 @@
 from apps.marketplace.models import MarketplaceProduct
-from domain.services.geo_services import GeoDomainService
 from domain.events.bus import EventBus
 from domain.events.types import (
     MarketplaceProductCreated, 

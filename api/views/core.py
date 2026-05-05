@@ -12,6 +12,8 @@ from apps.orders.models import Order
 from apps.delivery.models import Driver
 from apps.wallets.models import Wallet
 from apps.core.models import Notification
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, get_neighbors
+import h3
 
 from api.serializers.core import (
     UserSerializer, RestaurantSerializer, OrderSerializer, 
@@ -102,6 +104,16 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
+            
+        # H3 Proximity Filtering
+        lat = self.request.query_params.get('lat')
+        lng = self.request.query_params.get('lng')
+        if lat and lng:
+            user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+            if user_h3:
+                # Include neighbors for a better user experience
+                neighbor_cells = get_neighbors(user_h3, 1)
+                queryset = queryset.filter(h3_index__in=neighbor_cells)
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -256,7 +268,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
         
-        orders = Order.objects.select_related(
+        # Filter by driver's current H3 cell if available
+        try:
+            driver = request.user.driver_profile
+            if driver.h3_index:
+                # Show jobs in driver's cell and immediate neighbors
+                neighbor_cells = get_neighbors(driver.h3_index, 1)
+                queryset = Order.objects.filter(h3_index__in=neighbor_cells)
+            else:
+                queryset = Order.objects.all()
+        except Driver.DoesNotExist:
+            queryset = Order.objects.all()
+
+        orders = queryset.select_related(
             'restaurant', 
             'restaurant__owner', 
             'customer'

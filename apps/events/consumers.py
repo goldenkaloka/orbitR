@@ -67,15 +67,20 @@ class OrderConsumer(AsyncWebsocketConsumer):
             if not self._notified_nearby:
                 dest = await self._get_delivery_coords()
                 if dest:
-                    distance = self._haversine(lat, lng, dest['lat'], dest['lng'])
-                    if distance < 100:  # 100 meters
+                    import h3
+                    from apps.core.geo_utils import PROXIMITY_RESOLUTION
+                    # Use central proximity resolution (usually 11 ~25m)
+                    rider_cell = h3.latlng_to_cell(lat, lng, PROXIMITY_RESOLUTION)
+                    dest_cell = h3.latlng_to_cell(dest['lat'], dest['lng'], PROXIMITY_RESOLUTION)
+                    
+                    if rider_cell == dest_cell or dest_cell in h3.grid_disk(rider_cell, 1):
                         self._notified_nearby = True
                         await self.channel_layer.group_send(
                             self.room_group_name,
                             {
                                 'type': 'rider_nearby',
                                 'order_id': self.order_id,
-                                'distance': round(distance, 1),
+                                'distance': 0, # Keeping field for frontend compatibility
                                 'message': 'Your rider is almost here! 📍',
                             }
                         )
@@ -90,16 +95,6 @@ class OrderConsumer(AsyncWebsocketConsumer):
         except Order.DoesNotExist:
             pass
         return None
-
-    @staticmethod
-    def _haversine(lat1, lon1, lat2, lon2):
-        """Calculate distance in meters between two GPS coordinates."""
-        R = 6371000  # Earth radius in meters
-        phi1, phi2 = math.radians(lat1), math.radians(lat2)
-        dphi = math.radians(lat2 - lat1)
-        dlambda = math.radians(lon2 - lon1)
-        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-        return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
     async def order_status_update(self, event):
         await self.send(text_data=json.dumps(event))

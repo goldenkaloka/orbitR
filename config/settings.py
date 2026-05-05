@@ -86,7 +86,6 @@ INSTALLED_APPS = [
     'apps.wallets',
     'apps.payments',
     'apps.events',
-    'apps.geo',
     'apps.marketplace',
     'django.contrib.gis',
     'apps.reviews',

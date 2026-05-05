@@ -1,7 +1,7 @@
 from django.db import models
 from apps.users.models import User
-from apps.geo.models import OperationalZone
 from django.contrib.gis.db import models as gis_models
+from apps.core.geo_utils import latlng_to_h3
 import uuid
 from decimal import Decimal
 
@@ -51,7 +51,7 @@ class MarketplaceProduct(models.Model):
     
     # Location & Zone
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
-    zone = models.ForeignKey(OperationalZone, on_delete=models.SET_NULL, null=True, blank=True, related_name='products')
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     # Lifecycle
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING_PAYMENT', db_index=True)
@@ -67,6 +67,13 @@ class MarketplaceProduct(models.Model):
     def calculate_listing_fee(self) -> Decimal:
         percent = Decimal('2.00') if self.listing_type == 'INITIAL' else Decimal('1.00')
         return (self.price * percent / 100).quantize(Decimal('1.00'))
+
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        if self.location:
+            new_h3 = latlng_to_h3(self.location.y, self.location.x)
+            if self.h3_index != new_h3:
+                MarketplaceProduct.objects.filter(id=self.id).update(h3_index=new_h3)
 
     def __str__(self):
         return f"{self.name} - TSh {self.price}"

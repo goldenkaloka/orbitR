@@ -7,6 +7,7 @@ import uuid
 # from django.contrib.gis.db import models as gis_models
 
 from django.contrib.gis.db import models as gis_models
+from apps.core.geo_utils import latlng_to_h3
 
 class Driver(models.Model):
     DRIVER_TYPE_CHOICES = (
@@ -28,6 +29,9 @@ class Driver(models.Model):
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    # H3 Spatial Indexing
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
     max_active_orders = models.PositiveIntegerField(default=3)
@@ -58,6 +62,12 @@ class Driver(models.Model):
             self.location = Point(float(self.longitude), float(self.latitude))
         
         super().save(*args, **kwargs)
+        
+        # Sync H3 index for real-time dispatching
+        if self.latitude and self.longitude:
+            new_h3 = latlng_to_h3(self.latitude, self.longitude)
+            if self.h3_index != new_h3:
+                Driver.objects.filter(id=self.id).update(h3_index=new_h3)
 
     def __str__(self):
         return f"Driver: {self.user.username} ({self.driver_type})"

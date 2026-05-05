@@ -10,6 +10,8 @@ from domain.events.types import (
     FoodReady, OrderPicked, OrderPreparing, OrderCancelled
 )
 from apps.events.utils import broadcast_order_status
+from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to_h3
+import h3
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +43,13 @@ class PlaceOrderService:
         # Tag Zone for Batching
         from apps.restaurants.models import DeliveryZone
         zone = None
+        delivery_h3 = None
         if delivery_location:
+            delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
             zone = DeliveryZone.objects.filter(
                 restaurant=restaurant, 
                 is_active=True, 
-                boundary__contains=delivery_location
+                h3_index=delivery_h3
             ).order_by('-priority').first()
         
         otp = str(random.randint(1000, 9999))
@@ -74,6 +78,7 @@ class PlaceOrderService:
                 total_amount=total_amount,
                 delivery_otp=otp,
                 zone=zone,
+                h3_index=delivery_h3,
                 **validated_data
             )
             
@@ -107,30 +112,53 @@ class PoolOrderService:
         import string
         from django.utils import timezone
         from datetime import timedelta
+        from django.db import IntegrityError
+        from apps.events.utils import broadcast_order_status
+        from apps.core.geo_utils import latlng_to_h3
 
-        from django.contrib.gis.geos import Point
-        
+        # 1. Prevent multiple OPEN pools
+        if OrderPool.objects.filter(initiator=initiator, status='OPEN').exists():
+            raise ValueError("You already have an open group order.")
+            
         restaurant = Restaurant.objects.get(id=restaurant_id)
-        invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         
-        # Convert dict location to Point if necessary
+        # 2. Move parsing outside transaction
         if isinstance(delivery_location, dict):
             from api.serializers.utils import parse_coordinate_dict
             delivery_location = parse_coordinate_dict({'loc': delivery_location}, 'loc')
             if not delivery_location:
                 raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
-        
-        with transaction.atomic():
-            pool = OrderPool.objects.create(
-                initiator=initiator,
-                restaurant=restaurant,
-                invite_code=invite_code,
-                delivery_address=delivery_address,
-                delivery_location=delivery_location,
-                expires_at=timezone.now() + timedelta(hours=2)
-            )
-            # Add initiator as first member
-            PoolMember.objects.create(pool=pool, user=initiator)
+                
+        h3_index = None
+        if delivery_location:
+            h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
+            
+        # 3. Invite code retry logic
+        max_retries = 3
+        pool = None
+        for i in range(max_retries):
+            invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+            try:
+                with transaction.atomic():
+                    pool = OrderPool.objects.create(
+                        initiator=initiator,
+                        restaurant=restaurant,
+                        invite_code=invite_code,
+                        delivery_address=delivery_address,
+                        delivery_location=delivery_location,
+                        h3_index=h3_index,
+                        expires_at=timezone.now() + timedelta(hours=2)
+                    )
+                    PoolMember.objects.create(pool=pool, user=initiator)
+                break
+            except IntegrityError:
+                if i == max_retries - 1:
+                    raise ValueError("Failed to generate a unique invite code. Please try again.")
+                continue
+                
+        # 4. WebSocket notification
+        if pool:
+            broadcast_order_status(str(pool.id), 'OPEN', is_pool=True)
             
         return pool
 
@@ -147,8 +175,8 @@ class PoolOrderService:
         from apps.products.models import Food
         
         with transaction.atomic():
-            pool = OrderPool.objects.get(id=pool_id, status='OPEN')
-            member = PoolMember.objects.get(pool=pool, user=user)
+            pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
             food = Food.objects.get(id=food_id)
             
             if food.restaurant != pool.restaurant:
@@ -183,12 +211,13 @@ class PoolOrderService:
             pool.total_delivery_fee = total_fee
             
             # Split fee among members
-            members = pool.members.all()
-            if members.exists():
-                share = total_fee / members.count()
+            members = list(pool.members.all())
+            if members:
+                share = total_fee / len(members)
                 for member in members:
                     member.delivery_fee_share = share
-                    member.save()
+                from apps.orders.models import PoolMember
+                PoolMember.objects.bulk_update(members, ['delivery_fee_share'])
             
             pool.save()
             return pool
@@ -259,11 +288,13 @@ class PoolOrderService:
             if pool.members.filter(status='PENDING').exists():
                 raise ValueError("All pool members must pay before finalization")
             
+            pool_delivery_h3 = latlng_to_h3(pool.delivery_location.y, pool.delivery_location.x, ZONE_RESOLUTION)
+            
             from apps.restaurants.models import DeliveryZone
             zone = DeliveryZone.objects.filter(
                 restaurant=pool.restaurant, 
                 is_active=True, 
-                boundary__contains=pool.delivery_location
+                h3_index=pool_delivery_h3
             ).order_by('-priority').first()
             
             # 1. Create a single master Order
@@ -279,20 +310,25 @@ class PoolOrderService:
                 delivery_otp=otp,
                 pool=pool,
                 zone=zone,
+                h3_index=pool_delivery_h3,
                 status='CREATED'
             )
             
             # 2. Transfer all pool items to order items
             items_subtotal = Decimal('0.00')
-            for member in pool.members.all():
+            order_items_to_create = []
+            
+            for member in pool.members.prefetch_related('items').all():
                 for item in member.items.all():
-                    OrderItem.objects.create(
+                    order_items_to_create.append(OrderItem(
                         order=master_order,
                         food=item.food,
                         quantity=item.quantity,
                         price=item.price_at_addition * item.quantity
-                    )
+                    ))
                     items_subtotal += (item.price_at_addition * item.quantity)
+            
+            OrderItem.objects.bulk_create(order_items_to_create)
             
             master_order.items_subtotal = items_subtotal
             master_order.total_amount = items_subtotal + pool.total_delivery_fee
@@ -404,9 +440,9 @@ class MarkReadyService:
             order.save()
             
             # Proactively try to batch this order with others in the same zone
-            if order.zone:
+            if order.h3_index:
                 from domain.services.batching_service import BatchingService
-                BatchingService.attempt_batching(order.restaurant.id, order.zone.id)
+                BatchingService.attempt_batching(order.restaurant.id, order.h3_index)
             
             EventBus.publish(FoodReady(aggregate_id=order.id, payload={'actor_id': str(actor.id)}))
             return order
@@ -457,7 +493,10 @@ class PickupOrderService:
             if not bypass_geofence:
                 if not driver.location or not order.restaurant.geo_location:
                     raise ValueError("Location data missing for geofence check")
-                if driver.location.distance(order.restaurant.geo_location) > 100:
+                
+                driver_h3 = latlng_to_h3(driver.location.y, driver.location.x, PROXIMITY_RESOLUTION)
+                res_h3 = latlng_to_h3(order.restaurant.geo_location.y, order.restaurant.geo_location.x, PROXIMITY_RESOLUTION)
+                if driver_h3 != res_h3 and res_h3 not in h3.grid_disk(driver_h3, 1):
                     raise ValueError("You are too far from the restaurant to pickup")
             
             new_state = OrderFSM.transition(order.status, 'PICKED')
@@ -495,7 +534,10 @@ class DeliverOrderService:
             if not bypass_geofence:
                 if not driver.location or not order.delivery_location:
                     raise ValueError("Location data missing for geofence check")
-                if driver.location.distance(order.delivery_location) > 100:
+                
+                driver_h3 = latlng_to_h3(driver.location.y, driver.location.x, PROXIMITY_RESOLUTION)
+                dest_h3 = latlng_to_h3(order.delivery_location.y, order.delivery_location.x, PROXIMITY_RESOLUTION)
+                if driver_h3 != dest_h3 and dest_h3 not in h3.grid_disk(driver_h3, 1):
                     raise ValueError("You are too far from the delivery location to mark as delivered")
             
             new_state = OrderFSM.transition(order.status, 'DELIVERED')

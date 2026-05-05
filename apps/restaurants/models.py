@@ -3,6 +3,7 @@ from apps.users.models import User
 import uuid
 
 from django.contrib.gis.db import models as gis_models
+from apps.core.geo_utils import latlng_to_h3
 
 class Restaurant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -12,12 +13,16 @@ class Restaurant(models.Model):
     image = models.ImageField(upload_to='restaurants/', blank=True, null=True)
     location = models.CharField(max_length=255) # Text address
     
-    # PostGIS Location Field
+    # PostGIS Location Field for the restaurant itself
     geo_location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     
     # Legacy fields
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    
+    # H3 Spatial Indexing
+    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
+
     category = models.CharField(max_length=100, default='General', db_index=True)
     price_range = models.CharField(max_length=50, default='TSH 2k–5k')
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
@@ -35,18 +40,24 @@ class Restaurant(models.Model):
             self.geo_location = Point(float(self.longitude), float(self.latitude))
         
         super().save(*args, **kwargs)
+        
+        # After saving, ensure H3 index is synced if coordinates are present
+        # We do this after super().save if we rely on DB defaults, but here we can do it before
+        if self.latitude and self.longitude:
+            new_h3 = latlng_to_h3(self.latitude, self.longitude)
+            if self.h3_index != new_h3:
+                # Update without triggering another save recursion
+                Restaurant.objects.filter(id=self.id).update(h3_index=new_h3)
 
     def __str__(self):
         return self.name
 
 class DeliveryZone(models.Model):
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='delivery_zones')
-    operational_zone = models.ForeignKey('geo.OperationalZone', on_delete=models.SET_NULL, null=True, blank=True, related_name='delivery_zone_subscriptions')
     name = models.CharField(max_length=100)
     
-    # PostGIS PolygonField stores the actual shape on the map
-    # Can be null if operational_zone is used
-    boundary = gis_models.PolygonField(geography=True, db_index=True, null=True, blank=True)
+    # H3 cell index that represents this zone
+    h3_index = models.CharField(max_length=20, db_index=True)
     
     fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
     priority = models.IntegerField(default=0, help_text="Higher priority zones take precedence if overlapping")
@@ -55,17 +66,25 @@ class DeliveryZone(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        if self.operational_zone:
-            # Sync boundary from generic zone if not manually overridden
-            if not self.boundary:
-                self.boundary = self.operational_zone.boundary
-            if not self.name:
-                self.name = self.operational_zone.name
-        
-        if not self.boundary:
-            raise ValueError("A DeliveryZone must have a boundary or be linked to an OperationalZone.")
+        if not self.h3_index:
+            raise ValueError("A DeliveryZone must have an h3_index.")
             
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.restaurant.name} - {self.name} ({self.fee} TZS)"
+
+class OperationalZone(models.Model):
+    """Global campus zones defined by H3 indexes."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100, unique=True)
+    description = models.TextField(blank=True, null=True)
+    
+    # Primary H3 index for this zone (Resolution 9)
+    h3_index = models.CharField(max_length=20, unique=True, db_index=True)
+    
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.name

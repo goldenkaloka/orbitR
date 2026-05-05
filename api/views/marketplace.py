@@ -19,12 +19,15 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         Only show ACTIVE products to general users.
         """
         user = self.request.user
-        queryset = MarketplaceProduct.objects.select_related('seller', 'category', 'zone').prefetch_related('images').all()
+        queryset = MarketplaceProduct.objects.select_related('seller', 'category').prefetch_related('images').all()
         
         # Filtering
-        zone_id = self.request.query_params.get('zone')
-        if zone_id:
-            queryset = queryset.filter(zone_id=zone_id)
+        zone_h3 = self.request.query_params.get('zone')
+        if zone_h3:
+            from apps.core.geo_utils import get_neighbors
+            # Include neighbors to show nearby products across hexagon boundaries
+            neighbor_cells = get_neighbors(zone_h3, 1)
+            queryset = queryset.filter(h3_index__in=neighbor_cells)
             
         category_id = self.request.query_params.get('category')
         if category_id:

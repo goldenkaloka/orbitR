@@ -1,6 +1,8 @@
 from decimal import Decimal
 from apps.restaurants.models import DeliveryZone
 import logging
+import h3
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 
 logger = logging.getLogger(__name__)
 
@@ -20,23 +22,29 @@ class PricingService:
             return cls.DEFAULT_FEE
 
         try:
+            delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
+            
             # 1. Find the highest priority active zone that contains the delivery point
-            # Uses PostGIS boundary__contains=point
             zone = DeliveryZone.objects.filter(
                 restaurant=restaurant,
                 is_active=True,
-                boundary__contains=delivery_location
+                h3_index=delivery_h3
             ).order_by('-priority').first()
 
             if zone:
                 logger.info(f"Matched Delivery Zone: {zone.name} with fee {zone.fee}")
                 return zone.fee
             
-            # 2. Fallback: Distance-based calculation
-            # base_fee (500) + (distance_km * 100)
+            # 2. Fallback: Distance-based calculation using H3 grid distance
             if restaurant.geo_location and delivery_location:
-                # distance() returns meters in geography mode
-                distance_km = restaurant.geo_location.distance(delivery_location) / 1000
+                restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
+                try:
+                    # distance in cells * ~170m per cell (at res 9) / 1000 to get km
+                    distance_cells = h3.grid_distance(restaurant_h3, delivery_h3)
+                    distance_km = distance_cells * 0.170
+                except h3.H3ValueError:
+                    distance_km = 10 # Fallback if too far to compute grid distance
+                
                 base_fee = Decimal('500.00')
                 per_km = Decimal('100.00')
                 dynamic_fee = base_fee + (Decimal(str(distance_km)) * per_km)

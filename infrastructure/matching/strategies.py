@@ -65,17 +65,25 @@ class PostgisRadiusStrategy(LocationMatcher):
 
         # Use a transaction to lock the potential drivers
         with transaction.atomic():
-            # 1. Create spatial point
-            pnt = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
+            import h3
+            from apps.core.geo_utils import ZONE_RESOLUTION
+            # 1. Calculate H3 cells for radius search
+            restaurant_h3 = h3.latlng_to_cell(float(restaurant_lat), float(restaurant_lng), ZONE_RESOLUTION)
+            
+            # Approximate k-rings based on max_radius_km (res 9 is ~170m radius per cell)
+            k_rings = int((max_radius_km * 1000) / 170)
+            try:
+                search_cells = list(h3.grid_disk(restaurant_h3, k_rings))
+            except h3.H3ValueError:
+                search_cells = [restaurant_h3]
 
-            # 2. Filter available drivers within radius
+            # 2. Filter available drivers within H3 cells
             # select_for_update(skip_locked=True) ensures we don't pick a driver
             # being processed by another dispatch task.
             drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                 status='AVAILABLE',
-                location__dwithin=(pnt, max_radius_km * 1000)
+                h3_index__in=search_cells
             ).annotate(
-                distance=Distance('location', pnt),
                 active_count=Count('orders', filter=Q(orders__status__in=['ASSIGNED', 'PICKED']))
             ).filter(
                 active_count__lt=F('max_active_orders')
@@ -93,10 +101,16 @@ class PostgisRadiusStrategy(LocationMatcher):
                 # Avoid division by zero for rating
                 rating_factor = 1.0 / float(max(driver.rating, Decimal('0.1')))
                 
+                # Approximate distance in km using h3.grid_distance
+                try:
+                    driver_dist_km = h3.grid_distance(restaurant_h3, driver.h3_index) * 0.170 if driver.h3_index else max_radius_km
+                except h3.H3ValueError:
+                    driver_dist_km = max_radius_km
+
                 # Formula: Load-heavy to ensure busy drivers are deprioritized
                 # Load (60%) weight ensures distance doesn't overwhelm capacity on campus scale
                 score = (
-                    float(driver.distance.km) * 0.2 +
+                    float(driver_dist_km) * 0.2 +
                     rating_factor * 0.2 +
                     float(driver.active_count) * 0.6
                 )

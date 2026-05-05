@@ -15,8 +15,8 @@ def decrypt_string(encrypted_data, username, password):
     decrypted_data = cipher.decrypt(base64.b64decode(encrypted_data))
     return unpad(decrypted_data, AES.block_size).decode()
 
-# Log from the user request
-response_log = "892152d66f5394eak3Bqr9xIqw+IWAavt2b9/2QGiCfxVB8Di/euHZBSRwyAYUrVtnsm7FCOcjzlEII5T4mnnPnQY4vb9zPNUuWRKIB7KJb03phXCs/vt77UasG4GFYw0e4+luRMq7e+gX4IcmWGTLSIIIRdtLeTAx/P94h/UwVNegYDagWd4ww2yzg="
+# Log from the webview
+response_log = "e8a965314e655688Duf+hBxgeKBs+WK9PunPaE7+8yhZfRqOd86rj+wGTz1QcJ0Co1FRXvgJ4hfs9D/YCVPPGPewWJrP5DQe6Xl3PjxiQus4UHWEfET5+wK1wFiuSQmOLGh+IMPKmFmwRzLHI3geo05cnMGUobrgkEwEqiMoLMoa4FjzjcxLsjL8wQU="
 
 try:
     print(decrypt_string(response_log, USERNAME, PASSWORD))

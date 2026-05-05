@@ -7,6 +7,13 @@ from api.serializers.core import DriverSerializer, DeliveryProofSerializer
 from apps.delivery.models import Driver, DeliveryProof
 
 from domain.fsm.driver_fsm import DriverFSM
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+import h3
+from django.contrib.gis.geos import Point
+from django.core.cache import cache
+from django.utils import timezone
+from apps.orders.models import Order
+from infrastructure.notifications.service import NotificationService
 
 class DriverViewSet(viewsets.ModelViewSet):
     queryset = Driver.objects.all()
@@ -47,10 +54,6 @@ class DriverViewSet(viewsets.ModelViewSet):
         
         driver = request.user.driver_profile
         
-        from django.contrib.gis.geos import Point
-        from django.core.cache import cache
-        from django.utils import timezone
-        
         # 1. Throttling: 1 update per 10 seconds per driver
         cache_key = f"driver_loc_throttle_{driver.id}"
         if cache.get(cache_key):
@@ -75,14 +78,12 @@ class DriverViewSet(viewsets.ModelViewSet):
         driver.location = new_loc
         driver.latitude = lat
         driver.longitude = lng
-        driver.save(update_fields=['location', 'latitude', 'longitude', 'updated_at'])
+        driver.h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+        driver.save(update_fields=['location', 'latitude', 'longitude', 'h3_index', 'updated_at'])
         
         cache.set(cache_key, True, 10)
         
         # --- Arrival Notifications Logic ---
-        from apps.orders.models import Order
-        from infrastructure.notifications.service import NotificationService
-        
         active_orders = Order.objects.filter(driver=driver, status='PICKED')
         for order in active_orders:
             if order.delivery_location:
