@@ -4,6 +4,34 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+def dedupe_open_pools_before_unique_constraint(apps, schema_editor):
+    """
+    Keep only one OPEN pool per initiator before adding the partial unique constraint.
+    The newest OPEN pool is preserved; older duplicates are marked EXPIRED.
+    """
+    OrderPool = apps.get_model('orders', 'OrderPool')
+    db_alias = schema_editor.connection.alias
+
+    open_pools = (
+        OrderPool.objects.using(db_alias)
+        .filter(status='OPEN')
+        .order_by('initiator_id', '-created_at', '-id')
+        .values('id', 'initiator_id')
+    )
+
+    seen_initiators = set()
+    duplicate_ids = []
+    for pool in open_pools:
+        initiator_id = pool['initiator_id']
+        if initiator_id in seen_initiators:
+            duplicate_ids.append(pool['id'])
+        else:
+            seen_initiators.add(initiator_id)
+
+    if duplicate_ids:
+        OrderPool.objects.using(db_alias).filter(id__in=duplicate_ids).update(status='EXPIRED')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -38,6 +66,10 @@ class Migration(migrations.Migration):
         migrations.AddIndex(
             model_name='orderpool',
             index=models.Index(fields=['status', 'expires_at'], name='pool_status_expires_idx'),
+        ),
+        migrations.RunPython(
+            dedupe_open_pools_before_unique_constraint,
+            migrations.RunPython.noop,
         ),
         migrations.AddConstraint(
             model_name='orderpool',
