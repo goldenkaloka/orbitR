@@ -17,14 +17,15 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-or
 docker rm -f temp_nginx || true
 
 echo "🌐 Starting temporary Nginx for SSL challenge..."
-# Note: We use a simple volume mapping so Certbot can place the challenge file
+# We map the volume to Nginx's default HTML folder
 docker run -d --name temp_nginx \
   -v orbitr_certbot-webroot:/usr/share/nginx/html \
   -p 80:80 nginx:alpine
 
 echo "🔐 Requesting SSL Certificate..."
+# We use /var/www/certbot because that is where the volume is mounted in docker-compose.prod.yml
 docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm certbot certonly \
-  --webroot -w /usr/share/nginx/html \
+  --webroot -w /var/www/certbot \
   --email $EMAIL \
   --agree-tos \
   --no-eff-email \
