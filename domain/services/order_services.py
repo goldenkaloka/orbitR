@@ -1,5 +1,7 @@
 import logging
+
 from django.db import transaction
+from django.utils import timezone
 from apps.orders.models import Order
 from apps.delivery.models import Driver, DeliveryAssignment
 from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
@@ -14,6 +16,7 @@ from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to
 import h3
 
 logger = logging.getLogger(__name__)
+
 
 class PlaceOrderService:
     @staticmethod
@@ -166,6 +169,8 @@ class PoolOrderService:
     def join_pool(user, invite_code):
         from apps.orders.models import OrderPool, PoolMember
         pool = OrderPool.objects.get(invite_code=invite_code, status='OPEN')
+        if pool.expires_at <= timezone.now():
+            raise ValueError("This pool has expired.")
         member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
         return pool
 
@@ -176,6 +181,8 @@ class PoolOrderService:
         
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            if pool.expires_at <= timezone.now():
+                raise ValueError("This pool has expired.")
             member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
             food = Food.objects.get(id=food_id)
             
@@ -281,11 +288,11 @@ class PoolOrderService:
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id)
             
-            if pool.status != 'OPEN':
+            if pool.status != 'LOCKED':
                 raise ValueError(f"Cannot finalize pool in {pool.status} state")
             
             # Check if all members have paid
-            if pool.members.filter(status='PENDING').exists():
+            if pool.members.filter(status__in=['JOINED', 'READY']).exists():
                 raise ValueError("All pool members must pay before finalization")
             
             pool_delivery_h3 = latlng_to_h3(pool.delivery_location.y, pool.delivery_location.x, ZONE_RESOLUTION)
@@ -413,7 +420,9 @@ class CancelOrderService:
                 from domain.fsm.driver_fsm import DriverFSM
                 if order.driver.status != 'AVAILABLE':
                     order.driver.status = DriverFSM.transition(order.driver.status, 'AVAILABLE')
-                    order.driver.save(update_fields=['status'])
+                order.driver.current_active_orders = max(0, order.driver.current_active_orders - 1)
+                order.driver.save(update_fields=['status', 'current_active_orders'])
+                DeliveryAssignment.objects.filter(order=order).delete()
             
             order.save()
             
@@ -456,6 +465,8 @@ class AssignDriverService:
                 raise ValueError("This order already has a driver assigned.")
             
             driver = Driver.objects.select_for_update().get(id=driver_id)
+            if driver.driver_type == 'temporary' and driver.assigned_by_id != order.restaurant_id:
+                raise PermissionError("Temporary drivers can only be assigned to their own restaurant orders.")
             
             # Transition Order
             new_state = OrderFSM.transition(order.status, 'ASSIGNED')
@@ -464,7 +475,8 @@ class AssignDriverService:
             # Transition Driver: Skip if already ASSIGNED (e.g. in a batch)
             if driver.status != 'ASSIGNED':
                 driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-                driver.save(update_fields=['status'])
+            driver.current_active_orders += 1
+            driver.save(update_fields=['status', 'current_active_orders'])
             
             # Use update_or_create to ensure assignment record matches the current order driver
             DeliveryAssignment.objects.update_or_create(
@@ -548,7 +560,8 @@ class DeliverOrderService:
             driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
             driver.total_earnings += order.delivery_fee
             driver.today_earnings += order.delivery_fee
-            driver.save(update_fields=['status', 'total_earnings', 'today_earnings'])
+            driver.current_active_orders = max(0, driver.current_active_orders - 1)
+            driver.save(update_fields=['status', 'total_earnings', 'today_earnings', 'current_active_orders'])
             
             assignment = order.delivery_assignment
             from django.utils import timezone

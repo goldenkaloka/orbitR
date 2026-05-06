@@ -43,8 +43,11 @@ class User(AbstractUser):
         return f"{self.username or self.phone} ({self.role})"
 
 class OTPCode(models.Model):
+    MAX_FAILED_ATTEMPTS = 5
+
     phone = models.CharField(max_length=20, unique=True)
     code = models.CharField(max_length=6)
+    failed_attempts = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now=True)
     
     def is_valid(self):

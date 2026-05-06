@@ -10,10 +10,11 @@ from domain.events.types import PaymentCollected, PaymentInitiated, PaymentDisbu
 
 class InitiatePaymentService:
     @staticmethod
-    def execute(order_id, provider=None, phone=None):
+    def execute(order_id, provider=None, phone=None, bank_code=None):
         with transaction.atomic():
-            order = Order.objects.get(id=order_id)
-            
+            # Bug 5 Fix: Lock the order row FIRST to serialise concurrent payment attempts
+            order = Order.objects.select_for_update().get(id=order_id)
+
             # Create or get Payment record with locking
             payment, created = Payment.objects.select_for_update().get_or_create(
                 order=order,
@@ -28,19 +29,20 @@ class InitiatePaymentService:
             if Transaction.objects.filter(payment__order=order, status='COMPLETED').exists():
                 raise ValueError("A completed transaction already exists for this order.")
 
-            # Use Airpay for all flows (Redirect based)
             gateway = get_payment_gateway(provider=provider)
 
             response = gateway.collect(
                 amount=payment.amount,
                 phone=phone or order.customer.phone,
                 order_reference=str(order.id),
-                provider=provider
+                provider=provider,
+                bank_code=bank_code
             )
             
             # Update payment with provider info if returned
             if response.get('success'):
-                payment.provider_reference = response.get('transactionId') or response.get('provider_ref')
+                # Extract reference from the synchronous push response
+                payment.provider_reference = response.get('provider_reference') or response.get('transactionId')
                 payment.save()
                 
                 EventBus.publish(PaymentInitiated(
@@ -48,13 +50,15 @@ class InitiatePaymentService:
                     payload={
                         'order_id': str(order.id),
                         'amount': float(payment.amount),
-                        'gateway': 'Airpay'
+                        'gateway': 'Airpay',
+                        'provider_reference': payment.provider_reference
                     }
                 ))
             
             return {
                 'payment': payment,
-                'gateway_response': response
+                'gateway_response': response,
+                'is_push': True # Signal to UI that a push was sent
             }
 
 
@@ -89,7 +93,8 @@ class CompletePaymentService:
                     payment.status = new_state
                     payment.provider_reference = provider_reference
                     payment.rrn = rrn
-                    payment.save()
+                    # Bug 8 Fix: Do NOT save payment yet — update order first so both
+                    # are committed atomically. If order FSM raises, payment rolls back too.
                     
                     # --- Branch: Order Payment ---
                     if payment.order:
@@ -98,6 +103,9 @@ class CompletePaymentService:
                         from domain.fsm.order_fsm import OrderFSM
                         order.status = OrderFSM.transition(order.status, 'CREATED')
                         order.save(update_fields=['is_paid', 'status'])
+                        
+                        # Now save payment after order succeeded
+                        payment.save()
                         
                         # Ledger Entry: Customer -> Platform (Held in Escrow)
                         Transaction.objects.create(
@@ -116,6 +124,9 @@ class CompletePaymentService:
                     
                     # --- Branch: Marketplace Listing Fee Payment ---
                     elif payment.marketplace_product:
+                        # Save payment first for marketplace (no order FSM risk)
+                        payment.save()
+                        
                         from domain.services.marketplace_services import MarketplaceService
                         product = payment.marketplace_product
                         MarketplaceService.activate_product(
@@ -132,6 +143,9 @@ class CompletePaymentService:
                             transaction_type='seller_listing_fee',
                             status='COMPLETED'
                         )
+                    else:
+                        # No order or product — just save payment status
+                        payment.save()
                 else:
                     new_state = PaymentFSM.transition(payment.status, 'FAILED')
                     payment.status = new_state

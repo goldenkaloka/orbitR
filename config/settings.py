@@ -26,7 +26,7 @@ from decouple import config
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-default-key')
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
@@ -109,9 +109,22 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
+# ---------------------------------------------------------------------------
+# CORS & Security
+# ---------------------------------------------------------------------------
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS', 
+    default='', 
+    cast=lambda v: [s.strip() for s in v.split(',') if s.strip()]
+)
+if not CORS_ALLOWED_ORIGINS and not DEBUG:
+    # Fail loud in production if no origins are allowed
+    raise ValueError("CORS_ALLOWED_ORIGINS must be set in production.")
+
+CORS_ALLOW_CREDENTIALS = True
+
 
 MIDDLEWARE = [
-    'apps.core.middleware.ForceHTTPImagesMiddleware',
     'apps.core.perf_middleware.RequestTimingMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
@@ -205,13 +218,13 @@ AWS_ACCESS_KEY_ID = config('MINIO_ACCESS_KEY', default='minioadmin')
 AWS_SECRET_ACCESS_KEY = config('MINIO_SECRET_KEY', default='minioadmin')
 AWS_STORAGE_BUCKET_NAME = config('MINIO_STORAGE_BUCKET_NAME', default='static')
 AWS_S3_ENDPOINT_URL = config('MINIO_ENDPOINT', default='http://localhost:9000')
-AWS_S3_VERIFY = False
+AWS_S3_VERIFY = config('AWS_S3_VERIFY', default=not DEBUG, cast=bool)
 AWS_S3_ADDRESSING_STYLE = 'path'
 AWS_S3_SIGNATURE_VERSION = 's3v4'
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = 'public-read'
 AWS_QUERYSTRING_AUTH = False
-AWS_S3_SECURE_URLS = False
+AWS_S3_SECURE_URLS = True
 
 # External URL generation for Flutter/Web
 MINIO_EXTERNAL_URL = config('MINIO_EXTERNAL_URL', default='http://localhost:9000')

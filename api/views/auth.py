@@ -43,13 +43,24 @@ class RequestOTPView(APIView):
                 'error': 'Invalid phone number format. Use 07XXXXXXXX or +2557XXXXXXXX'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Rate limiting: max 3 OTP requests per phone per 5 minutes
+        from django.core.cache import cache
+        rate_key = f"otp_rate_{phone}"
+        attempts = cache.get(rate_key, 0)
+        if attempts >= 3:
+            return Response(
+                {'error': 'Too many OTP requests. Please wait a few minutes.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        cache.set(rate_key, attempts + 1, 300)  # 5-minute window
+
         # Generate OTP
         code = str(random.randint(100000, 999999))
         
-        # Save OTP
+        # Save OTP (reset failed_attempts on new OTP generation)
         OTPCode.objects.update_or_create(
             phone=phone,
-            defaults={'code': code}
+            defaults={'code': code, 'failed_attempts': 0}
         )
         
         # Publish Event
@@ -58,12 +69,7 @@ class RequestOTPView(APIView):
             payload={'phone': phone, 'otp': code}
         ))
         
-        from django.conf import settings
-        response_data = {'message': 'OTP sent successfully'}
-        if getattr(settings, 'DEBUG', False):
-            response_data['debug_otp'] = code  # Only visible in DEBUG mode
-        
-        return Response(response_data)
+        return Response({'message': 'OTP sent successfully'})
 
 class VerifyOTPView(APIView):
     """
@@ -84,10 +90,16 @@ class VerifyOTPView(APIView):
         try:
             # Use select_for_update to lock the record
             otp_record = OTPCode.objects.select_for_update().get(phone=phone)
-            if otp_record.code != code:
-                return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
             if not otp_record.is_valid():
+                otp_record.delete()
                 return Response({'error': 'OTP expired'}, status=status.HTTP_400_BAD_REQUEST)
+            if otp_record.code != code:
+                otp_record.failed_attempts += 1
+                if otp_record.failed_attempts >= OTPCode.MAX_FAILED_ATTEMPTS:
+                    otp_record.delete()
+                    return Response({'error': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+                otp_record.save(update_fields=['failed_attempts'])
+                return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
                 
             # OTP is valid — now check if user exists (LOGIN only, no auto-creation)
             try:
@@ -150,10 +162,16 @@ class RegisterView(APIView):
         try:
             # Use select_for_update to lock the record
             otp_record = OTPCode.objects.select_for_update().get(phone=phone)
-            if otp_record.code != code:
-                return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
             if not otp_record.is_valid():
+                otp_record.delete()
                 return Response({'error': 'OTP expired'}, status=status.HTTP_400_BAD_REQUEST)
+            if otp_record.code != code:
+                otp_record.failed_attempts += 1
+                if otp_record.failed_attempts >= OTPCode.MAX_FAILED_ATTEMPTS:
+                    otp_record.delete()
+                    return Response({'error': 'Too many failed attempts. Please request a new OTP.'}, status=status.HTTP_400_BAD_REQUEST)
+                otp_record.save(update_fields=['failed_attempts'])
+                return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
 
             # OTP is valid — check that user does NOT already exist
             if User.objects.filter(phone=phone).exists():

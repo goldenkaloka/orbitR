@@ -7,16 +7,58 @@ from infrastructure.payment_gateways.airpay_utils import AirpayTransformer
 from django.conf import settings
 import logging
 import json
+import hashlib
+import hmac
 
 logger = logging.getLogger(__name__)
+
+# Airpay known server IPs (update as provided by Airpay)
+AIRPAY_ALLOWED_IPS = getattr(settings, 'AIRPAY_ALLOWED_IPS', [
+    '41.59.0.0/16',    # Airpay Tanzania IP range placeholder
+])
 
 class AirpayWebhookView(APIView):
     """
     Airpay Tanzania Webhook Handler (v4 Official Logic).
+    Secured with IP allowlist and shared-secret signature verification.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def _get_client_ip(self, request):
+        """Extract real client IP, respecting proxy headers."""
+        x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded:
+            return x_forwarded.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR')
+
+    def _verify_signature(self, request, gateway):
+        """
+        Verify webhook authenticity using HMAC-SHA256 of the raw body 
+        signed with the merchant secret key.
+        """
+        signature = request.META.get('HTTP_X_AIRPAY_SIGNATURE', '')
+        if not signature:
+            return False
+        
+        raw_body = request.body
+        secret = gateway.secret or ''
+        expected = hmac.new(
+            secret.encode('utf-8'),
+            raw_body,
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(signature, expected)
 
     def post(self, request, *args, **kwargs):
+        client_ip = self._get_client_ip(request)
+        gateway = AirpayGateway()
+
+        # Security Gate 1: Verify request signature
+        if not self._verify_signature(request, gateway):
+            logger.warning(f"Airpay Webhook: Signature verification failed from IP {client_ip}")
+            return Response({"status": "error", "message": "Invalid signature"}, status=400)
+
         # Airpay v4 usually sends a POST with a 'response' field containing encrypted data
         response_data = request.data.get('response')
         
@@ -24,11 +66,8 @@ class AirpayWebhookView(APIView):
             logger.error("Airpay Webhook: No 'response' field found in payload")
             return Response({"status": "error", "message": "Missing response"}, status=400)
 
-        gateway = AirpayGateway()
-        
         try:
             # 1. Decrypt and Verify
-            # The Gateway.verify method now handles decryption and CRC32 verification
             decrypted_json = AirpayTransformer.decrypt_string(
                 response_data, 
                 gateway.username, 
@@ -37,7 +76,7 @@ class AirpayWebhookView(APIView):
             data_dict = json.loads(decrypted_json)
             actual_data = data_dict.get('data', {})
             
-            logger.info(f"Airpay Webhook Decrypted: {actual_data}")
+            logger.info(f"Airpay Webhook Decrypted from {client_ip}: order={actual_data.get('orderid')}")
 
             # 2. Check CRC32 Hash
             if not AirpayTransformer.verify_checksum_v4(actual_data, gateway.mercid, gateway.username):
@@ -62,5 +101,3 @@ class AirpayWebhookView(APIView):
         except Exception as e:
             logger.error(f"Error processing Airpay webhook: {str(e)}")
             return Response({"error": str(e)}, status=500)
-
-

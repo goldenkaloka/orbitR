@@ -10,35 +10,47 @@ class WalletDomainService:
     
     @staticmethod
     def debit(user, amount: Decimal, description: str):
+        # Bug 12 Fix: Validate positive amount
+        if amount <= 0:
+            raise ValueError("Debit amount must be greater than zero.")
+        
         with transaction.atomic():
             wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
             if wallet.balance < amount:
                 raise ValueError(f"Insufficient funds in wallet for {user.username}")
             
-            wallet.balance -= amount
-            wallet.save()
-            
+            # Bug 7 Fix: Create ledger entry FIRST, then update balance.
+            # If transaction creation fails, the balance change is rolled back.
             WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=amount,
                 tx_type='DEBIT',
                 description=description
             )
+            
+            wallet.balance -= amount
+            wallet.save()
             return wallet
 
     @staticmethod
     def credit(user, amount: Decimal, description: str):
+        # Bug 12 Fix: Validate positive amount
+        if amount <= 0:
+            raise ValueError("Credit amount must be greater than zero.")
+        
         with transaction.atomic():
             wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-            wallet.balance += amount
-            wallet.save()
             
+            # Bug 7 Fix: Create ledger entry FIRST, then update balance.
             WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=amount,
                 tx_type='CREDIT',
                 description=description
             )
+            
+            wallet.balance += amount
+            wallet.save()
             return wallet
             
     @staticmethod

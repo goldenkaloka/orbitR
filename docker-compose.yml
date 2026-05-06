@@ -2,55 +2,53 @@ services:
   db:
     image: postgis/postgis:15-3.3
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-mwanachuo_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mwanachuo_password}
-      POSTGRES_DB: ${POSTGRES_DB:-mwanachuo_db}
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    command: redis-server --requirepass ${REDIS_PASSWORD}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
       timeout: 5s
       retries: 5
 
   minio:
     image: minio/minio:latest
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - minio_data:/data
     command: server /data --console-address ":9001"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   minio-init:
     image: minio/mc:latest
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin}) do echo '...waiting for minio...' && sleep 1; done;
-      /usr/bin/mc mb local/${MINIO_STORAGE_BUCKET_NAME:-static} || true;
-      /usr/bin/mc mb local/media || true;
-      /usr/bin/mc anonymous set public local/${MINIO_STORAGE_BUCKET_NAME:-static};
-      /usr/bin/mc anonymous set public local/media;
+      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}) do echo '...waiting for minio...' && sleep 1; done;
+      /usr/bin/mc mb local/${MINIO_STORAGE_BUCKET_NAME} || true;
+      /usr/bin/mc anonymous set public local/${MINIO_STORAGE_BUCKET_NAME};
       exit 0;
       "
 
@@ -58,36 +56,39 @@ services:
     build: .
     volumes:
       - .:/app
-    ports:
-      - "8000:8000"
     env_file:
       - .env
     command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
     environment: &backend-env
-      - DEBUG=${DEBUG:-True}
+      - DEBUG=${DEBUG}
       - DB_HOST=db
       - DB_PORT=5432
-      - DB_NAME=${POSTGRES_DB:-mwanachuo_db}
-      - DB_USER=${POSTGRES_USER:-mwanachuo_user}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-mwanachuo_password}
-      - REDIS_URL=redis://redis:6379/1
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - DB_NAME=${POSTGRES_DB}
+      - DB_USER=${POSTGRES_USER}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/1
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
       - MINIO_ENDPOINT=http://minio:9000
-      - MINIO_EXTERNAL_URL=http://178.105.46.108:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
-      - MINIO_STORAGE_BUCKET_NAME=${MINIO_STORAGE_BUCKET_NAME:-static}
+      - MINIO_EXTERNAL_URL=${MINIO_EXTERNAL_URL}
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+      - MINIO_STORAGE_BUCKET_NAME=${MINIO_STORAGE_BUCKET_NAME}
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   celery-worker:
     build: .
-    command: celery -A config worker -l info -Q default,dispatch --concurrency ${CELERY_CONCURRENCY:-2} --prefetch-multiplier ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child ${CELERY_WORKER_MAX_TASKS_PER_CHILD:-200}
+    command: celery -A config worker -l info -Q default,dispatch --concurrency ${CELERY_CONCURRENCY:-2}
     volumes:
       - .:/app
     env_file:
@@ -102,7 +103,7 @@ services:
 
   celery-worker-payments:
     build: .
-    command: celery -A config worker -l info -Q payments --concurrency ${CELERY_PAYMENTS_CONCURRENCY:-1} --prefetch-multiplier ${CELERY_WORKER_PREFETCH_MULTIPLIER:-1} --max-tasks-per-child ${CELERY_WORKER_MAX_TASKS_PER_CHILD:-200}
+    command: celery -A config worker -l info -Q payments --concurrency ${CELERY_PAYMENTS_CONCURRENCY:-1}
     volumes:
       - .:/app
     env_file:

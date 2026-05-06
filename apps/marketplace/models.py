@@ -69,11 +69,11 @@ class MarketplaceProduct(models.Model):
         return (self.price * percent / 100).quantize(Decimal('1.00'))
 
     def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
         if self.location:
             new_h3 = latlng_to_h3(self.location.y, self.location.x)
             if self.h3_index != new_h3:
-                MarketplaceProduct.objects.filter(id=self.id).update(h3_index=new_h3)
+                self.h3_index = new_h3
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} - TSh {self.price}"

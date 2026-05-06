@@ -25,6 +25,13 @@ def retry_failed_payouts():
     processed = 0
     for payout in FailedPayout.objects.filter(id__in=payout_ids).select_related('payment'):
         try:
+            # Bug 15 Fix: Idempotency check — skip if already disbursed
+            if payout.payment.status == 'DISBURSED':
+                logger.info(f"Payout {payout.id} already disbursed, cleaning up stale record.")
+                payout.delete()
+                processed += 1
+                continue
+
             logger.info(f"Retrying payout for payment {payout.payment.id} (Attempt {payout.retry_count + 1})")
             
             # Increment retry count first to prevent infinite loop on crash

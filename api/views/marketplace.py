@@ -82,20 +82,23 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             }
         )
         
-        # Initiate via EasyPay
+        # Initiate via Gateway
         response = gateway.collect(
             amount=fee,
-            phone=request.user.phone,
-            order_reference=str(product.id), # For listings, we use product id as ref
+            phone=request.data.get('phone', request.user.phone),
+            bank_code=request.data.get('bank_code'),
+            order_reference=str(product.id),
             firstname=request.user.first_name,
             lastname=request.user.last_name
         )
         
         if response.get('success'):
+            payment.provider_reference = response.get('provider_reference')
+            payment.save()
             return Response({
                 'payment_id': payment.id,
-                'payment_url': response.get('endpoint'),
-                'params': response.get('params')
+                'message': 'USSD Push initiated. Please check your phone to confirm payment.',
+                'status': 'PENDING'
             })
         else:
             return Response({'error': response.get('error', 'Payment initiation failed')}, status=400)
@@ -125,17 +128,20 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
 
         response = gateway.collect(
             amount=fee,
-            phone=request.user.phone,
+            phone=request.data.get('phone', request.user.phone),
+            bank_code=request.data.get('bank_code'),
             order_reference=str(product.id),
             firstname=request.user.first_name,
             lastname=request.user.last_name
         )
 
         if response.get('success'):
+            payment.provider_reference = response.get('provider_reference')
+            payment.save()
             return Response({
                 'payment_id': payment.id,
-                'payment_url': response.get('endpoint'),
-                'params': response.get('params')
+                'message': 'USSD Push initiated for reactivation. Please check your phone.',
+                'status': 'PENDING'
             })
         else:
             return Response({'error': response.get('error', 'Reactivation payment failed')}, status=400)

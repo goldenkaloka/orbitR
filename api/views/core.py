@@ -483,8 +483,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         from domain.services.payment_services import InitiatePaymentService
         provider = request.data.get('provider')
         phone = request.data.get('phone')
+        bank_code = request.data.get('bank_code')
         try:
-            result = InitiatePaymentService.execute(pk, provider=provider, phone=phone)
+            result = InitiatePaymentService.execute(pk, provider=provider, phone=phone, bank_code=bank_code)
             payment = result['payment']
             gateway_data = result.get('gateway_response', {})
             

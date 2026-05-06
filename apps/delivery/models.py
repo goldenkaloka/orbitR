@@ -61,13 +61,12 @@ class Driver(models.Model):
             from django.contrib.gis.geos import Point
             self.location = Point(float(self.longitude), float(self.latitude))
         
-        super().save(*args, **kwargs)
-        
-        # Sync H3 index for real-time dispatching
         if self.latitude and self.longitude:
             new_h3 = latlng_to_h3(self.latitude, self.longitude)
             if self.h3_index != new_h3:
-                Driver.objects.filter(id=self.id).update(h3_index=new_h3)
+                self.h3_index = new_h3
+        
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Driver: {self.user.username} ({self.driver_type})"
