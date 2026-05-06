@@ -10,4 +10,5 @@ app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
 app.conf.imports = (
     'domain.services.dispatch_tasks',
     'apps.payments.tasks',
+    'domain.events.tasks',
 )
