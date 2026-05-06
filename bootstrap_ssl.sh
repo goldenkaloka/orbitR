@@ -1,45 +1,49 @@
 #!/bin/bash
+# ---------------------------------------------------------------------------
+# Mwanachuoshop — SSL Bootstraper (Direct Docker Mode)
+# ---------------------------------------------------------------------------
 set -e
 
+# --- Configuration ---
 DOMAIN="api.mwanachuoshop.com"
 EMAIL="goldenkaloka@gmail.com"
 
-echo "🔎 Checking DNS for $DOMAIN..."
+# The project name used for volume prefixing
+# On your VPS, this is likely 'orbitr' (based on your folder structure)
+PROJECT="orbitr"
+
+echo "🔎 [1/6] Checking DNS for $DOMAIN..."
 IP=$(dig +short $DOMAIN | tail -n1)
 if [ -z "$IP" ]; then
-    echo "❌ ERROR: DNS for $DOMAIN not found."
+    echo "❌ ERROR: DNS for $DOMAIN not found. Please wait for propagation."
     exit 1
 fi
-echo "✅ DNS points to: $IP"
+echo "✅ DNS found: $IP"
 
-echo "🧹 Cleaning up existing containers..."
+echo "🧹 [2/6] Cleaning up existing containers..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans || true
-docker rm -f temp_nginx || true
+docker rm -f temp_nginx temp_certbot || true
 
-echo "🌐 Starting temporary Nginx for SSL challenge..."
-# We map the volume to Nginx's default HTML folder
+echo "🌐 [3/6] Starting temporary Nginx for SSL challenge..."
+# Map the shared certbot volume to Nginx's default public directory
 docker run -d --name temp_nginx \
-  -v orbitr_certbot-webroot:/usr/share/nginx/html \
+  -v ${PROJECT}_certbot-webroot:/usr/share/nginx/html \
   -p 80:80 nginx:alpine
 
-echo "🔐 Requesting SSL Certificate..."
-# We use /var/www/certbot because that is where the volume is mounted in docker-compose.prod.yml
-docker compose -f docker-compose.yml -f docker-compose.prod.yml run --rm certbot certonly \
-  --webroot -w /var/www/certbot \
-  --email $EMAIL \
-  --agree-tos \
-  --no-eff-email \
-  --non-interactive \
+echo "🔐 [4/6] Requesting SSL Certificate (Direct Mode)..."
+# We run certbot directly to avoid any entrypoint conflicts in docker-compose
+docker run --rm --name temp_certbot \
+  -v ${PROJECT}_certbot-etc:/etc/letsencrypt \
+  -v ${PROJECT}_certbot-var:/var/lib/letsencrypt \
+  -v ${PROJECT}_certbot-webroot:/var/www/certbot \
+  certbot/certbot certonly --webroot -w /var/www/certbot \
+  --email $EMAIL --agree-tos --no-eff-email --non-interactive \
   -d $DOMAIN
 
-echo "🛑 Stopping temporary Nginx..."
-docker stop temp_nginx
+echo "🛑 [5/6] Stopping temporary Nginx..."
+docker stop temp_nginx || true
 
-echo "🚀 Starting full production stack (Backend + Nginx Proxy)..."
+echo "🚀 [6/6] Launching Production Stack..."
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
-echo "🩺 Waiting for health check..."
-sleep 10
-docker compose -f docker-compose.yml -f docker-compose.prod.yml ps
-
-echo "✅ DONE - Your site should be live at https://$DOMAIN"
+echo "✅ ALL DONE! Your site should now be live at https://$DOMAIN"
