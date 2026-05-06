@@ -8,24 +8,24 @@ COMPOSE_ARGS="-f docker-compose.yml -f docker-compose.prod.yml"
 
 # 2. Pull latest images and build
 echo "📦 Building and pulling latest images..."
-docker-compose $COMPOSE_ARGS build
-docker-compose $COMPOSE_ARGS pull
+docker compose $COMPOSE_ARGS build
+docker compose $COMPOSE_ARGS pull
 
 # 3. Apply Migrations (using the backend container)
 echo "📂 Running database migrations..."
-docker-compose $COMPOSE_ARGS run --rm backend python manage.py migrate --noinput
+docker compose $COMPOSE_ARGS run --rm backend python manage.py migrate --noinput
 
 # 4. Collect Static (using the backend container)
 echo "🎨 Collecting static files..."
-docker-compose $COMPOSE_ARGS run --rm backend python manage.py collectstatic --noinput
+docker compose $COMPOSE_ARGS run --rm backend python manage.py collectstatic --noinput
 
 # 5. Seed Operational Zones if needed (optional)
 # echo "🗺️ Seeding operational zones..."
-# docker-compose $COMPOSE_ARGS run --rm backend python seed_operational_zones.py
+# docker compose $COMPOSE_ARGS run --rm backend python seed_operational_zones.py
 
 # 6. Bring up all services
 echo "🚢 Deploying services..."
-docker-compose $COMPOSE_ARGS up -d
+docker compose $COMPOSE_ARGS up -d
 
 # 7. Health Probe
 echo "🩺 Waiting for backend health..."
