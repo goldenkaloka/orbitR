@@ -92,3 +92,26 @@ def get_neighbors(h3_index, k=1):
     except Exception:
         # Safer default: return empty so callers can decide fallback behavior.
         return []
+
+def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
+    """
+    Converts a GEOS Polygon to a list of H3 cell indexes at the given resolution.
+    Used for 'filling' a drawn zone with hexagons.
+    """
+    if not polygon:
+        return []
+    
+    try:
+        # Prepare coordinates for H3 (H3 expects [[lat, lng], ...])
+        # polygon.exterior.coords gives (lng, lat)
+        coords = [[p[1], p[0]] for p in polygon.exterior.coords]
+        
+        # H3 polygon expects a list of lat/lng points
+        h3_poly = h3.Polygon(coords)
+        
+        # Get cells that are contained or intersect
+        cells = h3.polygon_to_cells(h3_poly, resolution)
+        return list(cells)
+    except Exception as e:
+        logger.error(f"Failed to convert polygon to H3 cells: {str(e)}")
+        return []

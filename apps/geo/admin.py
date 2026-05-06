@@ -1,14 +1,25 @@
 from django.contrib import admin
-from unfold.admin import ModelAdmin
-from .models import OperationalZone
+from unfold.admin import ModelAdmin, TabularInline
+from .models import OperationalZone, ZoneH3Index
 from django.contrib.gis.admin import GISModelAdmin
+
+class ZoneH3IndexInline(TabularInline):
+    model = ZoneH3Index
+    extra = 0
+    readonly_fields = ('h3_index', 'resolution')
+    can_delete = False
 
 @admin.register(OperationalZone)
 class OperationalZoneAdmin(ModelAdmin, GISModelAdmin):
-    list_display = ('name', 'is_active', 'created_at')
+    list_display = ('name', 'is_active', 'h3_cell_count', 'created_at')
     list_filter = ('is_active',)
     search_fields = ('name', 'description')
+    inlines = [ZoneH3IndexInline]
     
+    def h3_cell_count(self, obj):
+        return obj.metadata.get('h3_count', 0)
+    h3_cell_count.short_description = "H3 Cells"
+
     # GISModelAdmin provides a map interface for drawing polygons
     gis_widget_kwargs = {
         'attrs': {
