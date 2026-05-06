@@ -30,4 +30,7 @@ class OperationalZoneAdmin(ModelAdmin, GISModelAdmin):
     }
 
     class Media:
-        js = ('admin/js/geo_locate.js',)
+        js = (
+            'admin/js/geo_locate.js',
+            'admin/js/h3_visualizer.js',
+        )
