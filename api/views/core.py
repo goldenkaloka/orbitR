@@ -107,9 +107,10 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         return RestaurantSerializer
 
     def get_queryset(self):
-        queryset = Restaurant.objects.select_related('owner').filter(is_active=True)
+        queryset = Restaurant.objects.select_related('owner').prefetch_related('foods').filter(is_active=True)
         if getattr(self, "action", None) in ("retrieve", "mine"):
-            queryset = queryset.prefetch_related('foods')
+            # Already prefetched above for all actions
+            pass
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)

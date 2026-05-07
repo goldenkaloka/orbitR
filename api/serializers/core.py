@@ -41,13 +41,14 @@ class FoodSerializer(serializers.ModelSerializer):
 
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
+    foods = FoodSerializer(many=True, read_only=True)
 
     class Meta:
         model = Restaurant
         fields = [
             'id', 'name', 'description', 'image', 'image_url', 
             'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
-            'is_active'
+            'is_active', 'foods'
         ]
 
     def get_image_url(self, obj):
