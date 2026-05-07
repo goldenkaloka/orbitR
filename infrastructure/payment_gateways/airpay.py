@@ -106,9 +106,11 @@ class AirpayGateway(PaymentGateway):
                     error_msg = res_data.get('message') or "USSD Push rejected by provider"
                     return {'success': False, 'error': error_msg, 'code': res_data.get('response_code')}
                 
-                return {'success': False, 'error': f"Unexpected response format: {response.text}"}
-            
-            return {'success': False, 'error': f"Airpay API Error: {response.status_code}"}
+                logger.error(f"AIRPAY_DEBUG: Unexpected 200 response format: {response.text}")
+                return {'success': False, 'error': "Unexpected response format from Airpay"}
+            else:
+                logger.error(f"AIRPAY_DEBUG: Seamless/Push Request Failed. Status: {response.status_code}, Body: {response.text}")
+                return {'success': False, 'error': f"Airpay API Error: {response.status_code}"}
 
         except Exception as e:
             logger.error(f"Airpay USSD Push Error: {str(e)}")
@@ -283,7 +285,10 @@ class AirpayGateway(PaymentGateway):
                         if token:
                             cache.set(cache_key, token, 3500)
                             return token
-            logger.error(f"Airpay Auth Failed: {response.text}")
+                    if not token:
+                        logger.error(f"AIRPAY_DEBUG: Token missing in decrypted response: {res_data}")
+            
+            logger.error(f"AIRPAY_DEBUG: OAuth Auth Failed. Status: {response.status_code}, Body: {response.text}")
             return ""
         except Exception as e:
             logger.error(f"Airpay Token Error: {str(e)}")
