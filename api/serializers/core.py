@@ -91,7 +91,7 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            'id', 'status', 'items_subtotal', 'delivery_fee', 'total_amount', 
+            'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'total_amount', 
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude', 

@@ -1,128 +1,216 @@
-import os
-import django
 import json
+import hashlib
+import base64
 import requests
-import zlib
-import sys
-from decimal import Decimal
+import datetime
+import os
+import re
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
 
-# Add current directory to path for standalone execution
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# --- 🛰️ Manual .env Reader (Keeps it Standalone) ---
+def get_env_var(var_name):
+    # Try to find .env in current or parent directory
+    env_paths = ['.env', '../.env']
+    for path in env_paths:
+        if os.path.exists(path):
+            with open(path, 'r') as f:
+                content = f.read()
+                # Look for VAR=VALUE
+                match = re.search(f'^{var_name}=(.*)$', content, re.M)
+                if match:
+                    return match.group(1).strip().strip('"').strip("'")
+    return os.environ.get(var_name)
 
-try:
-    # Setup Django
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
-    django.setup()
-    from apps.orders.models import Order
-    USE_DJANGO = True
-except Exception as e:
-    print(f"⚠️  Django Setup Warning: {str(e)}")
-    print("Falling back to Standalone Mode (No database access).\n")
-    USE_DJANGO = False
-from infrastructure.payment_gateways.airpay import AirpayGateway
-from infrastructure.payment_gateways.airpay_utils import AirpayTransformer
-from django.conf import settings
+# --- 🔑 Credentials ---
+CONFIG = {
+    "AIRPAY_MERCHANT_ID": get_env_var("AIRPAY_MERCHANT_ID") or "247234",
+    "AIRPAY_CLIENT_ID": get_env_var("AIRPAY_CLIENT_ID"),
+    "AIRPAY_CLIENT_SECRET": get_env_var("AIRPAY_CLIENT_SECRET"),
+    "AIRPAY_USERNAME": get_env_var("AIRPAY_USERNAME"),
+    "AIRPAY_PASSWORD": get_env_var("AIRPAY_PASSWORD"),
+    "AIRPAY_SECRET_KEY": get_env_var("AIRPAY_SECRET_KEY") or get_env_var("AIRPAY_SECRET"),
+}
 
-def test_airpay_initiation():
-    print("\n--- Testing Airpay Initiation ---")
-    
-    if USE_DJANGO:
-        order = Order.objects.first()
-        if not order:
-            print("No order found in database. Using mock data.")
-            order_id = "ORD-123"
-            amount = Decimal("1500.00")
-        else:
-            order_id = str(order.id)
-            amount = order.total_amount
-    else:
-        order_id = "ORD-MOCK-999"
-        amount = Decimal("2500.00")
-    
-    gateway = AirpayGateway()
-    print(f"Testing Order ID: {order_id}")
-    print(f"Amount: {amount}")
-    
-    # Simulate the collect call
-    result = gateway.collect(
-        amount=amount,
-        phone="255712345678",
-        order_reference=order_id
-    )
-    
-    print("\n[BACKEND RESPONSE TO FLUTTER]")
-    print(json.dumps(result, indent=2))
-    
-    if result.get('success'):
-        print("\n✅ Initiation Success!")
-        print("These parameters would be passed to the Airpay Flutter SDK.")
-    else:
-        print("\n❌ Initiation Failed.")
-
-def test_airpay_webhook_simulation():
-    print("\n--- Testing Airpay Webhook Simulation ---")
-    
-    if USE_DJANGO:
-        order = Order.objects.first()
-        order_id = str(order.id) if order else "ORD-123"
-        amount = str(int(order.total_amount)) if order else "1500"
-    else:
-        order_id = "ORD-MOCK-999"
-        amount = "2500"
-
-    gateway = AirpayGateway()
-    
-    # 1. Prepare raw response data
-    payload_data = {
-        "orderid": order_id,
-        "ap_transactionid": "AP_TEST_9999",
-        "amount": amount,
-        "transaction_status": "200",
-        "message": "Transaction Successful",
-        "chmod": "Mpesa"
-    }
-
-    # 2. Calculate Secure Hash (CRC32)
-    # format: orderid:ap_transactionid:amount:transaction_status:message:mercid:username
-    hash_string = f"{payload_data['orderid']}:{payload_data['ap_transactionid']}:{payload_data['amount']}:{payload_data['transaction_status']}:{payload_data['message']}:{gateway.mercid}:{gateway.username}"
-    secure_hash = zlib.crc32(hash_string.encode()) & 0xffffffff
-    payload_data['ap_securehash'] = str(secure_hash)
-
-    # 3. Encrypt the payload using Airpay logic
-    # In Airpay v4, the entire JSON 'data' is encrypted
-    full_payload = {"data": payload_data}
-    json_payload = json.dumps(full_payload)
-    
-    encrypted_response = AirpayTransformer.encrypt_string(
-        json_payload, 
-        gateway.username, 
-        gateway.password
-    )
-
-    print(f"\n[SIMULATED WEBHOOK PAYLOAD]")
-    print(f"Encrypted 'response' field: {encrypted_response[:50]}...")
-
-    # 4. Post to local webhook
-    webhook_url = "http://localhost:8000/api/payments/airpay/callback/"
-    print(f"Posting to: {webhook_url}")
-    
-    try:
-        response = requests.post(webhook_url, json={"response": encrypted_response})
-        print(f"Response Status: {response.status_code}")
-        print(f"Response Body: {response.text}")
+class AirpayStandaloneTest:
+    def __init__(self):
+        self.mercid = CONFIG["AIRPAY_MERCHANT_ID"]
+        self.client_id = CONFIG["AIRPAY_CLIENT_ID"]
+        self.client_secret = CONFIG["AIRPAY_CLIENT_SECRET"]
+        self.username = CONFIG["AIRPAY_USERNAME"]
+        self.password = CONFIG["AIRPAY_PASSWORD"]
+        self.secret = CONFIG["AIRPAY_SECRET_KEY"]
         
-        if response.status_code == 200:
-            print("\n✅ Webhook Processed Successfully!")
-            if USE_DJANGO and order:
-                order.refresh_from_db()
-                print(f"New Order Status: {order.status}")
-                print(f"Order Paid Flag: {order.is_paid}")
-        else:
-            print("\n❌ Webhook Processing Failed.")
-    except Exception as e:
-        print(f"Error calling webhook: {str(e)}")
-        print("Note: Make sure your server is running (python manage.py runserver)")
+        self.oauth_url = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth2/"
+        self.seamless_url = "https://kraken.airpay.tz/airpay/pay/v1/api/seamless/index.php"
+
+        # Validate we have what we need
+        missing = [k for k, v in CONFIG.items() if not v]
+        if missing:
+            print(f"!! WARNING: Missing variables in .env: {', '.join(missing)} !!")
+
+    def encrypt_data(self, data_dict):
+        """Step 2: Generate encryption key and encrypt JSON"""
+        # key = md5(username + "~:~" + password)
+        key_raw = f"{self.username}~:~{self.password}"
+        secret_key = hashlib.md5(key_raw.encode()).hexdigest()
+        
+        iv = 'c0f9e2d16031b0ce' # Hardcoded IV as per v4 SDK
+        my_string = json.dumps(data_dict)
+        
+        cipher = AES.new(secret_key.encode(), AES.MODE_CBC, iv.encode())
+        encrypted_bytes = cipher.encrypt(pad(my_string.encode(), AES.block_size))
+        return iv + base64.b64encode(encrypted_bytes).decode()
+
+    def decrypt_data(self, encrypted_str):
+        """Decrypt helper for responses"""
+        key_raw = f"{self.username}~:~{self.password}"
+        secret_key = hashlib.md5(key_raw.encode()).hexdigest()
+        
+        iv = encrypted_str[:16]
+        data = encrypted_str[16:]
+        
+        cipher = AES.new(secret_key.encode(), AES.MODE_CBC, iv.encode())
+        decrypted_bytes = cipher.decrypt(base64.b64decode(data))
+        return unpad(decrypted_bytes, AES.block_size).decode()
+
+    def run(self):
+        print("\n--- 🕵️ AIRPAY PRODUCTION DIAGNOSTIC (AUTO .ENV) ---\n")
+        print(f"Merchant ID: {self.mercid}")
+        print(f"Username: {self.username}")
+        
+        # --- PHASE 1: OAUTH ---
+        print("\n[1/2] ATTEMPTING AUTHENTICATION...")
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        auth_payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "grant_type": "client_credentials",
+            "merchant_id": self.mercid,
+            "mercid": self.mercid
+        }
+        
+        enc_auth = self.encrypt_data(auth_payload)
+        
+        # Checksum calculation: values sorted by keys + current_date
+        sorted_keys = sorted(auth_payload.keys())
+        data_str = "".join([str(auth_payload[k]) for k in sorted_keys])
+        checksum_auth = hashlib.sha256((data_str + current_date).encode()).hexdigest()
+
+        print(f"POST {self.oauth_url}")
+        
+        try:
+            resp_auth = requests.post(self.oauth_url, data={
+                'merchant_id': self.mercid,
+                'encdata': enc_auth,
+                'checksum': checksum_auth
+            }, timeout=15)
+            
+            print(f"HTTP Status: {resp_auth.status_code}")
+            
+            if resp_auth.status_code != 200:
+                print(f"RAW ERROR BODY: {resp_auth.text}")
+                return
+
+            res_json = resp_auth.json()
+            if 'response' in res_json:
+                decrypted_auth = self.decrypt_data(res_json['response'])
+                print(f"Decrypted Response: {decrypted_auth}")
+                
+                token_data = json.loads(decrypted_auth)
+                token = token_data.get('data', {}).get('access_token')
+                
+                if not token:
+                    print("!! Access Token missing from decrypted response !!")
+                    return
+            else:
+                print(f"!! Response JSON was unexpected: {res_json} !!")
+                return
+                
+        except Exception as e:
+            print(f"!! OAUTH CRASH: {str(e)} !!")
+            return
+
+        # --- PHASE 2: SEAMLESS ---
+        print("\n[2/2] ATTEMPTING SEAMLESS USSD PUSH...")
+        
+        seamless_payload = {
+            'buyer_email': 'test@mwanachuoshop.com',
+            'buyer_phone': '255616622485',
+            'buyer_firstname': 'Mwanachuo',
+            'buyer_lastname': 'Test',
+            'orderid': 'DIAG' + datetime.datetime.now().strftime("%H%M%S"),
+            'amount': '100.00',
+            'channel': 'mmoney',
+            'chmod': 'mmoney',
+            'bankcode': 'MPESA',
+            'currency_code': '834',
+            'iso_currency': 'TZS',
+            'merchant_id': self.mercid
+        }
+        
+        enc_seamless = self.encrypt_data(seamless_payload)
+        
+        # PrivateKey: sha256(secret@username:|:password)
+        private_key_raw = f"{self.secret}@{self.username}:|:{self.password}"
+        private_key = hashlib.sha256(private_key_raw.encode()).hexdigest()
+        
+        # Checksum
+        sorted_keys_s = sorted(seamless_payload.keys())
+        data_str_s = "".join([str(seamless_payload[k]) for k in sorted_keys_s])
+        checksum_s = hashlib.sha256((data_str_s + current_date).encode()).hexdigest()
+        
+        print(f"POST {self.seamless_url}?token=HIDDEN")
+        
+        try:
+            resp_s = requests.post(f"{self.seamless_url}?token={token}", data={
+                'merchant_id': self.mercid,
+                'privatekey': private_key,
+                'encdata': enc_seamless,
+                'checksum': checksum_s
+            }, timeout=15)
+            
+            print(f"HTTP Status: {resp_s.status_code}")
+            
+            # --- ROBUST OUTER PARSING ---
+            raw_text = resp_s.text.strip()
+            print(f"RAW SERVER RESPONSE: {raw_text}")
+            
+            try:
+                res_body = json.loads(raw_text)
+            except json.JSONDecodeError:
+                print("!! OUTER JSON PARSE FAILED - Cleaning trailing junk !!")
+                last_brace = raw_text.rfind('}')
+                res_body = json.loads(raw_text[:last_brace+1])
+
+            if 'response' in res_body:
+                decrypted_s = self.decrypt_data(res_body['response'])
+                print(f"RAW DECRYPTED RESPONSE: {decrypted_s}")
+                
+                try:
+                    res_data = json.loads(decrypted_s)
+                    print(f"RECOVERED DATA: {json.dumps(res_data, indent=2)}")
+                except Exception:
+                    # Final inner cleaning
+                    print("!! INNER JSON PARSE FAILED - Cleaning inner junk !!")
+                    last_brace_inner = decrypted_s.rfind('}')
+                    res_data = json.loads(decrypted_s[:last_brace_inner+1])
+                    print(f"RECOVERED DATA (CLEANED): {json.dumps(res_data, indent=2)}")
+            else:
+                print(f"Unexpected JSON format: {res_body}")
+            
+        except Exception as e:
+            print(f"!! SEAMLESS CRASH: {str(e)} !!")
+
+        print("\n--- DIAGNOSTIC COMPLETE ---")
 
 if __name__ == "__main__":
-    test_airpay_initiation()
-    test_airpay_webhook_simulation()
+    # Dependency check
+    try:
+        from Crypto.Cipher import AES
+    except ImportError:
+        print("Please run: pip install pycryptodome requests")
+    else:
+        test = AirpayStandaloneTest()
+        test.run()
