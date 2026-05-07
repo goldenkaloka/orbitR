@@ -49,7 +49,19 @@ class AirpayTransformer:
 
         # Remove padding from the decrypted data
         unpadded_data = unpad(decrypted_data, AES.block_size)
-        return unpadded_data.decode()
+        decoded = unpadded_data.decode().strip()
+        
+        # Bug Fix: Remove potential trailing junk (common in Airpay v4 responses)
+        # Often Airpay Kraken returns a '1' at the end of the decrypted payload
+        if decoded.endswith('}') and decoded.count('{') == decoded.count('}'):
+             return decoded
+             
+        # Fallback: if there is extra data after the last closing brace
+        last_brace = decoded.rfind('}')
+        if last_brace != -1:
+            return decoded[:last_brace+1]
+            
+        return decoded
 
     @staticmethod
     def encrypt_sha(data, salt):

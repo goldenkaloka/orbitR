@@ -82,7 +82,13 @@ class AirpayGateway(PaymentGateway):
             )
             
             if response.status_code == 200:
-                res_json = response.json()
+                try:
+                    res_json = response.json()
+                except json.JSONDecodeError:
+                    # Clean response text if it has trailing junk
+                    text = response.text.strip()
+                    last_brace = text.rfind('}')
+                    res_json = json.loads(text[:last_brace+1])
                 # Airpay returns an encrypted 'response' field even for seamless
                 if 'response' in res_json:
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
@@ -174,7 +180,12 @@ class AirpayGateway(PaymentGateway):
 
             response = requests.post(f"{self.verify_url}?token={token}", data=payload, timeout=10)
             if response.status_code == 200:
-                res_json = response.json()
+                try:
+                    res_json = response.json()
+                except json.JSONDecodeError:
+                    text = response.text.strip()
+                    last_brace = text.rfind('}')
+                    res_json = json.loads(text[:last_brace+1])
                 if 'response' in res_json:
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
                     res_data = json.loads(decrypted)
@@ -255,7 +266,12 @@ class AirpayGateway(PaymentGateway):
             }, timeout=10)
             
             if response.status_code == 200:
-                res_json = response.json()
+                try:
+                    res_json = response.json()
+                except json.JSONDecodeError:
+                    text = response.text.strip()
+                    last_brace = text.rfind('}')
+                    res_json = json.loads(text[:last_brace+1])
                 if 'response' in res_json:
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
                     res_data = json.loads(decrypted)
