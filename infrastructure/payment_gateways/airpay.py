@@ -103,6 +103,7 @@ class AirpayGateway(PaymentGateway):
                             'raw_data': res_data
                         }
                     
+                    logger.error(f"AIRPAY_DEBUG: Push Request Rejected. Decrypted Response: {res_data}")
                     error_msg = res_data.get('message') or "USSD Push rejected by provider"
                     return {'success': False, 'error': error_msg, 'code': res_data.get('response_code')}
                 
