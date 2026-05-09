@@ -41,3 +41,17 @@ def broadcast_order_status(order_id, status, message="Status updated"):
             
     except Order.DoesNotExist:
         pass
+
+def broadcast_order_location(order_id, lat, lng, heading=0.0):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    payload = {
+        'type': 'location_update',
+        'order_id': str(order_id),
+        'lat': float(lat),
+        'lng': float(lng),
+        'heading': float(heading)
+    }
+    async_to_sync(channel_layer.group_send)(f'order_{order_id}', payload)

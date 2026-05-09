@@ -98,6 +98,17 @@ class DriverViewSet(viewsets.ModelViewSet):
         
         cache.set(cache_key, True, 10)
         
+        # 5. Broadcast location to active order groups
+        from apps.events.utils import broadcast_order_location
+        active_orders = Order.objects.filter(driver=driver, status__in=['ASSIGNED', 'PICKED'])
+        for order in active_orders:
+            broadcast_order_location(
+                order_id=str(order.id),
+                lat=lat_f,
+                lng=lng_f,
+                heading=request.data.get('heading', 0.0) # Optional heading from app
+            )
+        
         # --- Arrival Notifications Logic ---
         # Find active orders where the driver is now within 300m of the delivery location
         from django.contrib.gis.measure import D

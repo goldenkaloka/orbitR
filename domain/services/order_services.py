@@ -14,6 +14,8 @@ from domain.events.types import (
 from apps.events.utils import broadcast_order_status
 from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to_h3, get_neighbors
 import h3
+from django.utils import timezone
+
 
 logger = logging.getLogger(__name__)
 
@@ -445,7 +447,6 @@ class MarkReadyService:
             
             new_state = OrderFSM.transition(order.status, 'READY')
             order.status = new_state
-            from django.utils import timezone
             order.ready_at = timezone.now()
             order.save()
             
