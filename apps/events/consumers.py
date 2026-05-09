@@ -154,9 +154,11 @@ class RiderConsumer(AsyncWebsocketConsumer):
         
         # Security: User must be authenticated and match the rider_id
         if not user or user.is_anonymous or str(user.id) != self.rider_id:
+            print(f"DEBUG: RiderConsumer rejection - User: {user}, RiderID in URL: {self.rider_id}")
             await self.close()
             return
 
+        print(f"DEBUG: RiderConsumer accepted - User: {user}, RiderID: {self.rider_id}")
         self.room_group_name = f'rider_{self.rider_id}'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
@@ -193,9 +195,11 @@ class RidersPoolConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         user = self.scope.get('user')
         if not user or user.is_anonymous or user.role != 'driver':
+            print(f"DEBUG: RidersPoolConsumer rejection - User: {user}, Role: {getattr(user, 'role', 'N/A')}")
             await self.close()
             return
 
+        print(f"DEBUG: RidersPoolConsumer accepted - User: {user}")
         self.room_group_name = 'riders'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()

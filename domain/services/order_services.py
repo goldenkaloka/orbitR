@@ -541,6 +541,7 @@ class AssignDriverService:
             new_state = OrderFSM.transition(order.status, 'ASSIGNED')
             order.status = new_state
             order.driver = driver
+            order.save()
             
             # Transition Driver: Skip if already ASSIGNED (e.g. in a batch)
             if driver.status != 'ASSIGNED':

@@ -28,10 +28,20 @@ class JWTAuthMiddleware:
                 # you might want to use their authentication backend.
                 payload = jwt.decode(token, settings.SECRET_KEY, algorithms=['HS256'])
                 user_id = payload.get('user_id')
-                scope['user'] = await get_user(user_id)
-            except (jwt.ExpiredSignatureError, jwt.DecodeError, jwt.InvalidTokenError):
+                user = await get_user(user_id)
+                scope['user'] = user
+                print(f"DEBUG: WebSocket JWT Auth successful for user: {user} (ID: {user_id})")
+            except jwt.ExpiredSignatureError:
+                print("DEBUG: WebSocket JWT Auth failed: Token expired")
+                scope['user'] = AnonymousUser()
+            except jwt.DecodeError:
+                print("DEBUG: WebSocket JWT Auth failed: Decode error")
+                scope['user'] = AnonymousUser()
+            except Exception as e:
+                print(f"DEBUG: WebSocket JWT Auth failed: {str(e)}")
                 scope['user'] = AnonymousUser()
         else:
+            print("DEBUG: WebSocket JWT Auth failed: No token provided")
             scope['user'] = AnonymousUser()
 
         return await self.inner(scope, receive, send)
