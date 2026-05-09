@@ -22,7 +22,7 @@ class OrderFSM:
         'CREATED': ['CONFIRMED', 'CANCELLED'],
         'CONFIRMED': ['PREPARING', 'CANCELLED'],
         'PREPARING': ['READY', 'CANCELLED'],
-        'READY': ['OFFERED', 'CANCELLED'],
+        'READY': ['OFFERED', 'ASSIGNED', 'CANCELLED'],
         'OFFERED': ['ASSIGNED', 'READY', 'CANCELLED'],
         'ASSIGNED': ['PICKED', 'CANCELLED'],
         'PICKED': ['DELIVERED', 'CANCELLED'],
