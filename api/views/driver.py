@@ -99,22 +99,24 @@ class DriverViewSet(viewsets.ModelViewSet):
         cache.set(cache_key, True, 10)
         
         # --- Arrival Notifications Logic ---
-        active_orders = Order.objects.filter(driver=driver, status='PICKED')
+        # Find active orders where the driver is now within 300m of the delivery location
+        from django.contrib.gis.measure import D
+        active_orders = Order.objects.filter(
+            driver=driver, 
+            status='PICKED',
+            delivery_location__distance_lte=(new_loc, D(m=300))
+        )
         for order in active_orders:
-            if order.delivery_location:
-                # Fixed variable name from new_location to new_loc
-                dist_to_customer = new_loc.distance(order.delivery_location)
-                if dist_to_customer < 300: # 300 meters
-                    # Check cache to avoid duplicate notifications within 10 mins
-                    notif_cache_key = f"nearby_notif_{order.id}"
-                    if not cache.get(notif_cache_key):
-                        NotificationService.send_push(
-                            user_id=str(order.customer.id),
-                            title="Rider Nearby! 🛵",
-                            body="Your rider is almost at your location. Please get ready!",
-                            data={"order_id": str(order.id), "type": "rider_nearby"}
-                        )
-                        cache.set(notif_cache_key, True, 600)
+            # Check cache to avoid duplicate notifications within 10 mins
+            notif_cache_key = f"nearby_notif_{order.id}"
+            if not cache.get(notif_cache_key):
+                NotificationService.send_push(
+                    user_id=str(order.customer.id),
+                    title="Rider Nearby! 🛵",
+                    body=f"Your rider is almost at your location. PIN: {order.delivery_otp}. Please get ready!",
+                    data={"order_id": str(order.id), "type": "rider_nearby"}
+                )
+                cache.set(notif_cache_key, True, 600)
         
         return Response({'status': 'location updated'})
 

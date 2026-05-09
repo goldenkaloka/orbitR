@@ -571,6 +571,14 @@ class PickupOrderService:
             if actor.role != 'driver':
                 raise PermissionError("Only drivers can perform order pickups.")
             
+            # SELF-HEALING FALLBACK: If order is ASSIGNED but driver link is null (due to previous bug)
+            if not order.driver and order.status == 'ASSIGNED':
+                assignment = getattr(order, 'delivery_assignment', None)
+                if assignment:
+                    logger.info(f"HEALING: Restoring missing driver {assignment.driver_id} for order {order.id}")
+                    order.driver = assignment.driver
+                    order.save(update_fields=['driver'])
+            
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 logger.warning(f"DEBUG PICKUP REJECTED: order.driver={'None' if not order.driver else order.driver_id}, "
                                f"driver.user={'N/A' if not order.driver else order.driver.user_id}, actor={actor.id}")
@@ -587,6 +595,9 @@ class PickupOrderService:
                 
                 if driver_h3 != res_h3 and res_h3 not in get_neighbors(driver_h3, 10):
                     raise ValueError("You are too far from the restaurant to pickup (3km limit)")
+            
+            import random
+            order.delivery_otp = ''.join([str(random.randint(0, 9)) for _ in range(4)])
             
             new_state = OrderFSM.transition(order.status, 'PICKED')
             order.status = new_state
@@ -613,6 +624,14 @@ class DeliverOrderService:
             if actor.role != 'driver':
                 raise PermissionError("Only drivers can perform delivery completions.")
                 
+            # SELF-HEALING FALLBACK: If driver link is null, check delivery_assignment
+            if not order.driver:
+                assignment = getattr(order, 'delivery_assignment', None)
+                if assignment:
+                    logger.info(f"HEALING (DELIVER): Restoring missing driver {assignment.driver_id} for order {order.id}")
+                    order.driver = assignment.driver
+                    order.save(update_fields=['driver'])
+
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 raise PermissionError("Only the assigned driver can complete this delivery.")
             

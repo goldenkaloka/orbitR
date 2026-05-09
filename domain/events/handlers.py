@@ -154,7 +154,7 @@ def on_order_event(event):
         'OrderPreparing': "Restaurant has started preparing your food! 🔥",
         'FoodReady': "Food is ready for pickup! 🛵",
         'DriverAssigned': "A rider is on the way to pick up your food.",
-        'OrderPicked': "Rider has picked up your order! 🚀",
+        'OrderPicked': f"Rider has picked up your order! 🚀 Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
         'OrderDelivered': "Order delivered! Enjoy your meal 😋",
         'OrderCancelled': "Order has been cancelled. 🛑",
     }
