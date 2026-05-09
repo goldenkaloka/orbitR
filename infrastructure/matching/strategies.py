@@ -50,41 +50,35 @@ class SimpleProximityStrategy(LocationMatcher):
 
 class PostgisRadiusStrategy(LocationMatcher):
     """
-    High-performance spatial matching using PostGIS DWithin.
+    High-performance spatial matching using PostGIS DWithin and weighted scoring.
     """
-    def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=15):
+    def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=15, restaurant_id=None):
         """
         Primary strategy: Spatial query with weighted scoring and row-level locking.
         """
         from apps.delivery.models import Driver
         from django.contrib.gis.geos import Point
         from django.contrib.gis.db.models.functions import Distance
+        from django.contrib.gis.measure import D
         from django.db.models import Count, Q, F
         from django.db import transaction
         from decimal import Decimal
 
-        # Use a transaction to lock the potential drivers
-        with transaction.atomic():
-            import h3
-            from apps.core.geo_utils import ZONE_RESOLUTION
-            # 1. Calculate H3 cells for radius search
-            restaurant_h3 = h3.latlng_to_cell(float(restaurant_lat), float(restaurant_lng), ZONE_RESOLUTION)
-            
-            # Approximate k-rings based on max_radius_km (res 9 is ~170m radius per cell)
-            k_rings = int((max_radius_km * 1000) / 170)
-            try:
-                search_cells = list(h3.grid_disk(restaurant_h3, k_rings))
-            except h3.H3ValueError:
-                search_cells = [restaurant_h3]
+        restaurant_point = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
 
-            # 2. Filter available drivers within H3 cells
-            # select_for_update(skip_locked=True) ensures we don't pick a driver
-            # being processed by another dispatch task.
+        # 1. Filter available drivers within PostGIS Radius
+        # We use select_for_update(skip_locked=True) to handle concurrency.
+        # We also handle affinity: Permanent drivers are global, Temp drivers are locked to one restaurant.
+        with transaction.atomic():
             drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                 status='AVAILABLE',
-                h3_index__in=search_cells
+                location__dwithin=(restaurant_point, D(km=max_radius_km))
+            ).filter(
+                # Affinity Rule: If temp, must match restaurant. If permanent, any restaurant.
+                Q(driver_type='permanent') | Q(assigned_by_id=restaurant_id)
             ).annotate(
-                active_count=Count('orders', filter=Q(orders__status__in=['ASSIGNED', 'PICKED']))
+                distance_meters=Distance('location', restaurant_point),
+                active_count=Count('assignments', filter=Q(assignments__delivered_at__isnull=True))
             ).filter(
                 active_count__lt=F('max_active_orders')
             )
@@ -92,26 +86,25 @@ class PostgisRadiusStrategy(LocationMatcher):
             if not drivers.exists():
                 return None
 
-            # 3. Weighted Scoring (Load-balanced)
+            # 2. Weighted Scoring (Load-balanced)
             # Factors: Distance (20%), Rating (20%), Load (60%)
             best_driver = None
             min_score = float('inf')
 
             for driver in drivers:
-                # Avoid division by zero for rating
-                rating_factor = 1.0 / float(max(driver.rating, Decimal('0.1')))
+                # Rating Penalty: Higher rating = Lower penalty (0.0 penalty for 5.0 rating)
+                rating_penalty = 5.0 - float(driver.rating)
                 
-                # Approximate distance in km using h3.grid_distance
-                try:
-                    driver_dist_km = h3.grid_distance(restaurant_h3, driver.h3_index) * 0.170 if driver.h3_index else max_radius_km
-                except h3.H3ValueError:
-                    driver_dist_km = max_radius_km
+                # Distance Factor (km)
+                # distance_meters.m returns the value in meters from PostGIS geography
+                dist_km = driver.distance_meters.km if driver.distance_meters else max_radius_km
 
                 # Formula: Load-heavy to ensure busy drivers are deprioritized
-                # Load (60%) weight ensures distance doesn't overwhelm capacity on campus scale
+                # score = (Dist * 0.2) + (RatingPenalty * 0.2) + (ActiveOrders * 0.6)
+                # Goal: Minimize the score.
                 score = (
-                    float(driver_dist_km) * 0.2 +
-                    rating_factor * 0.2 +
+                    float(dist_km) * 0.2 +
+                    rating_penalty * 0.2 +
                     float(driver.active_count) * 0.6
                 )
                 

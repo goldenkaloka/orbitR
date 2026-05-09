@@ -456,13 +456,81 @@ class MarkReadyService:
             EventBus.publish(FoodReady(aggregate_id=order.id, payload={'actor_id': str(actor.id)}))
             return order
 
-class AssignDriverService:
+class OfferOrderService:
     @staticmethod
     def execute(order_id, driver_id, actor):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
             if order.driver:
-                raise ValueError("This order already has a driver assigned.")
+                # If already assigned/offered to THIS driver, just return. 
+                # If assigned to someone else, it's an error.
+                if order.driver_id == driver_id:
+                    return order
+                raise ValueError("This order already has a driver assigned or offered.")
+            
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+            
+            # Transition Order to OFFERED
+            new_state = OrderFSM.transition(order.status, 'OFFERED')
+            order.status = new_state
+            order.driver = driver # Tentative assignment
+            order.save()
+            
+            # Notify driver via Event/WebSocket
+            transaction.on_commit(lambda: broadcast_order_status(str(order.id), 'OFFERED'))
+            return order
+
+class AcceptOrderService:
+    @staticmethod
+    def execute(order_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if order.status != 'OFFERED':
+                raise ValueError(f"Cannot accept order in state {order.status}")
+            
+            if order.driver.user != actor:
+                raise PermissionError("Only the offered driver can accept this order.")
+            
+            # Finalize via AssignDriverService
+            return AssignDriverService.execute(order.id, order.driver.id, actor)
+
+class RejectOrderService:
+    @staticmethod
+    def execute(order_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if order.status != 'OFFERED':
+                raise ValueError(f"Cannot reject order in state {order.status}")
+            
+            if order.driver.user != actor:
+                raise PermissionError("Only the offered driver can reject this order.")
+            
+            driver = order.driver
+            
+            # Transition back to READY
+            new_state = OrderFSM.transition(order.status, 'READY')
+            order.status = new_state
+            order.driver = None
+            order.save()
+            
+            # Log refusal for metrics
+            driver.total_claim_attempts += 1
+            driver.save(update_fields=['total_claim_attempts'])
+            
+            # Re-trigger dispatch immediately to find the next driver
+            from domain.services.dispatch_tasks import dispatch_order_task
+            transaction.on_commit(lambda: dispatch_order_task.delay(str(order.id)))
+            
+            return order
+
+class AssignDriverService:
+    @staticmethod
+    def execute(order_id, driver_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            # Allow if it's already offered to this driver or if it's currently unassigned
+            if order.driver and order.driver_id != driver_id:
+                raise ValueError("This order already has a different driver assigned.")
             
             driver = Driver.objects.select_for_update().get(id=driver_id)
             if driver.driver_type == 'temporary' and driver.assigned_by_id != order.restaurant_id:
@@ -472,13 +540,14 @@ class AssignDriverService:
             new_state = OrderFSM.transition(order.status, 'ASSIGNED')
             order.status = new_state
             order.driver = driver
+            
             # Transition Driver: Skip if already ASSIGNED (e.g. in a batch)
             if driver.status != 'ASSIGNED':
                 driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
             driver.current_active_orders += 1
             driver.save(update_fields=['status', 'current_active_orders'])
             
-            # Use update_or_create to ensure assignment record matches the current order driver
+            # Ensure assignment record exists
             DeliveryAssignment.objects.update_or_create(
                 order=order, 
                 defaults={'driver': driver}
@@ -650,16 +719,17 @@ class DispatchService:
             best_driver = strategy.find_best_driver(
                 restaurant_lat=rlat,
                 restaurant_lng=rlng,
-                max_radius_km=radius_km
+                max_radius_km=radius_km,
+                restaurant_id=order.restaurant_id
             )
             
             if best_driver:
-                # 3. Dispatch: Prefer batch if it exists
-                # AssignBatchService handles its own locking and state validation
+                # 3. Dispatch: Offer order to the best driver
                 if order.batch:
+                    # Batches still use direct assignment for now as they are admin-orchestrated
                     AssignBatchService.execute(order.batch.id, best_driver.id, system_user)
                 else:
-                    AssignDriverService.execute(
+                    OfferOrderService.execute(
                         order_id=order.id, 
                         driver_id=best_driver.id, 
                         actor=system_user
