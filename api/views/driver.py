@@ -31,6 +31,8 @@ class DriverViewSet(viewsets.ModelViewSet):
         try:
             driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
             driver.save()
+            # Invalidate stats cache
+            cache.delete(f"stats_{request.user.id}")
             return Response(DriverSerializer(driver).data)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
@@ -41,6 +43,8 @@ class DriverViewSet(viewsets.ModelViewSet):
         try:
             driver.status = DriverFSM.transition(driver.status, 'OFFLINE')
             driver.save()
+            # Invalidate stats cache
+            cache.delete(f"stats_{request.user.id}")
             return Response(DriverSerializer(driver).data)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
