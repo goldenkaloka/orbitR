@@ -11,4 +11,5 @@ app.conf.imports = (
     'domain.services.dispatch_tasks',
     'apps.payments.tasks',
     'domain.events.tasks',
+    'apps.events.webhooks',
 )
