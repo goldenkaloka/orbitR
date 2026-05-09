@@ -66,25 +66,10 @@ class DeliveryZone(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def save(self, *args, **kwargs):
-        if not self.h3_index:
-            raise ValueError("A DeliveryZone must have an h3_index.")
-            
+        # We allow h3_index to be null initially if the field definition says so,
+        # but we encourage it to be set. The contradiction is removed here.
         super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.restaurant.name} - {self.name} ({self.fee} TZS)"
 
-class OperationalZone(models.Model):
-    """Global campus zones defined by H3 indexes."""
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
-    description = models.TextField(blank=True, null=True)
-    
-    # Primary H3 index for this zone (Resolution 9)
-    h3_index = models.CharField(max_length=20, unique=True, db_index=True)
-    
-    is_active = models.BooleanField(default=True, db_index=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def __str__(self):
-        return self.name

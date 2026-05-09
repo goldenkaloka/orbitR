@@ -111,7 +111,7 @@
     // Load H3 library from CDN if not present
     if (!window.h3) {
         const script = document.createElement('script');
-        script.src = 'https://unpkg.com/h3-js';
+        script.src = 'https://unpkg.com/h3-js@4.1.0';
         script.onload = () => {
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', () => setTimeout(init, 1000));

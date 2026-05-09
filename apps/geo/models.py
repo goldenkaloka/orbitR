@@ -37,21 +37,37 @@ class OperationalZone(models.Model):
 
     def refresh_h3_indexes(self):
         """Calculates and stores H3 cells for the boundary."""
-        cells = polygon_to_h3_cells(self.boundary, ZONE_RESOLUTION)
+        import logging
+        from django.db import transaction
         
-        # Clear old indexes
-        ZoneH3Index.objects.filter(zone=self).delete()
+        logger = logging.getLogger(__name__)
         
-        # Bulk create new indexes
-        index_objects = [
-            ZoneH3Index(zone=self, h3_index=cell)
-            for cell in cells
-        ]
-        ZoneH3Index.objects.bulk_create(index_objects)
-        
-        # Update metadata for quick reference
-        self.metadata['h3_count'] = len(cells)
-        OperationalZone.objects.filter(pk=self.pk).update(metadata=self.metadata)
+        try:
+            cells = polygon_to_h3_cells(self.boundary, ZONE_RESOLUTION)
+            
+            if not cells:
+                logger.warning(f"Polygon refresh for zone '{self.name}' returned 0 cells. Aborting index update to prevent data loss.")
+                return False
+
+            with transaction.atomic():
+                # Clear old indexes only if we have new ones to replace them with
+                ZoneH3Index.objects.filter(zone=self).delete()
+                
+                # Bulk create new indexes
+                index_objects = [
+                    ZoneH3Index(zone=self, h3_index=cell)
+                    for cell in cells
+                ]
+                ZoneH3Index.objects.bulk_create(index_objects)
+                
+                # Update metadata for quick reference
+                self.metadata['h3_count'] = len(cells)
+                OperationalZone.objects.filter(pk=self.pk).update(metadata=self.metadata)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to refresh H3 indexes for zone '{self.name}': {str(e)}")
+            return False
 
     def __str__(self):
         return self.name

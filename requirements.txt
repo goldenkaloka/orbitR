@@ -53,5 +53,5 @@ certifi==2025.1.31
 urllib3==2.3.0
 idna==3.10
 charset-normalizer==3.4.1
-h3
+h3==4.1.0
 locust

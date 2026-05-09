@@ -5,7 +5,8 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
-from apps.restaurants.models import OperationalZone
+from django.contrib.gis.geos import Point
+from apps.geo.models import OperationalZone
 
 
 SEED_POINTS = [
@@ -35,16 +36,17 @@ def seed_operational_zones():
     updated = 0
 
     for row in SEED_POINTS:
-        h3_index = latlng_to_h3(row["lat"], row["lng"], ZONE_RESOLUTION)
-        if not h3_index:
-            print(f"Skipping {row['name']}: invalid coordinates")
-            continue
+        # Create a small polygon around the seed point (approx 200m square)
+        # 0.001 degrees is roughly 111m
+        p = Point(row["lng"], row["lat"])
+        # Buffer creates a circular-ish polygon. For seeding, this is perfect.
+        boundary = p.buffer(0.0015) 
 
-        _, was_created = OperationalZone.objects.update_or_create(
+        zone, was_created = OperationalZone.objects.update_or_create(
             name=row["name"],
             defaults={
                 "description": row["description"],
-                "h3_index": h3_index,
+                "boundary": boundary,
                 "is_active": True,
             },
         )

@@ -29,7 +29,7 @@ class InitiatePaymentService:
             if Transaction.objects.filter(payment__order=order, status='COMPLETED').exists():
                 raise ValueError("A completed transaction already exists for this order.")
 
-            gateway = get_payment_gateway(provider=provider)
+            gateway = get_payment_gateway(provider=provider, phone=phone or order.customer.phone)
 
             response = gateway.collect(
                 amount=payment.amount,
@@ -50,15 +50,26 @@ class InitiatePaymentService:
                     payload={
                         'order_id': str(order.id),
                         'amount': float(payment.amount),
-                        'gateway': 'Airpay',
+                        'gateway': 'Mock' if response.get('instant_success') else 'Airpay',
                         'provider_reference': payment.provider_reference
                     }
                 ))
+
+            # --- AUTO-COMPLETE FOR MOCK PAYMENTS ---
+            if response.get('instant_success'):
+                # Call CompletePaymentService to finalize the order immediately
+                CompletePaymentService.execute(
+                    order_id=str(order.id),
+                    provider_reference=payment.provider_reference,
+                    success=True
+                )
+                # Refresh from DB to get the updated status for the return
+                payment.refresh_from_db()
             
             return {
                 'payment': payment,
                 'gateway_response': response,
-                'is_push': True # Signal to UI that a push was sent
+                'is_push': not response.get('instant_success') # Only signal push if not instant success
             }
 
 
