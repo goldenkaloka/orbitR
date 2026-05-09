@@ -566,10 +566,14 @@ class PickupOrderService:
     def execute(order_id, actor, bypass_geofence=False):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
+            logger.info(f"DEBUG PICKUP: order={order_id}, status={order.status}, "
+                        f"order.driver={order.driver_id}, actor={actor.id} ({actor.role})")
             if actor.role != 'driver':
                 raise PermissionError("Only drivers can perform order pickups.")
             
             if not getattr(order, 'driver', None) or order.driver.user != actor:
+                logger.warning(f"DEBUG PICKUP REJECTED: order.driver={'None' if not order.driver else order.driver_id}, "
+                               f"driver.user={'N/A' if not order.driver else order.driver.user_id}, actor={actor.id}")
                 raise PermissionError("Only the assigned driver can pickup this order.")
             
             driver = actor.driver_profile
