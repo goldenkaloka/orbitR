@@ -9,10 +9,10 @@ class DriverFSM:
     ]
 
     ALLOWED_TRANSITIONS = {
-        'OFFLINE': ['AVAILABLE'],
-        'AVAILABLE': ['OFFLINE', 'ASSIGNED'],
-        'ASSIGNED': ['AVAILABLE', 'DELIVERING'],
-        'DELIVERING': ['AVAILABLE']
+        'OFFLINE': ['AVAILABLE', 'OFFLINE'],
+        'AVAILABLE': ['OFFLINE', 'ASSIGNED', 'AVAILABLE'],
+        'ASSIGNED': ['AVAILABLE', 'DELIVERING', 'ASSIGNED'],
+        'DELIVERING': ['AVAILABLE', 'DELIVERING']
     }
 
     @staticmethod

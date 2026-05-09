@@ -63,6 +63,9 @@ class OrderConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+            # Update Driver model in DB for geofence checks
+            await self._update_driver_location(lat, lng)
+
             # Geofence check: is rider near destination?
             if not self._notified_nearby:
                 dest = await self._get_delivery_coords()
@@ -95,6 +98,24 @@ class OrderConsumer(AsyncWebsocketConsumer):
         except Order.DoesNotExist:
             pass
         return None
+
+    @database_sync_to_async
+    def _update_driver_location(self, lat, lng):
+        from apps.orders.models import Order
+        from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION
+        from django.contrib.gis.geos import Point
+        try:
+            order = Order.objects.select_related('driver').get(id=self.order_id)
+            if order.driver:
+                driver = order.driver
+                driver.location = Point(float(lng), float(lat), srid=4326)
+                driver.latitude = lat
+                driver.longitude = lng
+                driver.h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+                # Use update_fields to minimize DB impact
+                driver.save(update_fields=['location', 'latitude', 'longitude', 'h3_index', 'updated_at'])
+        except Exception as e:
+            print(f"Error updating driver location from WS: {e}")
 
     async def order_status_update(self, event):
         await self.send(text_data=json.dumps(event))

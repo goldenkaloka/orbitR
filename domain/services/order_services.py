@@ -579,8 +579,8 @@ class PickupOrderService:
                 driver_h3 = latlng_to_h3(driver.location.y, driver.location.x, PROXIMITY_RESOLUTION)
                 res_h3 = latlng_to_h3(order.restaurant.geo_location.y, order.restaurant.geo_location.x, PROXIMITY_RESOLUTION)
                 
-                # Use wrapper to get neighbors including self
-                if driver_h3 != res_h3 and res_h3 not in get_neighbors(driver_h3, 1):
+                # Use wrapper to get neighbors including self. k=3 is approx 200m at res 11.
+                if driver_h3 != res_h3 and res_h3 not in get_neighbors(driver_h3, 3):
                     raise ValueError("You are too far from the restaurant to pickup")
             
             new_state = OrderFSM.transition(order.status, 'PICKED')
