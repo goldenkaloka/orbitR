@@ -12,7 +12,7 @@ from domain.events.types import (
     FoodReady, OrderPicked, OrderPreparing, OrderCancelled
 )
 from apps.events.utils import broadcast_order_status
-from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to_h3
+from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to_h3, get_neighbors
 import h3
 
 logger = logging.getLogger(__name__)
@@ -576,12 +576,12 @@ class PickupOrderService:
                 if not driver.location or not order.restaurant.geo_location:
                     raise ValueError("Location data missing for geofence check")
                 
-                driver_h3 = latlng_to_h3(driver.location.y, driver.location.x, PROXIMITY_RESOLUTION)
-                res_h3 = latlng_to_h3(order.restaurant.geo_location.y, order.restaurant.geo_location.x, PROXIMITY_RESOLUTION)
+                # TESTING: Increased geofence to ~3km using ZONE_RESOLUTION and k=10
+                driver_h3 = latlng_to_h3(driver.location.y, driver.location.x, ZONE_RESOLUTION)
+                res_h3 = latlng_to_h3(order.restaurant.geo_location.y, order.restaurant.geo_location.x, ZONE_RESOLUTION)
                 
-                # Use wrapper to get neighbors including self. k=3 is approx 200m at res 11.
-                if driver_h3 != res_h3 and res_h3 not in get_neighbors(driver_h3, 3):
-                    raise ValueError("You are too far from the restaurant to pickup")
+                if driver_h3 != res_h3 and res_h3 not in get_neighbors(driver_h3, 10):
+                    raise ValueError("You are too far from the restaurant to pickup (3km limit)")
             
             new_state = OrderFSM.transition(order.status, 'PICKED')
             order.status = new_state
