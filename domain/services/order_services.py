@@ -318,7 +318,8 @@ class PoolOrderService:
                 pool=pool,
                 zone=zone,
                 h3_index=pool_delivery_h3,
-                status='CREATED'
+                status='CREATED',
+                is_paid=True
             )
             
             # 2. Transfer all pool items to order items

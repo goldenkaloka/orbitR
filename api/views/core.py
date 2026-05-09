@@ -355,7 +355,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         except ValueError as e:
             return Response({"error": str(e)}, status=400)
         except Exception as e:
-            return Response({"error": "This job is no longer available or another driver claimed it first."}, status=409)
+            return Response({"error": f"Claim failed: {str(e)}"}, status=409)
 
     @action(detail=True, methods=['POST'])
     def confirm(self, request, pk=None):
