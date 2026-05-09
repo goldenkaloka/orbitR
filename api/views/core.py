@@ -289,7 +289,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "earnings_today": float(earnings),
                     "trips_today": count,
                     "online_time": "04:20",
-                    "wallet_balance": float(wallet.balance)
+                    "wallet_balance": float(wallet.balance),
+                    "status": user.driver_profile.status
                 }
             else:
                 return Response({"error": "Stats not available for this role"}, status=400)
