@@ -196,19 +196,40 @@ class PoolOrderService:
             if food.restaurant != pool.restaurant:
                 raise ValueError("Food must be from the same restaurant as the pool.")
 
-            PoolItem.objects.create(
+            # Check if item already exists for this member
+            pool_item, created = PoolItem.objects.get_or_create(
                 member=member,
                 food=food,
-                quantity=quantity,
-                price_at_addition=food.price
+                defaults={'price_at_addition': food.price, 'quantity': 0}
             )
+            
+            pool_item.quantity += quantity
+            pool_item.save()
             
             # Update member subtotal
             member.items_subtotal += (food.price * quantity)
             member.save()
+
             
             # Notify members of the update
             broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} added {food.name}")
+            return pool
+
+    @staticmethod
+    def remove_item(user, pool_id, item_id):
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
+            item = PoolItem.objects.get(id=item_id, member=member)
+            
+            # Update member subtotal
+            member.items_subtotal -= (item.price_at_addition * item.quantity)
+            member.save()
+            
+            food_name = item.food.name
+            item.delete()
+            
+            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} removed {food_name}")
             return pool
 
     @staticmethod
@@ -250,49 +271,6 @@ class PoolOrderService:
             pool.save()
             return pool
 
-    @staticmethod
-    def pay_share(user, pool_id):
-        """
-        Process an individual member's payment from their wallet.
-        """
-        with transaction.atomic():
-            pool = OrderPool.objects.select_for_update().get(id=pool_id)
-            if pool.status != 'LOCKED':
-                raise ValueError("Pool must be locked for payment.")
-            
-            member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
-            if member.status == 'PAID':
-                return pool
-            
-            total_owed = member.items_subtotal + member.delivery_fee_share
-            
-            wallet = Wallet.objects.select_for_update().get(user=user)
-            if wallet.balance < total_owed:
-                raise ValueError(f"Insufficient funds. Owed: {total_owed}, Balance: {wallet.balance}")
-            
-            # Debit Wallet
-            wallet.balance -= total_owed
-            wallet.save()
-            
-            WalletTransaction.objects.create(
-                wallet=wallet,
-                amount=total_owed,
-                tx_type='DEBIT',
-                description=f"Payment for Pool Order {pool.invite_code}",
-                pool=pool
-            )
-            
-            member.status = 'PAID'
-            member.save()
-            
-            # Check if everyone has paid
-            all_paid = not pool.members.exclude(status='PAID').exists()
-            if all_paid:
-                # Security: Call finalize on commit to prevent race conditions or rollbacks
-                # that would leave members marked as PAID but order not created.
-                transaction.on_commit(lambda: PoolOrderService.finalize_pool(pool.id))
-            
-            return pool
 
     @staticmethod
     def finalize_pool(pool_id):
@@ -334,11 +312,13 @@ class PoolOrderService:
                 is_paid=True
             )
             
-            # 2. Transfer all pool items to order items
+            # 2. Transfer all pool items to order items and build breakdown
             items_subtotal = Decimal('0.00')
             order_items_to_create = []
+            group_breakdown = []
             
-            for member in pool.members.prefetch_related('items').all():
+            for member in pool.members.select_related('user').prefetch_related('items', 'items__food').all():
+                member_items = []
                 for item in member.items.all():
                     order_items_to_create.append(OrderItem(
                         order=master_order,
@@ -346,13 +326,28 @@ class PoolOrderService:
                         quantity=item.quantity,
                         price=item.price_at_addition * item.quantity
                     ))
+                    member_items.append({
+                        'food_name': item.food.name,
+                        'quantity': item.quantity,
+                        'price': float(item.price_at_addition)
+                    })
                     items_subtotal += (item.price_at_addition * item.quantity)
+                
+                group_breakdown.append({
+                    'username': member.user.username,
+                    'phone': member.user.phone,
+                    'items': member_items,
+                    'subtotal': float(member.items_subtotal),
+                    'delivery_share': float(member.delivery_fee_share)
+                })
             
             OrderItem.objects.bulk_create(order_items_to_create)
             
             master_order.items_subtotal = items_subtotal
             master_order.total_amount = items_subtotal + pool.total_delivery_fee
+            master_order.group_breakdown = group_breakdown
             master_order.save()
+
             
             pool.status = 'COMPLETED'
             pool.save()

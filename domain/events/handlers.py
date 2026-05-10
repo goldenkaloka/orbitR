@@ -30,13 +30,24 @@ def on_order_delivered(event: OrderDelivered):
 
     # 2. Trigger Payment Release
     try:
-        payment = Payment.objects.get(order_id=event.aggregate_id)
-        EventBus.publish(PaymentReleaseRequested(
-            aggregate_id=payment.id, 
-            payload={'order_id': str(event.aggregate_id)}
-        ))
-    except Payment.DoesNotExist:
-        logger.error(f"No payment found for order {event.aggregate_id}")
+        if order.pool:
+            # Group Order: Release funds for ALL members
+            member_payments = Payment.objects.filter(pool_member__pool=order.pool)
+            for p in member_payments:
+                EventBus.publish(PaymentReleaseRequested(
+                    aggregate_id=p.id, 
+                    payload={'order_id': str(order.id)}
+                ))
+        else:
+            # Standard Order
+            payment = Payment.objects.get(order_id=event.aggregate_id)
+            EventBus.publish(PaymentReleaseRequested(
+                aggregate_id=payment.id, 
+                payload={'order_id': str(event.aggregate_id)}
+            ))
+    except (Payment.DoesNotExist, Exception) as e:
+        logger.error(f"Failed to trigger payment release for order {event.aggregate_id}: {str(e)}")
+
 
 def on_payment_release_requested(event: PaymentReleaseRequested):
     logger.info(f"Releasing funds for payment {event.aggregate_id}")
@@ -194,15 +205,25 @@ def on_order_event(event):
             # 2. Notify Vendor (Now only after payment)
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
-                title="New Order!",
+                title="New Group Order!" if order.group_breakdown else "New Order!",
                 body=f"You have a new paid order: #{str(order.id).split('-')[0]}",
                 data=extra_data
             )
-            # 3. SMS Notification to Vendor
+            # 3. SMS Notification to Vendor (Detailed for Group Orders)
             vendor_phone = order.restaurant.owner.phone
             vendor_name = order.restaurant.owner.username or "Vendor"
-            sms_text = f"Habari {vendor_name}, una oda mpya #{str(order.id).split('-')[0]} kwenye Mwanachuoshop. Tafadhali iandae sasa."
+            
+            if order.group_breakdown:
+                sms_text = f"Habari {vendor_name}, una oda mpya ya KIKUNDI #{str(order.id).split('-')[0]}.\n"
+                for member in order.group_breakdown:
+                    items_str = ", ".join([f"{i['quantity']}x {i['food_name']}" for i in member['items']])
+                    sms_text += f"- {member['username']}: {items_str}\n"
+                sms_text += "Tafadhali pakia kila mteja kivyake kwa urahisi wa usambazaji."
+            else:
+                sms_text = f"Habari {vendor_name}, una oda mpya #{str(order.id).split('-')[0]} kwenye Mwanachuoshop. Tafadhali iandae sasa."
+                
             NotificationService.send_sms(vendor_phone, sms_text)
+
         elif event.event_type in ['OrderPreparing', 'FoodReady', 'DriverAssigned', 'OrderPicked']:
             NotificationService.send_push(
                 user_id=str(order.customer.id),

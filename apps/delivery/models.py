@@ -27,9 +27,6 @@ class Driver(models.Model):
     
     # PostGIS Location Field
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    
     # H3 Spatial Indexing
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
@@ -53,20 +50,13 @@ class Driver(models.Model):
     total_claims_accepted = models.PositiveIntegerField(default=0)
     
     def save(self, *args, **kwargs):
-        # Sync Point field with Decimal fields
         if self.location:
-            self.longitude = self.location.x
-            self.latitude = self.location.y
-        elif self.latitude and self.longitude:
-            from django.contrib.gis.geos import Point
-            self.location = Point(float(self.longitude), float(self.latitude))
-        
-        if self.latitude and self.longitude:
-            new_h3 = latlng_to_h3(self.latitude, self.longitude)
+            new_h3 = latlng_to_h3(self.location.y, self.location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
         
         super().save(*args, **kwargs)
+
 
     def __str__(self):
         return f"Driver: {self.user.username} ({self.driver_type})"

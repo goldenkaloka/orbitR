@@ -91,10 +91,9 @@ class DriverViewSet(viewsets.ModelViewSet):
 
         # 4. Persistence and Sync
         driver.location = new_loc
-        driver.latitude = lat_f
-        driver.longitude = lng_f
         driver.h3_index = latlng_to_h3(lat_f, lng_f, ZONE_RESOLUTION)
-        driver.save(update_fields=['location', 'latitude', 'longitude', 'h3_index', 'updated_at'])
+        driver.save(update_fields=['location', 'h3_index', 'updated_at'])
+
         
         cache.set(cache_key, True, 10)
         

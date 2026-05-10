@@ -62,8 +62,9 @@ class RestaurantAdmin(GISModelAdmin, ModelAdmin):
 
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
-        ('Location', {'fields': ('geo_location', ('latitude', 'longitude'), 'location')}),
+        ('Location', {'fields': ('geo_location', 'location')}),
         ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),
+
         ('Timestamps', {'fields': ('created_at',)}),
     )
 

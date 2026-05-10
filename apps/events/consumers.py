@@ -93,8 +93,9 @@ class OrderConsumer(AsyncWebsocketConsumer):
         from apps.orders.models import Order
         try:
             order = Order.objects.get(id=self.order_id)
-            if order.delivery_latitude and order.delivery_longitude:
-                return {'lat': float(order.delivery_latitude), 'lng': float(order.delivery_longitude)}
+            if order.delivery_location:
+                return {'lat': float(order.delivery_location.y), 'lng': float(order.delivery_location.x)}
+
         except Order.DoesNotExist:
             pass
         return None
@@ -109,11 +110,10 @@ class OrderConsumer(AsyncWebsocketConsumer):
             if order.driver:
                 driver = order.driver
                 driver.location = Point(float(lng), float(lat), srid=4326)
-                driver.latitude = lat
-                driver.longitude = lng
                 driver.h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
                 # Use update_fields to minimize DB impact
-                driver.save(update_fields=['location', 'latitude', 'longitude', 'h3_index', 'updated_at'])
+                driver.save(update_fields=['location', 'h3_index', 'updated_at'])
+
         except Exception as e:
             print(f"Error updating driver location from WS: {e}")
 

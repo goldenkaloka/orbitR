@@ -8,7 +8,9 @@ class Payment(models.Model):
     
     # Polymorphic-like associations
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
+    pool_member = models.OneToOneField('orders.PoolMember', on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
     marketplace_product = models.ForeignKey('marketplace.MarketplaceProduct', on_delete=models.CASCADE, related_name='listing_payments', null=True, blank=True)
+
     
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=50, default='INITIATED', db_index=True)

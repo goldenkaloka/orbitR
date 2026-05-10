@@ -23,16 +23,25 @@ class PromoteUserService:
             user.role = 'vendor'
             user.save(update_fields=['role'])
 
+            from django.contrib.gis.geos import Point
+            
+            geo_location = None
+            if latitude is not None and longitude is not None:
+                try:
+                    geo_location = Point(float(longitude), float(latitude))
+                except (ValueError, TypeError):
+                    pass
+
             restaurant = Restaurant.objects.create(
                 owner=user,
                 name=restaurant_name,
                 location=location,
                 description=description,
                 category=category,
-                latitude=latitude,
-                longitude=longitude,
+                geo_location=geo_location,
                 image=image
             )
+
 
             EventBus.publish(UserPromotedToVendor(
                 aggregate_id=user.id,
@@ -146,12 +155,29 @@ class ManageRestaurantService:
     @staticmethod
     def update_restaurant(restaurant_id: str, **kwargs):
         with transaction.atomic():
+            from django.contrib.gis.geos import Point
             restaurant = Restaurant.objects.select_for_update().get(id=restaurant_id)
+            
+            lat = kwargs.pop('latitude', None)
+            lng = kwargs.pop('longitude', None)
+            
+            if lat is not None and lng is not None:
+                try:
+                    restaurant.geo_location = Point(float(lng), float(lat))
+                except (ValueError, TypeError):
+                    pass
+            elif lat is not None and restaurant.geo_location:
+                 restaurant.geo_location = Point(restaurant.geo_location.x, float(lat))
+            elif lng is not None and restaurant.geo_location:
+                 restaurant.geo_location = Point(float(lng), restaurant.geo_location.y)
+                 
+
             for key, value in kwargs.items():
                 if value is not None:
                     setattr(restaurant, key, value)
             restaurant.save()
             return restaurant
+
 
     @staticmethod
     def delete_restaurant(restaurant_id: str):

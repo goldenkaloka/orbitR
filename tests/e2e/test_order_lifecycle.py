@@ -40,12 +40,13 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
 
 
         # 2. Setup Driver Profile
+        from django.contrib.gis.geos import Point
         self.driver = Driver.objects.create(
             user=self.driver_user,
             status='AVAILABLE',
-            latitude=-6.7924,
-            longitude=39.2083
+            location=Point(39.2083, -6.7924)
         )
+
 
         # 3. Setup Restaurant & Product
         self.restaurant = Restaurant.objects.create(

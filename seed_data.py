@@ -32,17 +32,18 @@ def seed():
         lat = base_lat + (random.random() - 0.5) * 0.02
         lng = base_lng + (random.random() - 0.5) * 0.02
         
+        from django.contrib.gis.geos import Point
         restaurant = Restaurant.objects.create(
             owner=user,
             name=restaurant_names[i],
             description=f"Authentic {categories[i]} food in the heart of the city.",
             location=f"Street {i+1}, Dar es Salaam",
-            latitude=lat,
-            longitude=lng,
+            geo_location=Point(lng, lat),
             category=categories[i],
             price_range="TSH 5k–15k",
             rating=random.uniform(4.0, 5.0)
         )
+
         
         # Add image if it exists
         if os.path.exists(restaurant_image_path):

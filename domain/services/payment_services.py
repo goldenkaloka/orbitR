@@ -10,34 +10,54 @@ from domain.events.types import PaymentCollected, PaymentInitiated, PaymentDisbu
 
 class InitiatePaymentService:
     @staticmethod
-    def execute(order_id, provider=None, phone=None, bank_code=None):
+    def execute(order_id=None, pool_member_id=None, provider=None, phone=None, bank_code=None):
         with transaction.atomic():
-            # Bug 5 Fix: Lock the order row FIRST to serialise concurrent payment attempts
-            order = Order.objects.select_for_update().get(id=order_id)
+            from apps.orders.models import PoolMember
+            
+            # Identify the target and amount
+            target_amount = 0
+            order = None
+            pool_member = None
+            customer_phone = phone
+            
+            if order_id:
+                order = Order.objects.select_for_update().get(id=order_id)
+                target_amount = order.total_amount
+                customer_phone = customer_phone or order.customer.phone
+            elif pool_member_id:
+                pool_member = PoolMember.objects.select_for_update().get(id=pool_member_id)
+                target_amount = pool_member.items_subtotal + pool_member.delivery_fee_share
+                customer_phone = customer_phone or pool_member.user.phone
+            else:
+                raise ValueError("Either order_id or pool_member_id is required.")
 
             # Create or get Payment record with locking
-            payment, created = Payment.objects.select_for_update().get_or_create(
-                order=order,
-                defaults={'amount': order.total_amount, 'status': 'INITIATED'}
-            )
+            payment_defaults = {'amount': target_amount, 'status': 'INITIATED'}
+            if order:
+                payment, created = Payment.objects.select_for_update().get_or_create(
+                    order=order,
+                    defaults=payment_defaults
+                )
+            else:
+                payment, created = Payment.objects.select_for_update().get_or_create(
+                    pool_member=pool_member,
+                    defaults=payment_defaults
+                )
 
             # Prevent double payment (FSM check)
             if payment.status in ['COLLECTED', 'RELEASE_READY', 'DISBURSED']:
-                raise ValueError("This order has already been paid.")
+                raise ValueError("This has already been paid.")
 
-            # Prevent double payment (Ledger check)
-            if Transaction.objects.filter(payment__order=order, status='COMPLETED').exists():
-                raise ValueError("A completed transaction already exists for this order.")
-
-            gateway = get_payment_gateway(provider=provider, phone=phone or order.customer.phone)
+            gateway = get_payment_gateway(provider=provider, phone=customer_phone)
 
             response = gateway.collect(
                 amount=payment.amount,
-                phone=phone or order.customer.phone,
-                order_reference=str(order.id),
+                phone=customer_phone,
+                order_reference=str(order.id if order else pool_member.id),
                 provider=provider,
                 bank_code=bank_code
             )
+
             
             # Update payment with provider info if returned
             if response.get('success'):
@@ -59,7 +79,7 @@ class InitiatePaymentService:
             if response.get('instant_success'):
                 # Call CompletePaymentService to finalize the order immediately
                 CompletePaymentService.execute(
-                    order_id=str(order.id),
+                    order_id=str(order.id if order else pool_member.id),
                     provider_reference=payment.provider_reference,
                     success=True
                 )
@@ -91,6 +111,9 @@ class CompletePaymentService:
                     payment = Payment.objects.select_for_update().filter(order_id=order_id).first()
                     if not payment:
                         payment = Payment.objects.select_for_update().filter(marketplace_product_id=order_id).first()
+                    if not payment:
+                        payment = Payment.objects.select_for_update().filter(pool_member_id=order_id).first()
+
                 
                 if not payment:
                     raise ValueError(f"No payment found for Ref: {provider_reference} or Order: {order_id}")
@@ -135,15 +158,14 @@ class CompletePaymentService:
                     
                     # --- Branch: Marketplace Listing Fee Payment ---
                     elif payment.marketplace_product:
-                        # Save payment first for marketplace (no order FSM risk)
-                        payment.save()
-                        
-                        from domain.services.marketplace_services import MarketplaceService
                         product = payment.marketplace_product
+                        from domain.services.marketplace_services import MarketplaceService
                         MarketplaceService.activate_product(
                             product_id=str(product.id),
                             actor=product.seller
                         )
+                        
+                        payment.save()
                         
                         # Ledger Entry: Seller -> Platform (Listing Fee)
                         Transaction.objects.create(
@@ -151,9 +173,36 @@ class CompletePaymentService:
                             from_wallet=product.seller,
                             to_wallet=None,
                             amount=payment.amount,
-                            transaction_type='seller_listing_fee',
+                            transaction_type='listing_fee',
                             status='COMPLETED'
                         )
+
+                    # --- Branch: Pool Member Payment ---
+                    elif payment.pool_member:
+                        payment.save()
+                        member = payment.pool_member
+                        member.status = 'PAID'
+                        member.save()
+                        
+                        # Ledger Entry: Member -> Platform (Escrow)
+                        Transaction.objects.create(
+                            payment=payment,
+                            from_wallet=member.user,
+                            to_wallet=None,
+                            amount=payment.amount,
+                            transaction_type='pool_member_to_platform',
+                            status='COMPLETED'
+                        )
+                        
+                        # Notify pool
+                        from apps.events.utils import broadcast_pool_status
+                        broadcast_pool_status(str(member.pool_id), 'OPEN', message=f"{member.user.username} has paid their share!")
+
+                        # 4. Auto-Finalize if everyone has paid
+                        pool = member.pool
+                        if not pool.members.exclude(status='PAID').exists():
+                            from domain.services.order_services import PoolOrderService
+                            transaction.on_commit(lambda: PoolOrderService.finalize_pool(pool.id))
                     else:
                         # No order or product — just save payment status
                         payment.save()
@@ -184,14 +233,28 @@ class ReleasePaymentService:
                 'order__driver__user'
             ).get(id=payment_id)
             
-            order = payment.order
+            # Identify target order and calculate payouts
+            if payment.order:
+                order = payment.order
+                restaurant_payout = Decimal(str(order.items_subtotal)) * Decimal('0.90')
+                driver_payout = Decimal(str(order.delivery_fee)) if order.driver else Decimal('0')
+            elif payment.pool_member:
+                member = payment.pool_member
+                # For group orders, we release the member's specific share
+                restaurant_payout = Decimal(str(member.items_subtotal)) * Decimal('0.90')
+                driver_payout = Decimal(str(member.delivery_fee_share))
+                # Find the master order created from this pool
+                from apps.orders.models import Order
+                order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
+                if not order:
+                    raise ValueError(f"No master order found for pool {member.pool_id}")
+            else:
+                raise ValueError("Payment has no associated order or pool member.")
+
             gateway = get_payment_gateway()
-            
-            # Define Splits
-            restaurant_payout = Decimal(str(order.items_subtotal)) * Decimal('0.90')
-            driver_payout = Decimal(str(order.delivery_fee)) if order.driver else Decimal('0')
             platform_cut = payment.amount - restaurant_payout - driver_payout
 
+            # Define Splits
             splits = [
                 {'identifier': 'PLATFORM_ESCROW', 'value': float(platform_cut)},
                 {'identifier': order.restaurant.owner.phone, 'value': float(restaurant_payout)},
@@ -199,6 +262,7 @@ class ReleasePaymentService:
             
             if order.driver:
                 splits.append({'identifier': order.driver.user.phone, 'value': float(driver_payout)})
+
 
             # Trigger Airpay Split Settlement
             response = gateway.split_settlement(

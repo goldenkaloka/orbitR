@@ -82,6 +82,14 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+    @action(detail=True, methods=['POST'], url_path='remove-item')
+    def remove_item(self, request, pk=None):
+        item_id = request.data.get('item_id')
+        try:
+            pool = PoolOrderService.remove_item(request.user, pk, item_id)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
 
 
     @action(detail=True, methods=['POST'], url_path='lock')
@@ -99,11 +107,39 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='pay')
     def pay_share(self, request, pk=None):
+        from domain.services.payment_services import InitiatePaymentService
+        from apps.orders.models import PoolMember
+        
+        provider = request.data.get('provider')
+        phone = request.data.get('phone')
+        bank_code = request.data.get('bank_code')
+        
         try:
-            pool = PoolOrderService.pay_share(request.user, pk)
-            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+            # 1. Identify the user's specific membership share
+            member = PoolMember.objects.get(pool_id=pk, user=request.user)
+            
+            # 2. Trigger the universal payment flow
+            result = InitiatePaymentService.execute(
+                pool_member_id=member.id, 
+                provider=provider, 
+                phone=phone,
+                bank_code=bank_code
+            )
+            
+            payment = result['payment']
+            gateway_data = result.get('gateway_response', {})
+            
+            return Response({
+                "success": True,
+                "payment_id": str(payment.id),
+                "status": payment.status,
+                **gateway_data
+            })
+        except PoolMember.DoesNotExist:
+            return Response({"error": "You are not a member of this pool"}, status=404)
         except Exception as e:
-            return Response({'error': str(e)}, status=400)
+            return Response({"error": str(e)}, status=400)
+
 
     @action(detail=True, methods=['POST'], url_path='ready')
     def mark_ready(self, request, pk=None):

@@ -17,18 +17,15 @@ class DeliverySystemTest(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=self.vendor_user,
             name="Test Kitchen",
-            geo_location=Point(39.2, -6.8, srid=4326),
-            latitude=-6.8,
-            longitude=39.2
+            geo_location=Point(39.2, -6.8, srid=4326)
         )
         
         self.driver = Driver.objects.create(
             user=self.driver_user,
             status='AVAILABLE',
-            location=Point(39.201, -6.801, srid=4326),
-            latitude=-6.801,
-            longitude=39.201
+            location=Point(39.201, -6.801, srid=4326)
         )
+
         
         self.order = Order.objects.create(
             customer=self.customer,

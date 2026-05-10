@@ -31,10 +31,6 @@ class Order(models.Model):
     # PostGIS Location Field
     delivery_location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     
-    # Legacy fields
-    delivery_latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    delivery_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    
     # H3 Spatial Indexing
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
@@ -45,20 +41,16 @@ class Order(models.Model):
     # OTP Delivery Verification
     delivery_otp = models.CharField(max_length=6, null=True, blank=True)
     
+    # Group Ordering Metadata
+    group_breakdown = models.JSONField(null=True, blank=True) # Stores {username, items, subtotal} for pool members
+    
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     def save(self, *args, **kwargs):
-        # Sync Point field with Decimal fields
         if self.delivery_location:
-            self.delivery_longitude = self.delivery_location.x
-            self.delivery_latitude = self.delivery_location.y
-        elif self.delivery_latitude and self.delivery_longitude:
-            from django.contrib.gis.geos import Point
-            self.delivery_location = Point(float(self.delivery_longitude), float(self.delivery_latitude))
-        
-        if self.delivery_latitude and self.delivery_longitude:
-            new_h3 = latlng_to_h3(self.delivery_latitude, self.delivery_longitude)
+            new_h3 = latlng_to_h3(self.delivery_location.y, self.delivery_location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
 

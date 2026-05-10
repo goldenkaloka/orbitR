@@ -43,6 +43,9 @@ class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     foods = FoodSerializer(many=True, read_only=True)
 
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+
     class Meta:
         model = Restaurant
         fields = [
@@ -50,6 +53,13 @@ class RestaurantListSerializer(serializers.ModelSerializer):
             'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
             'is_active', 'foods'
         ]
+
+    def get_latitude(self, obj):
+        return obj.geo_location.y if obj.geo_location else None
+
+    def get_longitude(self, obj):
+        return obj.geo_location.x if obj.geo_location else None
+
 
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
@@ -81,8 +91,11 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True)
     restaurant_name = serializers.SerializerMethodField()
-    restaurant_latitude = serializers.ReadOnlyField(source='restaurant.latitude')
-    restaurant_longitude = serializers.ReadOnlyField(source='restaurant.longitude')
+    restaurant_latitude = serializers.SerializerMethodField()
+    restaurant_longitude = serializers.SerializerMethodField()
+    delivery_latitude = serializers.SerializerMethodField()
+    delivery_longitude = serializers.SerializerMethodField()
+    
     rider_name = serializers.ReadOnlyField(source='driver.user.username')
     rider_phone = serializers.ReadOnlyField(source='driver.user.phone')
     customer_name = serializers.ReadOnlyField(source='customer.username')
@@ -95,9 +108,24 @@ class OrderSerializer(serializers.ModelSerializer):
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude', 
-            'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp'
+            'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown'
         ]
+
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'total_amount', 'delivery_otp']
+
+
+    def get_restaurant_latitude(self, obj):
+        return obj.restaurant.geo_location.y if obj.restaurant and obj.restaurant.geo_location else None
+
+    def get_restaurant_longitude(self, obj):
+        return obj.restaurant.geo_location.x if obj.restaurant and obj.restaurant.geo_location else None
+
+    def get_delivery_latitude(self, obj):
+        return obj.delivery_location.y if obj.delivery_location else None
+
+    def get_delivery_longitude(self, obj):
+        return obj.delivery_location.x if obj.delivery_location else None
+
 
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
@@ -142,9 +170,20 @@ class OrderSerializer(serializers.ModelSerializer):
 
 class DriverSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+
     class Meta:
         model = Driver
         fields = ['id', 'user', 'status', 'location', 'latitude', 'longitude', 'rating']
+
+    def get_latitude(self, obj):
+        return obj.location.y if obj.location else None
+
+    def get_longitude(self, obj):
+        return obj.location.x if obj.location else None
+
+
 
 class DeliveryProofSerializer(serializers.ModelSerializer):
     class Meta:
@@ -175,10 +214,20 @@ class PoolMemberSerializer(serializers.ModelSerializer):
         fields = ['id', 'user', 'username', 'status', 'delivery_fee_share', 'items_subtotal', 'items']
 
 class OrderPoolSerializer(serializers.ModelSerializer):
+    def __init__(self, *args, **kwargs):
+        # Allow dynamic field exclusion for performance (WebSockets)
+        exclude_fields = kwargs.pop('exclude_fields', None)
+        super(OrderPoolSerializer, self).__init__(*args, **kwargs)
+        if exclude_fields:
+            for field_name in exclude_fields:
+                self.fields.pop(field_name, None)
+
     members = PoolMemberSerializer(many=True, read_only=True)
     restaurant_name = serializers.ReadOnlyField(source='restaurant.name')
+
     is_initiator = serializers.SerializerMethodField()
     current_user_member_id = serializers.SerializerMethodField()
+    restaurant_menu = serializers.SerializerMethodField()
     
     class Meta:
         from apps.orders.models import OrderPool
@@ -187,9 +236,25 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
             'total_delivery_fee', 'members', 'created_at', 'expires_at',
-            'is_initiator', 'current_user_member_id'
+            'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']
+
+    final_order_id = serializers.SerializerMethodField()
+
+    def get_final_order_id(self, obj):
+        # Return the ID of the finalized order if it exists
+        order = obj.final_orders.order_by('-created_at').first()
+        return str(order.id) if order else None
+
+
+    def get_restaurant_menu(self, obj):
+        # Fetch available food for the pool's restaurant
+        from apps.products.models import Food
+        foods = Food.objects.filter(vendor=obj.restaurant, is_available=True)
+        return FoodSerializer(foods, many=True).data
+
+
 
     def get_is_initiator(self, obj):
         request = self.context.get('request')

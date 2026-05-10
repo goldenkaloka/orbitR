@@ -16,10 +16,6 @@ class Restaurant(models.Model):
     # PostGIS Location Field for the restaurant itself
     geo_location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     
-    # Legacy fields
-    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    
     # H3 Spatial Indexing
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
 
@@ -31,23 +27,12 @@ class Restaurant(models.Model):
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     def save(self, *args, **kwargs):
-        # Sync Point field with Decimal fields
         if self.geo_location:
-            self.longitude = self.geo_location.x
-            self.latitude = self.geo_location.y
-        elif self.latitude and self.longitude:
-            from django.contrib.gis.geos import Point
-            self.geo_location = Point(float(self.longitude), float(self.latitude))
-        
-        super().save(*args, **kwargs)
-        
-        # After saving, ensure H3 index is synced if coordinates are present
-        # We do this after super().save if we rely on DB defaults, but here we can do it before
-        if self.latitude and self.longitude:
-            new_h3 = latlng_to_h3(self.latitude, self.longitude)
+            new_h3 = latlng_to_h3(self.geo_location.y, self.geo_location.x)
             if self.h3_index != new_h3:
-                # Update without triggering another save recursion
-                Restaurant.objects.filter(id=self.id).update(h3_index=new_h3)
+                self.h3_index = new_h3
+        super().save(*args, **kwargs)
+
 
     def __str__(self):
         return self.name
