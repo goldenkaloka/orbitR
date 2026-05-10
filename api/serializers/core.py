@@ -199,19 +199,28 @@ class DisputeSerializer(serializers.ModelSerializer):
 
 class PoolItemSerializer(serializers.ModelSerializer):
     food_name = serializers.ReadOnlyField(source='food.name')
+    id = serializers.SerializerMethodField()
     class Meta:
-        model = OrderItem # Note: reusing OrderItem model for convenience in serializer if possible, or use PoolItem
         from apps.orders.models import PoolItem
         model = PoolItem
         fields = ['id', 'food', 'food_name', 'quantity', 'price_at_addition']
 
+    def get_id(self, obj):
+        return str(obj.id)
+
+
 class PoolMemberSerializer(serializers.ModelSerializer):
     items = PoolItemSerializer(many=True, read_only=True)
     username = serializers.ReadOnlyField(source='user.username')
+    id = serializers.SerializerMethodField()
     class Meta:
         from apps.orders.models import PoolMember
         model = PoolMember
         fields = ['id', 'user', 'username', 'status', 'delivery_fee_share', 'items_subtotal', 'items']
+
+    def get_id(self, obj):
+        return str(obj.id)
+
 
 class OrderPoolSerializer(serializers.ModelSerializer):
     def __init__(self, *args, **kwargs):
@@ -250,10 +259,10 @@ class OrderPoolSerializer(serializers.ModelSerializer):
 
     def get_restaurant_menu(self, obj):
         # Fetch available food for the pool's restaurant
-        from apps.products.models import Food
-        foods = Food.objects.filter(vendor=obj.restaurant, is_available=True)
-        return FoodSerializer(foods, many=True).data
-
+        if not obj.restaurant:
+            return []
+        foods = obj.restaurant.foods.filter(is_available=True)
+        return [{'id': str(f.id), 'name': f.name, 'price': float(f.price), 'category': f.category, 'image': f.image.url if f.image else None} for f in foods]
 
 
     def get_is_initiator(self, obj):
@@ -268,7 +277,7 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             # Using .members.all() which is prefetched in the viewset
             for member in obj.members.all():
                 if member.user_id == request.user.id:
-                    return member.id
+                    return str(member.id)
         return None
 
     def to_internal_value(self, data):
