@@ -196,7 +196,7 @@ class CompletePaymentService:
                         
                         # Notify pool
                         from apps.events.utils import broadcast_pool_status
-                        broadcast_pool_status(str(member.pool_id), 'OPEN', message=f"{member.user.username} has paid their share!")
+                        broadcast_pool_status(str(member.pool_id), member.pool.status, message=f"{member.user.username} has paid their share!")
 
                         # 4. Auto-Finalize if everyone has paid
                         pool = member.pool

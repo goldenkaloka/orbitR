@@ -269,6 +269,9 @@ class PoolOrderService:
                 PoolMember.objects.bulk_update(members, ['delivery_fee_share'])
             
             pool.save()
+            
+            from apps.events.utils import broadcast_pool_status
+            broadcast_pool_status(str(pool.id), pool.status, message="The pool has been locked! Time to pay.")
             return pool
 
 
@@ -351,6 +354,9 @@ class PoolOrderService:
             
             pool.status = 'COMPLETED'
             pool.save()
+            
+            from apps.events.utils import broadcast_pool_status
+            broadcast_pool_status(str(pool.id), pool.status, message="Everyone has paid! The order is now being processed.")
             
             # 3. Publish Event
             EventBus.publish(OrderCreated(
