@@ -3,6 +3,15 @@ from decimal import Decimal
 from abc import ABC, abstractmethod
 from apps.delivery.models import Driver
 
+        from apps.delivery.models import Driver
+        from django.contrib.gis.geos import Point
+        from django.contrib.gis.db.models.functions import Distance
+        from django.contrib.gis.measure import D
+        from django.db.models import Count, Q, F
+        from django.db import transaction
+        from decimal import Decimal
+
+
 class LocationMatcher(ABC):
     @abstractmethod
     def find_best_driver(self, restaurant_location):
@@ -56,14 +65,6 @@ class PostgisRadiusStrategy(LocationMatcher):
         """
         Primary strategy: Spatial query with weighted scoring and row-level locking.
         """
-        from apps.delivery.models import Driver
-        from django.contrib.gis.geos import Point
-        from django.contrib.gis.db.models.functions import Distance
-        from django.contrib.gis.measure import D
-        from django.db.models import Count, Q, F
-        from django.db import transaction
-        from decimal import Decimal
-
         restaurant_point = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
 
         # 1. Filter available drivers within PostGIS Radius

@@ -29,16 +29,19 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         # The service handles creation with initiator logic
-        restaurant_id = self.request.data.get('restaurant') or self.request.data.get('restaurant_id') or self.request.data.get('restaurantId')
+        # We use validated_data which contains the parsed Point object and IDs
+        restaurant = serializer.validated_data.get('restaurant')
+        restaurant_id = getattr(restaurant, 'id', restaurant)
         
         pool = PoolOrderService.create_pool(
             initiator=self.request.user,
             restaurant_id=restaurant_id,
-            delivery_address=self.request.data.get('delivery_address'),
-            delivery_location=self.request.data.get('delivery_location')
+            delivery_address=serializer.validated_data.get('delivery_address'),
+            delivery_location=serializer.validated_data.get('delivery_location')
         )
         # We manually set the instance for the response
         serializer.instance = pool
+
 
     @action(detail=False, methods=['POST'], url_path='join')
     def join(self, request):

@@ -1,11 +1,18 @@
-from celery import shared_task
 import logging
+from datetime import timedelta
+from celery import shared_task
+from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q
 from django.core.cache import cache
+from django.contrib.auth import get_user_model
+
 from apps.orders.models import Order
-from domain.services.order_services import CancelOrderService
+from domain.services.order_services import CancelOrderService, DispatchService
 
 logger = logging.getLogger(__name__)
+User = get_user_model()
+
 MAX_DISPATCH_ATTEMPTS = 3
 DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
 
@@ -14,7 +21,6 @@ def dispatch_order_task(order_id):
     """
     Asynchronous task to initiate driver dispatch for an order.
     """
-    from domain.services.order_services import DispatchService
     try:
         DispatchService.execute(order_id)
     except Exception as e:
@@ -25,8 +31,6 @@ def retry_dispatch_task(order_id, attempt=1):
     """
     Multi-stage retry with exponential backoff and radius expansion.
     """
-    from domain.services.order_services import DispatchService
-    
     # Radius expansion based on attempt
     radii = {1: 15.0, 2: 25.0, 3: 50.0}
     radius = radii.get(attempt, 50.0)
@@ -57,13 +61,6 @@ def expire_unassigned_orders_task():
     Finds READY orders that haven't been assigned a driver within 30 minutes
     and cancels them automatically using row-level locking for safety.
     """
-    from django.utils import timezone
-    from datetime import timedelta
-    from django.db import transaction
-    from django.db.models import Q
-    from django.contrib.auth import get_user_model
-    User = get_user_model()
-    
     cutoff = timezone.now() - timedelta(minutes=30)
     
     # Ensure system dispatcher exists

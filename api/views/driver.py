@@ -115,7 +115,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         active_orders = Order.objects.filter(
             driver=driver, 
             status='PICKED',
-            delivery_location__distance_lte=(new_loc, D(m=300))
+            delivery_location__distance_lte=(new_loc, D(m=20))
         )
         for order in active_orders:
             # Check cache to avoid duplicate notifications within 10 mins

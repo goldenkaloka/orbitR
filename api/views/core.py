@@ -306,7 +306,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
         
-        # Filter by driver's current H3 cell if available
+        # RESTORED: Filter by driver's current H3 cell if available
         try:
             driver = request.user.driver_profile
             if driver.h3_index:
