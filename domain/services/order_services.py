@@ -30,7 +30,7 @@ from domain.events.types import (
 from domain.services.pricing_service import PricingService
 from domain.services.batching_service import BatchingService
 from domain.services.payment_services import RefundPaymentService
-from apps.events.utils import broadcast_order_status
+from apps.events.utils import broadcast_order_status, broadcast_pool_status
 from apps.core.geo_utils import ZONE_RESOLUTION, PROXIMITY_RESOLUTION, latlng_to_h3, get_neighbors
 from api.serializers.utils import parse_coordinate_dict
 from infrastructure.matching.strategies import PostgisRadiusStrategy
@@ -168,7 +168,8 @@ class PoolOrderService:
                 
         # 4. WebSocket notification
         if pool:
-            broadcast_order_status(str(pool.id), 'OPEN', is_pool=True)
+            broadcast_pool_status(str(pool.id), 'OPEN')
+
             
         return pool
 

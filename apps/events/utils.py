@@ -42,7 +42,38 @@ def broadcast_order_status(order_id, status, message="Status updated"):
     except Order.DoesNotExist:
         pass
 
+def broadcast_pool_status(pool_id, status, message="Pool updated"):
+    from apps.orders.models import OrderPool
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+
+    try:
+        pool = OrderPool.objects.get(id=pool_id)
+        payload = {
+            'type': 'pool_status_update',
+            'pool_id': str(pool_id),
+            'status': status,
+            'message': message,
+            'invite_code': pool.invite_code,
+            'restaurant_id': str(pool.restaurant_id),
+        }
+
+        # 1. Notify all members of the pool
+        async_to_sync(channel_layer.group_send)(f'pool_{pool_id}', payload)
+        
+        # 2. Notify specifically the initiator if needed (usually they are in the pool group)
+        async_to_sync(channel_layer.group_send)(f'user_{pool.initiator_id}', payload)
+        
+        # 3. Notify members
+        for member in pool.members.all():
+            async_to_sync(channel_layer.group_send)(f'user_{member.user_id}', payload)
+
+    except OrderPool.DoesNotExist:
+        pass
+
 def broadcast_order_location(order_id, lat, lng, heading=0.0):
+
     channel_layer = get_channel_layer()
     if not channel_layer:
         return
