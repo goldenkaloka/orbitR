@@ -15,7 +15,7 @@ from apps.orders.models import Order, OrderItem, DeliveryBatch, OrderPool, PoolM
 from apps.delivery.models import Driver, DeliveryAssignment, DeliveryProof
 
 from apps.restaurants.models import Restaurant, DeliveryZone
-from apps.wallets.models import Wallet, Transaction
+from apps.wallets.models import Wallet, WalletTransaction
 
 # Domain Logic & FSM
 from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
@@ -255,7 +255,7 @@ class PoolOrderService:
             wallet.balance -= total_owed
             wallet.save()
             
-            Transaction.objects.create(
+            WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=total_owed,
                 tx_type='DEBIT',
