@@ -231,7 +231,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             'restaurant__owner', 
             'driver', 
             'driver__user'
-        ).prefetch_related('items', 'items__food').all()
+        ).prefetch_related('items', 'items__food').order_by('-created_at')
         
         if user.role == 'customer':
             return queryset.filter(customer=user)
@@ -509,7 +509,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         phone = request.data.get('phone')
         bank_code = request.data.get('bank_code')
         try:
-            result = InitiatePaymentService.execute(pk, provider=provider, phone=phone, bank_code=bank_code)
+            result = InitiatePaymentService.execute(payable_type='order', payable_id=pk, provider=provider, phone=phone, bank_code=bank_code)
             payment = result['payment']
             gateway_data = result.get('gateway_response', {})
             
@@ -546,7 +546,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             
         from domain.services.payment_services import RefundPaymentService
         try:
-            success = RefundPaymentService.execute(order.id)
+            success = RefundPaymentService.execute('order', order.id)
             if success:
                 return Response({"status": "Refund initiated successfully"})
             else:

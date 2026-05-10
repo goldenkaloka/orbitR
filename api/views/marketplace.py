@@ -61,48 +61,30 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def pay(self, request, pk=None):
         """
-        Initiates payment for the marketplace listing fee via EasyPay.
+        Initiates payment for the marketplace listing fee.
         """
-        from infrastructure.payment_gateways.factory import get_payment_gateway
-        from apps.payments.models import Payment
-        
         product = self.get_object()
         if product.status == 'ACTIVE':
             return Response({'message': 'Product is already active'}, status=400)
             
         phone = request.data.get('phone', request.user.phone)
-        gateway = get_payment_gateway(phone=phone)
+        from domain.services.payment_services import InitiatePaymentService
+        try:
+            result = InitiatePaymentService.execute(
+                payable_type='marketplace_product',
+                payable_id=product.id,
+                provider=request.data.get('provider', 'AIRPAY'),
+                phone=phone,
+                bank_code=request.data.get('bank_code')
+            )
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
         
-        # Create a Pending Payment record
-        payment, _ = Payment.objects.get_or_create(
-            marketplace_product=product,
-            defaults={
-                'amount': fee,
-                'status': 'INITIATED'
-            }
-        )
-        
-        # Initiate via Gateway
-        response = gateway.collect(
-            amount=fee,
-            phone=phone,
-            bank_code=request.data.get('bank_code'),
-            order_reference=str(product.id),
-            firstname=request.user.first_name,
-            lastname=request.user.last_name
-        )
-        
-        if response.get('success'):
-            payment.provider_reference = response.get('provider_reference')
-            payment.save()
+        payment = result['payment']
+        response = result['gateway_response']
 
+        if response.get('success'):
             if response.get('instant_success'):
-                from domain.services.payment_services import CompletePaymentService
-                CompletePaymentService.execute(
-                    order_id=str(product.id),
-                    provider_reference=payment.provider_reference,
-                    success=True
-                )
                 return Response({
                     'payment_id': payment.id,
                     'message': 'Mock Payment Successful! Product is now ACTIVE.',
@@ -123,45 +105,32 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         """
         Initiates payment for reactivation of an expired product.
         """
-        from infrastructure.payment_gateways.factory import get_payment_gateway
-        from apps.payments.models import Payment
-
         product = self.get_object()
         if product.status != 'EXPIRED':
              return Response({'message': 'Only expired products can be reactivated'}, status=400)
         
-        # Switch listing type to renewal for fee calculation
+        # Ensure product is marked as renewal for correct fee calculation
         product.listing_type = 'RENEWAL'
-        fee = product.calculate_listing_fee()
+        product.save(update_fields=['listing_type'])
+        
         phone = request.data.get('phone', request.user.phone)
-        gateway = get_payment_gateway(phone=phone)
+        from domain.services.payment_services import InitiatePaymentService
+        try:
+            result = InitiatePaymentService.execute(
+                payable_type='marketplace_product',
+                payable_id=product.id,
+                provider=request.data.get('provider', 'AIRPAY'),
+                phone=phone,
+                bank_code=request.data.get('bank_code')
+            )
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
 
-        payment = Payment.objects.create(
-            marketplace_product=product,
-            amount=fee,
-            status='INITIATED'
-        )
-
-        response = gateway.collect(
-            amount=fee,
-            phone=phone,
-            bank_code=request.data.get('bank_code'),
-            order_reference=str(product.id),
-            firstname=request.user.first_name,
-            lastname=request.user.last_name
-        )
+        payment = result['payment']
+        response = result['gateway_response']
 
         if response.get('success'):
-            payment.provider_reference = response.get('provider_reference')
-            payment.save()
-
             if response.get('instant_success'):
-                from domain.services.payment_services import CompletePaymentService
-                CompletePaymentService.execute(
-                    order_id=str(product.id),
-                    provider_reference=payment.provider_reference,
-                    success=True
-                )
                 return Response({
                     'payment_id': payment.id,
                     'message': 'Mock Reactivation Successful! Product is now ACTIVE.',

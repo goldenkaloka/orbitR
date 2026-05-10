@@ -8,7 +8,9 @@ def broadcast_order_status(order_id, status, message="Status updated"):
         return
 
     try:
-        order = Order.objects.get(id=order_id)
+        order = Order.objects.select_related('restaurant', 'driver').prefetch_related(
+            'pool__members__user'
+        ).get(id=order_id)
         payload = {
             'type': 'order_status_update',
             'order_id': str(order_id),
@@ -30,7 +32,13 @@ def broadcast_order_status(order_id, status, message="Status updated"):
         if order.driver:
             async_to_sync(channel_layer.group_send)(f'rider_{order.driver.user_id}', payload)
 
-        # 4. Notify All Riders (New Ping) if status is READY and no driver
+        # 4. Priority 4 Fix: Notify ALL pool members (non-initiator members have no order visibility otherwise)
+        if order.pool:
+            for member in order.pool.members.all():
+                if member.user_id != order.customer_id:  # Skip initiator (already notified via user_)
+                    async_to_sync(channel_layer.group_send)(f'user_{member.user_id}', payload)
+
+        # 5. Notify All Riders (New Ping) if status is READY and no driver
         if status == 'READY' and not order.driver:
             async_to_sync(channel_layer.group_send)('riders', {
                 'type': 'new_order_ping',
@@ -41,6 +49,9 @@ def broadcast_order_status(order_id, status, message="Status updated"):
             
     except Order.DoesNotExist:
         pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"broadcast_order_status failed for order {order_id}: {e}")
 
 def broadcast_pool_status(pool_id, status, message="Pool updated"):
     from apps.orders.models import OrderPool
@@ -50,7 +61,7 @@ def broadcast_pool_status(pool_id, status, message="Pool updated"):
         return
 
     try:
-        pool = OrderPool.objects.get(id=pool_id)
+        pool = OrderPool.objects.prefetch_related('members', 'members__user').get(id=pool_id)
         # Performance: Exclude the heavy menu from the real-time broadcast
         # The frontend already has the menu from the initial load
         serializer = OrderPoolSerializer(pool, exclude_fields=['restaurant_menu'])
@@ -58,12 +69,22 @@ def broadcast_pool_status(pool_id, status, message="Pool updated"):
         import json
         from django.core.serializers.json import DjangoJSONEncoder
 
+        # Priority 3 Fix: Include a member_map so each Flutter client can self-identify
+        # without needing request context. Format: {"user_id": "member_id"}
+        member_map = {
+            str(m.user_id): str(m.id)
+            for m in pool.members.all()
+        }
+        initiator_id = str(pool.initiator_id)
+
         payload = {
             'type': 'pool_update',
             'pool_id': str(pool_id),
             'status': status,
             'message': message,
             'pool': serializer.data,
+            'member_map': member_map,       # {user_id: member_id} for client-side identity
+            'initiator_id': initiator_id,  # so each client knows if they are the initiator
         }
 
         # Sanitize payload for Channels msgpack/json serialization
@@ -74,6 +95,9 @@ def broadcast_pool_status(pool_id, status, message="Pool updated"):
             
     except OrderPool.DoesNotExist:
         pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"broadcast_pool_status failed for pool {pool_id}: {e}")
 
 
 def broadcast_order_location(order_id, lat, lng, heading=0.0):

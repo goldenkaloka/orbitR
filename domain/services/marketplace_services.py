@@ -81,13 +81,6 @@ class MarketplaceService:
             if product.status == 'ACTIVE':
                 return product
 
-            # Create a record of the payment
-            Payment.objects.create(
-                marketplace_product=product,
-                amount=product.calculate_listing_fee(),
-                status='COLLECTED' # For listings, it goes straight to platform
-            )
-
             product.status = 'ACTIVE'
             product.is_fee_paid = True
             product.expiry_date = timezone.now() + timedelta(days=21)
@@ -111,16 +104,6 @@ class MarketplaceService:
             
             if product.seller != actor:
                 raise PermissionError("Only the seller can reactivate this product.")
-            
-            # Switch to Renewal fee rate
-            product.listing_type = 'RENEWAL'
-            
-            # Record renewal payment
-            Payment.objects.create(
-                marketplace_product=product,
-                amount=product.calculate_listing_fee(),
-                status='COLLECTED'
-            )
             
             product.status = 'ACTIVE'
             product.expiry_date = timezone.now() + timedelta(days=21)

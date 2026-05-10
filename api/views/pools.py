@@ -84,25 +84,48 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+
     @action(detail=True, methods=['POST'], url_path='remove-item')
     def remove_item(self, request, pk=None):
         item_id = request.data.get('item_id')
+        quantity = int(request.data.get('quantity', 1))
         try:
-            pool = PoolOrderService.remove_item(request.user, pk, item_id)
+            pool = PoolOrderService.remove_item(request.user, pk, item_id, quantity)
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='leave')
+    def leave(self, request, pk=None):
+        """A non-initiator member exits the pool before it is locked."""
+        try:
+            PoolOrderService.leave_pool(request.user, pk)
+            return Response({'success': True, 'message': 'You have left the pool.'})
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='cancel')
+    def cancel(self, request, pk=None):
+        """Initiator or admin cancels the pool entirely."""
+        try:
+            PoolOrderService.cancel_pool(pk, request.user)
+            return Response({'success': True, 'message': 'Pool has been cancelled.'})
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 
 
     @action(detail=True, methods=['POST'], url_path='lock')
     def lock(self, request, pk=None):
-        pool = self.get_object()
-        if pool.initiator != request.user:
-            return Response({'error': 'Only the initiator can lock the pool'}, status=403)
-        
         try:
-            pool = PoolOrderService.lock_pool(pk)
+            # We pass the user to the service so it can check authorization while holding the lock
+            pool = PoolOrderService.lock_pool(pk, request.user)
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 
@@ -122,7 +145,8 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             
             # 2. Trigger the universal payment flow
             result = InitiatePaymentService.execute(
-                pool_member_id=member.id, 
+                payable_type='pool_member',
+                payable_id=member.id, 
                 provider=provider, 
                 phone=phone,
                 bank_code=bank_code
@@ -153,4 +177,3 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
 
 # Import models for the Q query
-from django.db import models

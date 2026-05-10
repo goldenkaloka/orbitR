@@ -112,6 +112,7 @@ class OrderPool(models.Model):
     
     invite_code = models.CharField(max_length=10, unique=True, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN', db_index=True)
+    final_order = models.OneToOneField('Order', on_delete=models.SET_NULL, null=True, blank=True, related_name='source_pool')
     
     # Shared delivery details
     delivery_address = models.TextField()

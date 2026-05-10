@@ -4,7 +4,6 @@ class PaymentFSM:
     STATES = [
         'INITIATED',
         'COLLECTED',
-        'RELEASE_READY',
         'DISBURSED',
         'REFUNDED',
         'FAILED'
@@ -12,9 +11,7 @@ class PaymentFSM:
 
     ALLOWED_TRANSITIONS = {
         'INITIATED': ['COLLECTED', 'FAILED'],
-        'COLLECTED': ['RELEASE_READY', 'DISBURSED', 'REFUNDED', 'FAILED'],
-
-        'RELEASE_READY': ['DISBURSED', 'REFUNDED', 'FAILED'],
+        'COLLECTED': ['DISBURSED', 'REFUNDED', 'FAILED'],
         'DISBURSED': [],
         'FAILED': ['INITIATED']  # Retry transitions back to initiated
     }

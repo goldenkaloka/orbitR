@@ -510,6 +510,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.payments.tasks.cleanup_expired_payments',
         'schedule': crontab(minute=0, hour='*'),
     },
+    'recover-stuck-pools-hourly': {
+        'task': 'domain.services.dispatch_tasks.recover_stuck_pools_task',
+        'schedule': crontab(minute=5, hour='*'),  # 5 minutes past every hour
+    },
+    'expire-stale-pools-every-15-mins': {
+        'task': 'domain.services.dispatch_tasks.expire_stale_pools_task',
+        'schedule': crontab(minute='*/15'),
+    },
 }
 
 CHANNEL_LAYERS = {

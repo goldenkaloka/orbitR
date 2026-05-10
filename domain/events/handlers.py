@@ -32,7 +32,8 @@ def on_order_delivered(event: OrderDelivered):
     try:
         if order.pool:
             # Group Order: Release funds for ALL members
-            member_payments = Payment.objects.filter(pool_member__pool=order.pool)
+            member_ids = order.pool.members.values_list('id', flat=True)
+            member_payments = Payment.objects.filter(payable_type='pool_member', payable_id__in=member_ids)
             for p in member_payments:
                 EventBus.publish(PaymentReleaseRequested(
                     aggregate_id=p.id, 
@@ -40,7 +41,7 @@ def on_order_delivered(event: OrderDelivered):
                 ))
         else:
             # Standard Order
-            payment = Payment.objects.get(order_id=event.aggregate_id)
+            payment = Payment.objects.get(payable_type='order', payable_id=event.aggregate_id)
             EventBus.publish(PaymentReleaseRequested(
                 aggregate_id=payment.id, 
                 payload={'order_id': str(event.aggregate_id)}
@@ -56,26 +57,34 @@ def on_payment_release_requested(event: PaymentReleaseRequested):
         ReleasePaymentService.execute(event.aggregate_id)
         logger.info(f"Successfully released payment {event.aggregate_id}")
     except Exception as e:
-        print(f"DEBUG: Failed to release payment: {str(e)}")
+
         logger.error(f"Failed to release payment {event.aggregate_id}: {str(e)}")
 
 
-def on_payment_collected(event):
-    order_id = event.payload.get('order_id')
-    logger.info(f"Payment collected for order {order_id}")
+def on_payment_collected(event: PaymentCollected):
+    payable_type = event.payload.get('payable_type')
+    payable_id = event.payload.get('payable_id')
+    
+    logger.info(f"Payment collected for {payable_type} {payable_id}")
+    
+    if payable_type != 'order':
+        # Currently only orders need automated confirmation/dispatch triggers here
+        # Marketplace and Pool Share activations are handled inside CompletePaymentService
+        return
+
     try:
         from apps.orders.models import Order
         from django.db import transaction
         with transaction.atomic():
-            order = Order.objects.select_for_update().get(id=order_id)
+            order = Order.objects.select_for_update().get(id=payable_id)
             if order.status != 'CREATED':
-                logger.info(f"Order {order_id} already in {order.status} state. Skipping.")
+                logger.info(f"Order {payable_id} already in {order.status} state. Skipping.")
                 return
             
             order.is_paid = True
             order.save(update_fields=['is_paid', 'updated_at'])
             # Pass the customer as the actor for payment confirmation
-            ConfirmOrderService.execute(order_id, order.customer)
+            ConfirmOrderService.execute(payable_id, order.customer)
     except Exception as e:
         logger.error(f"Failed to confirm order after payment: {str(e)}")
 
@@ -117,9 +126,13 @@ def on_payment_disbursed(event: PaymentDisbursed):
         logger.error(f"Order {order_id} not found for disbursement notification")
 
 def on_payment_refunded(event: PaymentRefunded):
-    order_id = event.payload.get('order_id')
-    logger.info(f"Payment refunded for order {order_id}")
+    payable_id = event.payload.get('payable_id')
+    logger.info(f"Payment refunded for {event.payload.get('type')} {payable_id}")
     
+    if event.payload.get('type') != 'order':
+        return # Currently only notifying order refunds
+        
+    order_id = payable_id
     from apps.orders.models import Order
     try:
         order = Order.objects.select_related('customer').get(id=order_id)
@@ -154,46 +167,48 @@ def on_order_event(event):
     """
     Generic handler to broadcast any Order domain event to WebSockets
     """
+    status_msg = f"Order status: {event.event_type}"
     from apps.events.utils import broadcast_order_status
     from apps.events.webhooks import fire_order_webhook
     logger.info(f"Broadcasting {event.event_type} for {event.aggregate_id}")
     
-    # Map event types to user-friendly messages
-    messages = {
-        'OrderCreated': "Order placed successfully!",
-        'OrderConfirmed': "Payment received! Restaurant is notified.",
-        'OrderPreparing': "Restaurant has started preparing your food! 🔥",
-        'FoodReady': "Food is ready for pickup! 🛵",
-        'DriverAssigned': "A rider is on the way to pick up your food.",
-        'OrderPicked': f"Rider has picked up your order! 🚀 Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
-        'OrderDelivered': "Order delivered! Enjoy your meal 😋",
-        'OrderCancelled': "Order has been cancelled. 🛑",
-    }
-    
-    status_msg = messages.get(event.event_type, f"Order status: {event.event_type}")
-    
-    # 1. Internal WebSocket Broadcast
-    broadcast_order_status(
-        order_id=str(event.aggregate_id),
-        status=event.event_type,
-        message=status_msg
-    )
-    
-    # 2. Push Notifications
+    # 2. Fetch Order and Push Notifications
     try:
         from apps.orders.models import Order
         order = Order.objects.select_related('customer', 'restaurant__owner', 'driver__user').get(id=event.aggregate_id)
+        
+        # Map event types to user-friendly messages (Now safe to use 'order' object)
+        messages = {
+            'OrderCreated': "Order placed successfully!",
+            'OrderConfirmed': "Payment received! Restaurant is notified.",
+            'OrderPreparing': "Restaurant has started preparing your food! 🔥",
+            'FoodReady': "Food is ready for pickup! 🛵",
+            'DriverAssigned': "A rider is on the way to pick up your food.",
+            'OrderPicked': f"Rider has picked up your order! 🚀 Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
+            'OrderDelivered': "Order delivered! Enjoy your meal 😋",
+            'OrderCancelled': "Order has been cancelled. 🛑",
+        }
+        
+        status_msg = messages.get(event.event_type, f"Order status: {event.event_type}")
+        
+        # 1. Internal WebSocket Broadcast
+        broadcast_order_status(
+            order_id=str(event.aggregate_id),
+            status=event.event_type,
+            message=status_msg
+        )
         
         extra_data = {"order_id": str(order.id), "type": "order_update", "status": event.event_type}
         
         if event.event_type == 'OrderCreated':
             # Notify customer that order is pending payment
-            NotificationService.send_push(
-                user_id=str(order.customer.id),
-                title="Order Drafted",
-                body="Complete your payment to send the order to the restaurant.",
-                data=extra_data
-            )
+            if not event.payload.get('is_pool'):
+                NotificationService.send_push(
+                    user_id=str(order.customer.id),
+                    title="Order Drafted",
+                    body="Complete your payment to send the order to the restaurant.",
+                    data=extra_data
+                )
         elif event.event_type == 'OrderConfirmed':
             # 1. Notify Customer
             NotificationService.send_push(

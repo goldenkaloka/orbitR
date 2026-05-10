@@ -1,3 +1,4 @@
+from rest_framework import viewsets, status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
@@ -16,6 +17,44 @@ logger = logging.getLogger(__name__)
 AIRPAY_ALLOWED_IPS = getattr(settings, 'AIRPAY_ALLOWED_IPS', [
     '41.59.0.0/16',    # Airpay Tanzania IP range placeholder
 ])
+
+class InitiatePaymentView(APIView):
+    """
+    Unified entry point for all payments (Order, Pool Share, Marketplace Listing).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        payable_type = request.data.get('payable_type')
+        payable_id = request.data.get('payable_id')
+        provider = request.data.get('provider', 'AIRPAY')
+        phone = request.data.get('phone', request.user.phone)
+        bank_code = request.data.get('bank_code')
+
+        if not payable_type or not payable_id:
+            return Response({'error': 'payable_type and payable_id are required'}, status=400)
+
+        try:
+            from domain.services.payment_services import InitiatePaymentService
+            result = InitiatePaymentService.execute(
+                payable_type=payable_type,
+                payable_id=payable_id,
+                provider=provider,
+                phone=phone,
+                bank_code=bank_code
+            )
+            
+            payment = result['payment']
+            gateway_data = result.get('gateway_response', {})
+            
+            return Response({
+                "success": True,
+                "payment_id": str(payment.id),
+                "status": payment.status,
+                **gateway_data
+            })
+        except Exception as e:
+            return Response({"error": str(e)}, status=400)
 
 class AirpayWebhookView(APIView):
     """
@@ -50,8 +89,28 @@ class AirpayWebhookView(APIView):
         ).hexdigest()
         return hmac.compare_digest(signature, expected)
 
+    def _is_ip_allowed(self, client_ip):
+        """Check if the client IP is in the allowed list/range."""
+        import ipaddress
+        for allowed in AIRPAY_ALLOWED_IPS:
+            try:
+                if '/' in allowed:
+                    if ipaddress.ip_address(client_ip) in ipaddress.ip_network(allowed):
+                        return True
+                elif client_ip == allowed:
+                    return True
+            except ValueError:
+                continue
+        return False
+
     def post(self, request, *args, **kwargs):
         client_ip = self._get_client_ip(request)
+        
+        # Security Gate 0: Verify IP Allowlist
+        if not self._is_ip_allowed(client_ip):
+            logger.warning(f"Airpay Webhook: Unauthorized access attempt from IP {client_ip}")
+            return Response({"status": "error", "message": "Forbidden"}, status=403)
+
         gateway = AirpayGateway()
 
         # Security Gate 1: Verify request signature
@@ -93,7 +152,7 @@ class AirpayWebhookView(APIView):
             CompletePaymentService.execute(
                 provider_reference=ap_transaction_id,
                 success=success,
-                order_id=order_id,
+                reference_id=order_id,
             )
             
             return Response({"status": "success"}, status=200)

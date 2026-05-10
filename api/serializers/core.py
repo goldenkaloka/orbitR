@@ -258,10 +258,15 @@ class OrderPoolSerializer(serializers.ModelSerializer):
 
 
     def get_restaurant_menu(self, obj):
-        # Fetch available food for the pool's restaurant
+        # Performance: Only query foods if this field wasn't excluded via exclude_fields
+        # (it's excluded on all real-time WebSocket broadcasts — only sent on initial page load).
         if not obj.restaurant:
             return []
-        foods = obj.restaurant.foods.filter(is_available=True)
+        # Use prefetched cache if available, otherwise fall back to filtered query
+        if hasattr(obj.restaurant, '_prefetched_objects_cache') and 'foods' in obj.restaurant._prefetched_objects_cache:
+            foods = [f for f in obj.restaurant.foods.all() if f.is_available]
+        else:
+            foods = obj.restaurant.foods.filter(is_available=True).only('id', 'name', 'price', 'category', 'image')
         return [{'id': str(f.id), 'name': f.name, 'price': float(f.price), 'category': f.category, 'image': f.image.url if f.image else None} for f in foods]
 
 

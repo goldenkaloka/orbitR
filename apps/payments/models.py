@@ -6,7 +6,12 @@ import uuid
 class Payment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
-    # Polymorphic-like associations
+    # Polymorphic associations
+    # Use payable_type and payable_id for unified access
+    payable_type = models.CharField(max_length=50, db_index=True, null=True, blank=True)
+    payable_id = models.UUIDField(db_index=True, null=True, blank=True)
+
+    # Legacy associations (deprecated)
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
     pool_member = models.OneToOneField('orders.PoolMember', on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
     marketplace_product = models.ForeignKey('marketplace.MarketplaceProduct', on_delete=models.CASCADE, related_name='listing_payments', null=True, blank=True)
@@ -19,6 +24,10 @@ class Payment(models.Model):
     refund_id = models.CharField(max_length=255, null=True, blank=True)
     refunded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        unique_together = [('payable_type', 'payable_id')]
+        ordering = ['-created_at']
 
 class Transaction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

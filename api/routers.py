@@ -9,7 +9,7 @@ from api.views.wallets import WalletViewSet
 from api.views.admin import AdminViewSet
 from api.views.reviews import ReviewViewSet
 from api.views.pools import PoolOrderViewSet
-from api.views.payments import AirpayWebhookView
+from api.views.payments import AirpayWebhookView, InitiatePaymentView
 from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView
 from api.views.marketplace import MarketplaceProductViewSet, MarketplaceCategoryViewSet
 from api.views.geo import OperationalZoneViewSet
@@ -37,4 +37,5 @@ urlpatterns = router.urls + [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
     path('payments/airpay/callback/', AirpayWebhookView.as_view(), name='airpay-callback'),
+    path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
 ]

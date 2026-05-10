@@ -125,16 +125,8 @@ class PoolOrderService:
             
         restaurant = Restaurant.objects.get(id=restaurant_id)
         
-        # 2. Parse delivery location
-        if delivery_location and not hasattr(delivery_location, 'x'):
-            # If it's a dict or string, parse it
-            parsed_loc = parse_coordinate_dict({'loc': delivery_location}, 'loc')
-            if parsed_loc:
-                delivery_location = parsed_loc
-            else:
-                raise ValueError("Invalid delivery location format. Expected lat/lng dict or POINT WKT.")
-        
-        if not delivery_location:
+        # 2. Validate delivery location (expected as Point from serializer)
+        if not delivery_location or not hasattr(delivery_location, 'x'):
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
 
 
@@ -161,7 +153,10 @@ class PoolOrderService:
                     )
                     PoolMember.objects.create(pool=pool, user=initiator)
                 break
-            except IntegrityError:
+            except IntegrityError as e:
+                # Catch the unique_open_pool_per_user constraint
+                if 'unique_open_pool_per_user' in str(e).lower() or 'initiator' in str(e).lower():
+                    raise ValueError("You already have an active group order pool.")
                 if i == max_retries - 1:
                     raise ValueError("Failed to generate a unique invite code. Please try again.")
                 continue
@@ -173,13 +168,28 @@ class PoolOrderService:
             
         return pool
 
+    MAX_POOL_MEMBERS = 10
+
     @staticmethod
     def join_pool(user, invite_code):
-        pool = OrderPool.objects.get(invite_code=invite_code, status='OPEN')
-        if pool.expires_at <= timezone.now():
-            raise ValueError("This pool has expired.")
-        member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
-        return pool
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(invite_code=invite_code, status='OPEN')
+            
+            if pool.expires_at <= timezone.now():
+                raise ValueError("This pool has expired.")
+            
+            # Guard: User cannot be in multiple OPEN pools simultaneously to avoid payment conflicts
+            existing_open_pool = PoolMember.objects.filter(user=user, pool__status='OPEN').exclude(pool=pool).exists()
+            if existing_open_pool:
+                raise ValueError("You are already participating in another active group order.")
+            
+            # Enforce maximum member limit
+            current_count = pool.members.count()
+            if current_count >= PoolOrderService.MAX_POOL_MEMBERS:
+                raise ValueError(f"This pool is full (max {PoolOrderService.MAX_POOL_MEMBERS} members).")
+            
+            member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
+            return pool
 
     @staticmethod
     def add_item(user, pool_id, food_id, quantity):
@@ -216,26 +226,39 @@ class PoolOrderService:
             return pool
 
     @staticmethod
-    def remove_item(user, pool_id, item_id):
+    def remove_item(user, pool_id, item_id, quantity=1):
+        """Decrement item quantity by `quantity`. Deletes the row only when qty reaches 0."""
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
             member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
-            item = PoolItem.objects.get(id=item_id, member=member)
+            item = PoolItem.objects.select_for_update().get(id=item_id, member=member)
             
-            # Update member subtotal
-            member.items_subtotal -= (item.price_at_addition * item.quantity)
+            # Clamp: cannot remove more than what's there
+            remove_qty = min(quantity, item.quantity)
+            price_delta = item.price_at_addition * remove_qty
+            
+            member.items_subtotal = max(Decimal('0.00'), member.items_subtotal - price_delta)
             member.save()
             
             food_name = item.food.name
-            item.delete()
+            item.quantity -= remove_qty
+            if item.quantity <= 0:
+                item.delete()
+            else:
+                item.save()
             
-            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} removed {food_name}")
+            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} updated {food_name}")
             return pool
 
     @staticmethod
     def mark_member_ready(user, pool_id):
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            
+            # Guard: expiry
+            if pool.expires_at <= timezone.now():
+                raise ValueError("This pool has expired and can no longer accept changes.")
+            
             member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
             if member.items_subtotal <= 0:
                 raise ValueError("You must add at least one item before marking as ready.")
@@ -246,28 +269,91 @@ class PoolOrderService:
             broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} is ready!")
             return pool
 
+    @staticmethod
+    def leave_pool(user, pool_id):
+        """Allow a member to leave an OPEN pool. The initiator cannot leave — they must cancel."""
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            
+            if pool.initiator == user:
+                raise PermissionError("As the initiator, you cannot leave — cancel the pool instead.")
+            
+            member = PoolMember.objects.get(pool=pool, user=user)
+            member.delete()
+            
+            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} left the pool.")
+            return pool
 
     @staticmethod
-    def lock_pool(pool_id):
+    def cancel_pool(pool_id, actor):
+        """Cancel an OPEN pool. Only the initiator or an admin can cancel."""
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            
+            if pool.status not in ('OPEN', 'LOCKED'):
+                raise ValueError(f"Cannot cancel a pool in {pool.status} state.")
+            
+            is_initiator = pool.initiator == actor
+            is_admin = getattr(actor, 'role', None) == 'admin'
+            if not (is_initiator or is_admin):
+                raise PermissionError("Only the pool initiator or an admin can cancel the pool.")
+            
+            pool.status = 'CANCELLED'
+            pool.save()
+            
+            broadcast_pool_status(str(pool.id), 'CANCELLED', message="The pool has been cancelled.")
+            return pool
+
+    @staticmethod
+    def lock_pool(pool_id, actor):
         """
         Calculate final fees and split the delivery cost among members.
+        Validates: expiry, all-members-ready, and prevents double-locking.
         """
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            
+            # Guard: only initiator can lock
+            if pool.initiator != actor:
+                raise PermissionError("Only the pool initiator can lock the pool.")
+            
+            # Guard: pool must be OPEN to lock
+            if pool.status != 'OPEN':
+                raise ValueError(f"Pool is already {pool.status} and cannot be locked again.")
+            
+            # Guard: expiry check
+            if pool.expires_at <= timezone.now():
+                raise ValueError("This pool has expired and can no longer be locked.")
+            
+            # Guard: all members must be READY
+            not_ready = pool.members.exclude(status='READY').values_list('user__username', flat=True)
+            if not_ready.exists():
+                names = ', '.join(not_ready)
+                raise ValueError(f"Cannot lock pool — the following members are not ready yet: {names}")
+            
+            members = list(pool.members.all())
+            if not members:
+                raise ValueError("Cannot lock an empty pool.")
+            
             pool.status = 'LOCKED'
             
             # Calculate total delivery fee for the location
             total_fee = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location)
             pool.total_delivery_fee = total_fee
             
-            # Split fee among members
-            members = list(pool.members.all())
-            if members:
-                share = total_fee / len(members)
-                for member in members:
-                    member.delivery_fee_share = share
-                PoolMember.objects.bulk_update(members, ['delivery_fee_share'])
+            # Round-robin fee split to eliminate penny loss
+            # e.g. 1000 TSh / 3 members = 333, 334, 333 (not 333.33 each)
+            n = len(members)
+            base_share = total_fee // n                    # Integer division
+            remainder_units = total_fee - (base_share * n)  # e.g. 1 unit if 1000/3
+            smallest_unit = Decimal('1')                   # 1 TSh resolution
             
+            for i, member in enumerate(members):
+                # First `remainder_units` members absorb the leftover TSh
+                extra = smallest_unit if Decimal(str(i)) < remainder_units else Decimal('0')
+                member.delivery_fee_share = base_share + extra
+            
+            PoolMember.objects.bulk_update(members, ['delivery_fee_share'])
             pool.save()
             
             from apps.events.utils import broadcast_pool_status
@@ -353,6 +439,7 @@ class PoolOrderService:
 
             
             pool.status = 'COMPLETED'
+            pool.final_order = master_order
             pool.save()
             
             from apps.events.utils import broadcast_pool_status
@@ -363,6 +450,10 @@ class PoolOrderService:
                 aggregate_id=master_order.id,
                 payload={'customer_id': str(master_order.customer.id), 'is_pool': True}
             ))
+            
+            # 4. Auto-confirm the pool order so vendor gets notified and dispatch begins
+            from domain.services.order_services import ConfirmOrderService
+            ConfirmOrderService.execute(master_order.id, master_order.customer)
             
             return master_order
 

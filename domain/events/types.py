@@ -138,3 +138,7 @@ class MarketplaceProductActivated(DomainEvent):
 class MarketplaceProductExpired(DomainEvent):
     aggregate_type = 'MarketplaceProduct'
     event_type = 'MarketplaceProductExpired'
+@dataclass
+class PaymentFailed(DomainEvent):
+    aggregate_type = 'Payment'
+    event_type = 'PaymentFailed'
