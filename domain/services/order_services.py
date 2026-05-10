@@ -11,8 +11,9 @@ from django.contrib.gis.measure import D
 from django.core.cache import cache
 
 # App Models
-from apps.orders.models import Order, OrderItem, DeliveryAssignment, DeliveryBatch, OrderPool, PoolMember, PoolItem
-from apps.delivery.models import Driver, DeliveryProof
+from apps.orders.models import Order, OrderItem, DeliveryBatch, OrderPool, PoolMember, PoolItem
+from apps.delivery.models import Driver, DeliveryAssignment, DeliveryProof
+
 from apps.restaurants.models import Restaurant, DeliveryZone
 from apps.wallets.models import Wallet, Transaction
 
