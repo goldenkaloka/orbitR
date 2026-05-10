@@ -1,15 +1,13 @@
 import math
 from decimal import Decimal
 from abc import ABC, abstractmethod
+from django.contrib.gis.geos import Point
+from django.contrib.gis.db.models.functions import Distance
+from django.contrib.gis.measure import D
+from django.db.models import Count, Q, F
+from django.db import transaction
 from apps.delivery.models import Driver
 
-        from apps.delivery.models import Driver
-        from django.contrib.gis.geos import Point
-        from django.contrib.gis.db.models.functions import Distance
-        from django.contrib.gis.measure import D
-        from django.db.models import Count, Q, F
-        from django.db import transaction
-        from decimal import Decimal
 
 
 class LocationMatcher(ABC):
