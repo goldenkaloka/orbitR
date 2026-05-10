@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
 from apps.orders.models import OrderPool
 from api.serializers.core import OrderPoolSerializer, PoolMemberSerializer
 from domain.services.order_services import PoolOrderService
@@ -13,9 +14,10 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        # Users see pools they initiated or joined
+        # Users see only active pools they initiated or joined
         return OrderPool.objects.filter(
-            models.Q(initiator=user) | models.Q(members__user=user)
+            Q(initiator=user) | Q(members__user=user),
+            status__in=['OPEN', 'LOCKED']
         ).distinct().prefetch_related('members', 'members__user', 'members__items', 'members__items__food')
 
     def create(self, request, *args, **kwargs):

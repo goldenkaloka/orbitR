@@ -68,7 +68,7 @@ class InitiatePaymentService:
                 EventBus.publish(PaymentInitiated(
                     aggregate_id=payment.id,
                     payload={
-                        'order_id': str(order.id),
+                        'order_id': str(order.id if order else pool_member.id),
                         'amount': float(payment.amount),
                         'gateway': 'Mock' if response.get('instant_success') else 'Airpay',
                         'provider_reference': payment.provider_reference
