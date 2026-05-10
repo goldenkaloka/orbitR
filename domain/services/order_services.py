@@ -206,7 +206,25 @@ class PoolOrderService:
             # Update member subtotal
             member.items_subtotal += (food.price * quantity)
             member.save()
+            
+            # Notify members of the update
+            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} added {food.name}")
             return pool
+
+    @staticmethod
+    def mark_member_ready(user, pool_id):
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id, status='OPEN')
+            member = PoolMember.objects.select_for_update().get(pool=pool, user=user)
+            if member.items_subtotal <= 0:
+                raise ValueError("You must add at least one item before marking as ready.")
+            
+            member.status = 'READY'
+            member.save()
+            
+            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} is ready!")
+            return pool
+
 
     @staticmethod
     def lock_pool(pool_id):

@@ -177,6 +177,8 @@ class PoolMemberSerializer(serializers.ModelSerializer):
 class OrderPoolSerializer(serializers.ModelSerializer):
     members = PoolMemberSerializer(many=True, read_only=True)
     restaurant_name = serializers.ReadOnlyField(source='restaurant.name')
+    is_initiator = serializers.SerializerMethodField()
+    current_user_member_id = serializers.SerializerMethodField()
     
     class Meta:
         from apps.orders.models import OrderPool
@@ -184,9 +186,25 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
-            'total_delivery_fee', 'members', 'created_at', 'expires_at'
+            'total_delivery_fee', 'members', 'created_at', 'expires_at',
+            'is_initiator', 'current_user_member_id'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']
+
+    def get_is_initiator(self, obj):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            return obj.initiator_id == request.user.id
+        return False
+
+    def get_current_user_member_id(self, obj):
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            # Using .members.all() which is prefetched in the viewset
+            for member in obj.members.all():
+                if member.user_id == request.user.id:
+                    return member.id
+        return None
 
     def to_internal_value(self, data):
         """Handle coordinate dictionary conversion using shared utility."""
@@ -194,4 +212,5 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         if point:
             data['delivery_location'] = point
         return super().to_internal_value(data)
+
 

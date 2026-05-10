@@ -19,13 +19,27 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         ).distinct().prefetch_related('members', 'members__user', 'members__items', 'members__items__food')
 
     def create(self, request, *args, **kwargs):
+        # UX Improvement: If user already has an open pool, just return it
+        # instead of failing with a 400/500 error.
+        existing_pool = OrderPool.objects.filter(initiator=request.user, status='OPEN').first()
+        if existing_pool:
+            serializer = self.get_serializer(existing_pool, context={'request': request})
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():
-            print(f"DEBUG: Pool Validation Errors: {serializer.errors}")
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        
+        try:
+            self.perform_create(serializer)
+            headers = self.get_success_headers(serializer.data)
+            return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': 'An unexpected error occurred'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 
     def perform_create(self, serializer):
         # The service handles creation with initiator logic
@@ -51,8 +65,9 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         
         try:
             pool = PoolOrderService.join_pool(request.user, invite_code)
-            return Response(OrderPoolSerializer(pool).data)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except OrderPool.DoesNotExist:
+
             return Response({'error': 'Pool not found or closed'}, status=404)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
@@ -64,9 +79,10 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         
         try:
             pool = PoolOrderService.add_item(request.user, pk, food_id, quantity)
-            return Response(OrderPoolSerializer(pool).data)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+
 
     @action(detail=True, methods=['POST'], url_path='lock')
     def lock(self, request, pk=None):
@@ -76,17 +92,27 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         
         try:
             pool = PoolOrderService.lock_pool(pk)
-            return Response(OrderPoolSerializer(pool).data)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+
 
     @action(detail=True, methods=['POST'], url_path='pay')
     def pay_share(self, request, pk=None):
         try:
             pool = PoolOrderService.pay_share(request.user, pk)
-            return Response(OrderPoolSerializer(pool).data)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='ready')
+    def mark_ready(self, request, pk=None):
+        try:
+            pool = PoolOrderService.mark_member_ready(request.user, pk)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
 
 # Import models for the Q query
 from django.db import models
