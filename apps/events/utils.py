@@ -55,6 +55,9 @@ def broadcast_pool_status(pool_id, status, message="Pool updated"):
         # The frontend already has the menu from the initial load
         serializer = OrderPoolSerializer(pool, exclude_fields=['restaurant_menu'])
         
+        import json
+        from django.core.serializers.json import DjangoJSONEncoder
+
         payload = {
             'type': 'pool_update',
             'pool_id': str(pool_id),
@@ -63,8 +66,11 @@ def broadcast_pool_status(pool_id, status, message="Pool updated"):
             'pool': serializer.data,
         }
 
+        # Sanitize payload for Channels msgpack/json serialization
+        clean_payload = json.loads(json.dumps(payload, cls=DjangoJSONEncoder))
+
         # Notify the pool group
-        async_to_sync(channel_layer.group_send)(f'pool_{pool_id}', payload)
+        async_to_sync(channel_layer.group_send)(f'pool_{pool_id}', clean_payload)
             
     except OrderPool.DoesNotExist:
         pass
