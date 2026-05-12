@@ -83,8 +83,10 @@ class PricingService:
 
             # 4. Dynamic Calculation via Pricing Policy
             policy = cls.get_active_policy()
+            service_fee = policy.service_fee if policy else Decimal('300.00')
+            
             if not policy:
-                return Decimal('1000.00'), Decimal('300.00'), None
+                return Decimal('1000.00'), service_fee, None
 
             # Apply Road Buffer
             road_distance_km = distance_km * policy.road_buffer_multiplier

@@ -71,13 +71,33 @@ class OrderAdmin(ModelAdmin):
 
     @admin.action(description='✅ Mark selected orders as CONFIRMED')
     def mark_confirmed(self, request, queryset):
-        updated = queryset.filter(status='CREATED').update(status='CONFIRMED')
-        self.message_user(request, f'{updated} order(s) confirmed.')
+        from domain.services.order_services import ConfirmOrderService
+        success_count = 0
+        error_count = 0
+        for order in queryset:
+            try:
+                ConfirmOrderService.execute(order.id, request.user)
+                success_count += 1
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Admin confirmation failed for order {order.id}: {str(e)}")
+        
+        self.message_user(request, f'Successfully confirmed {success_count} order(s). {error_count} failed.')
 
     @admin.action(description='❌ Mark selected orders as CANCELLED')
     def mark_cancelled(self, request, queryset):
-        updated = queryset.exclude(status__in=['DELIVERED', 'CANCELLED']).update(status='CANCELLED')
-        self.message_user(request, f'{updated} order(s) cancelled.')
+        from domain.services.order_services import CancelOrderService
+        success_count = 0
+        error_count = 0
+        for order in queryset:
+            try:
+                CancelOrderService.execute(order.id, request.user, reason="Cancelled via Admin Panel")
+                success_count += 1
+            except Exception as e:
+                error_count += 1
+                logger.error(f"Admin cancellation failed for order {order.id}: {str(e)}")
+        
+        self.message_user(request, f'Successfully cancelled {success_count} order(s). {error_count} failed.')
 
     def get_queryset(self, request):
         return (

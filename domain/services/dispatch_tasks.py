@@ -176,5 +176,5 @@ def daily_earnings_reset_task():
     Resets driver daily_earnings at midnight.
     """
     from apps.delivery.models import Driver
-    Driver.objects.update(daily_earnings=0)
+    Driver.objects.update(today_earnings=0)
     logger.info("Daily earnings reset complete.")

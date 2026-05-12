@@ -84,7 +84,7 @@ class InitiatePaymentService:
                 payment.provider_reference = response.get('provider_reference') or response.get('transactionId')
                 payment.save()
                 
-                EventBus.publish(PaymentInitiated(
+                transaction.on_commit(lambda: EventBus.publish(PaymentInitiated(
                     aggregate_id=payment.id,
                     payload={
                         'payable_type': payable_type,
@@ -92,7 +92,7 @@ class InitiatePaymentService:
                         'amount': float(payment.amount),
                         'provider_reference': payment.provider_reference
                     }
-                ))
+                )))
 
             # --- AUTO-COMPLETE FOR MOCK ---
             if response.get('instant_success'):
@@ -149,19 +149,19 @@ class CompletePaymentService:
                     
                     payment.save()
                     
-                    EventBus.publish(PaymentCollected(
+                    transaction.on_commit(lambda: EventBus.publish(PaymentCollected(
                         aggregate_id=payment.id,
                         payload={'payable_type': payment.payable_type, 'payable_id': str(payment.payable_id)}
-                    ))
+                    )))
                 else:
                     payment.status = PaymentFSM.transition(payment.status, 'FAILED')
                     payment.save()
                     
                     # Fix Issue 9: Publish event on failure
-                    EventBus.publish(PaymentFailed(
+                    transaction.on_commit(lambda: EventBus.publish(PaymentFailed(
                         aggregate_id=payment.id,
                         payload={'payable_type': payment.payable_type, 'payable_id': str(payment.payable_id), 'error': 'Payment collection failed'}
-                    ))
+                    )))
                     
                 return payment
         except Exception as e:
@@ -287,7 +287,7 @@ class ReleasePaymentService:
                 if order.driver:
                     Transaction.objects.create(payment=payment, to_wallet=order.driver.user, amount=driver_payout, transaction_type='platform_to_driver', status='COMPLETED')
                 
-                EventBus.publish(PaymentDisbursed(aggregate_id=payment.id, payload={'order_id': str(order.id)}))
+                transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(aggregate_id=payment.id, payload={'order_id': str(order.id)})))
             else:
                 FailedPayout.objects.create(payment=payment, to_wallet=order.restaurant.owner, amount=restaurant_payout, transaction_type='split_settlement_failure', reason=response.get('error', 'Unknown Error'))
             
@@ -335,7 +335,7 @@ class RefundPaymentService:
                             status='COMPLETED'
                         )
             
-            EventBus.publish(PaymentRefunded(aggregate_id=payment.id, payload={'type': payment.payable_type, 'payable_id': str(payment.payable_id)}))
+            transaction.on_commit(lambda: EventBus.publish(PaymentRefunded(aggregate_id=payment.id, payload={'type': payment.payable_type, 'payable_id': str(payment.payable_id)})))
             return True
 
 

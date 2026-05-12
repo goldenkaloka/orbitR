@@ -1,0 +1,148 @@
+import logging
+import random
+from django.db import transaction
+from django.utils import timezone
+from apps.orders.models import Order
+from apps.delivery.models import DeliveryAssignment
+from domain.fsm.order_fsm import OrderFSM
+from domain.fsm.driver_fsm import DriverFSM
+from domain.events.bus import EventBus
+from domain.events.types import (
+    OrderPreparing, FoodReady, OrderPicked, OrderDelivered
+)
+from domain.services.batching_service import BatchingService
+
+logger = logging.getLogger(__name__)
+
+# Operational Constants
+PICKUP_GEOFENCE_RADIUS_METERS = 100
+DELIVERY_GEOFENCE_RADIUS_METERS = 200
+
+class StartPreparingService:
+    @staticmethod
+    def execute(order_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if not order.restaurant:
+                raise ValueError("This order is not associated with a restaurant.")
+            if order.restaurant.owner != actor:
+                raise PermissionError("Only the restaurant owner can start preparing orders.")
+            
+            new_state = OrderFSM.transition(order.status, 'PREPARING')
+            order.status = new_state
+            order.save()
+            
+            transaction.on_commit(lambda: EventBus.publish(OrderPreparing(
+                aggregate_id=order.id, 
+                payload={'actor_id': str(actor.id)}
+            )))
+            return order
+
+class MarkReadyService:
+    @staticmethod
+    def execute(order_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if not order.restaurant:
+                raise ValueError("This order is not associated with a restaurant.")
+            if order.restaurant.owner != actor:
+                raise PermissionError("Only the restaurant owner can mark orders as ready.")
+            
+            new_state = OrderFSM.transition(order.status, 'READY')
+            order.status = new_state
+            order.ready_at = timezone.now()
+            order.save()
+            
+            # Proactively try to batch
+            if order.h3_index:
+                BatchingService.attempt_batching(order.restaurant.id, order.h3_index)
+            
+            transaction.on_commit(lambda: EventBus.publish(FoodReady(
+                aggregate_id=order.id, 
+                payload={'actor_id': str(actor.id)}
+            )))
+            return order
+
+class PickupOrderService:
+    @staticmethod
+    def execute(order_id, actor, bypass_geofence=False):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            
+            if actor.role != 'driver':
+                raise PermissionError("Only drivers can perform order pickups.")
+            
+            if not getattr(order, 'driver', None) or order.driver.user != actor:
+                raise PermissionError("Only the assigned driver can pickup this order.")
+            
+            driver = actor.driver_profile
+            if not bypass_geofence:
+                if not driver.location or not order.restaurant.geo_location:
+                    raise ValueError("Location data missing for geofence check")
+                
+                dist = driver.location.distance(order.restaurant.geo_location)
+                if dist > PICKUP_GEOFENCE_RADIUS_METERS:
+                    raise ValueError(f"Too far from restaurant ({int(dist)}m away, {PICKUP_GEOFENCE_RADIUS_METERS}m limit)")
+            
+            order.delivery_otp = ''.join([str(random.randint(0, 9)) for _ in range(4)])
+            
+            new_state = OrderFSM.transition(order.status, 'PICKED')
+            order.status = new_state
+            order.save()
+            
+            driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
+            driver.total_claims_accepted += 1
+            driver.save(update_fields=['status', 'total_claims_accepted'])
+            
+            assignment = order.delivery_assignment
+            assignment.picked_at = timezone.now()
+            assignment.save()
+
+            transaction.on_commit(lambda: EventBus.publish(OrderPicked(
+                aggregate_id=order.id, 
+                payload={'actor_id': str(actor.id)}
+            )))
+            return order
+
+class DeliverOrderService:
+    @staticmethod
+    def execute(order_id, actor, otp=None, bypass_geofence=False):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+            if actor.role != 'driver':
+                raise PermissionError("Only drivers can perform delivery completions.")
+                
+            if not getattr(order, 'driver', None) or order.driver.user != actor:
+                raise PermissionError("Only the assigned driver can complete this delivery.")
+            
+            if not otp or otp != order.delivery_otp:
+                raise ValueError("Invalid delivery OTP.")
+
+            driver = actor.driver_profile
+            if not bypass_geofence:
+                if not driver.location or not order.delivery_location:
+                    raise ValueError("Location data missing for geofence check")
+                
+                dist = driver.location.distance(order.delivery_location)
+                if dist > DELIVERY_GEOFENCE_RADIUS_METERS:
+                    raise ValueError(f"Too far from delivery location ({int(dist)}m away, {DELIVERY_GEOFENCE_RADIUS_METERS}m limit)")
+            
+            new_state = OrderFSM.transition(order.status, 'DELIVERED')
+            order.status = new_state
+            order.save()
+            
+            driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+            driver.total_earnings += order.delivery_fee
+            driver.today_earnings += order.delivery_fee
+            driver.current_active_orders = max(0, driver.current_active_orders - 1)
+            driver.save(update_fields=['status', 'total_earnings', 'today_earnings', 'current_active_orders'])
+            
+            assignment = order.delivery_assignment
+            assignment.delivered_at = timezone.now()
+            assignment.save()
+
+            transaction.on_commit(lambda: EventBus.publish(OrderDelivered(
+                aggregate_id=order.id, 
+                payload={'actor_id': str(actor.id)}
+            )))
+            return order
