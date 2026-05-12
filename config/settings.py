@@ -254,7 +254,7 @@ STORAGES = {
         "BACKEND": "apps.core.storage.CustomS3Storage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
     },
 }
 
