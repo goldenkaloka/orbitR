@@ -1,6 +1,7 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
+from leaflet.admin import LeafletGeoAdminMixin
 from .models import Order, OrderItem
 
 
@@ -13,7 +14,11 @@ class OrderItemInline(TabularInline):
 
 
 @admin.register(Order)
-class OrderAdmin(ModelAdmin):
+class OrderAdmin(LeafletGeoAdminMixin, ModelAdmin):
+    settings_overrides = {
+        'DEFAULT_CENTER': (-6.7924, 39.2083),
+        'DEFAULT_ZOOM': 13,
+    }
     list_display = (
         'short_id', 'display_customer', 'restaurant', 'show_status',
         'total_amount', 'driver', 'created_at',
@@ -35,7 +40,7 @@ class OrderAdmin(ModelAdmin):
         ('Financials', {
             'fields': ('items_subtotal', 'delivery_fee', 'total_amount'),
         }),
-        ('Delivery', {'fields': ('delivery_address', 'driver')}),
+        ('Delivery', {'fields': ('delivery_address', 'delivery_location', 'driver')}),
         ('Timestamps', {'fields': ('created_at',)}),
     )
 

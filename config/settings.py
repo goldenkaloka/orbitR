@@ -94,6 +94,7 @@ INSTALLED_APPS = [
     'apps.marketplace',
     'apps.pricing',
     'django.contrib.gis',
+    'leaflet',
     'apps.reviews',
 ]
 
@@ -112,6 +113,19 @@ from datetime import timedelta
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+}
+
+# ---------------------------------------------------------------------------
+# Leaflet Map Configuration (for GeoDjango admin)
+# ---------------------------------------------------------------------------
+LEAFLET_CONFIG = {
+    'DEFAULT_CENTER': (-6.7924, 39.2083),
+    'DEFAULT_ZOOM': 13,
+    'MIN_ZOOM': 3,
+    'MAX_ZOOM': 18,
+    'SCALE': 'metric',
+    'ATTRIBUTION_PREFIX': 'Mwanachuo',
+    'RESET_VIEW': False,
 }
 
 # ---------------------------------------------------------------------------

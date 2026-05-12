@@ -253,8 +253,9 @@
 
     function start() {
         const textArea = document.querySelector('#id_boundary');
-        const mapContainer = document.querySelector('#id_boundary_map_container') || 
-                           document.querySelector('#id_boundary_map');
+        const mapContainer = document.querySelector('#id_boundary-div-map') ||
+                           document.querySelector('#id_boundary_map') ||
+                           document.querySelector('#id_boundary_map_container');
 
         if (textArea && mapContainer) {
             initDeckEditor(mapContainer, textArea);

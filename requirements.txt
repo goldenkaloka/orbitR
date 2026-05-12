@@ -34,6 +34,7 @@ amqp==5.3.1
 
 # Admin & UI
 django-unfold==0.60.0
+django-leaflet==0.33.0
 
 # Utilities
 python-decouple==3.8

@@ -1,20 +1,16 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
-from .models import Restaurant
+from leaflet.admin import LeafletGeoAdminMixin
+from .models import Restaurant, DeliveryZone
 from apps.products.models import Food
 
 
 class FoodInline(TabularInline):
-    """Inline editor for foods belonging to a restaurant."""
     model = Food
     extra = 0
     fields = ('name', 'price', 'is_available')
     show_change_link = True
-
-
-from django.contrib.gis.admin import GISModelAdmin
-from .models import Restaurant, DeliveryZone
 
 class DeliveryZoneInline(TabularInline):
     model = DeliveryZone
@@ -22,23 +18,13 @@ class DeliveryZoneInline(TabularInline):
     fields = ('name', 'fee', 'priority', 'is_active')
 
 @admin.register(DeliveryZone)
-class DeliveryZoneAdmin(GISModelAdmin, ModelAdmin):
+class DeliveryZoneAdmin(ModelAdmin):
     list_display = ('name', 'restaurant', 'fee', 'priority', 'is_active')
     list_filter = ('is_active', 'restaurant')
     search_fields = ('name', 'restaurant__name')
-    gis_widget_kwargs = {
-        'attrs': {
-            'default_lat': -6.7924,
-            'default_lon': 39.2083,
-            'default_zoom': 12,
-        }
-    }
-
-    class Media:
-        js = ('admin/js/geo_locate.js',)
 
 @admin.register(Restaurant)
-class RestaurantAdmin(GISModelAdmin, ModelAdmin):
+class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_display = ('display_header', 'location', 'show_active', 'food_count', 'created_at')
     list_filter = ('is_active', 'category', 'created_at')
     search_fields = ('name', 'location', 'owner__username', 'owner__email')
@@ -49,12 +35,9 @@ class RestaurantAdmin(GISModelAdmin, ModelAdmin):
     readonly_fields = ('id', 'created_at')
     inlines = [FoodInline, DeliveryZoneInline]
 
-    gis_widget_kwargs = {
-        'attrs': {
-            'default_lat': -6.7924,
-            'default_lon': 39.2083,
-            'default_zoom': 14,
-        }
+    settings_overrides = {
+        'DEFAULT_CENTER': (-6.7924, 39.2083),
+        'DEFAULT_ZOOM': 14,
     }
 
     class Media:
@@ -64,7 +47,6 @@ class RestaurantAdmin(GISModelAdmin, ModelAdmin):
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
         ('Location', {'fields': ('geo_location', 'location')}),
         ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),
-
         ('Timestamps', {'fields': ('created_at',)}),
     )
 

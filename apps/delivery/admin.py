@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
+from leaflet.admin import LeafletGeoAdminMixin
 from .models import Driver, DeliveryAssignment, DeliveryProof
 
 
@@ -15,7 +16,11 @@ class DeliveryAssignmentInline(TabularInline):
 
 
 @admin.register(Driver)
-class DriverAdmin(ModelAdmin):
+class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
+    settings_overrides = {
+        'DEFAULT_CENTER': (-6.7924, 39.2083),
+        'DEFAULT_ZOOM': 13,
+    }
     list_display = ('display_header', 'show_status', 'vehicle_type', 'rating', 'total_earnings', 'assignment_count')
     list_filter = ('status', 'vehicle_type')
     search_fields = ('user__username', 'user__email', 'user__phone', 'vehicle_number')

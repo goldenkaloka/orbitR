@@ -1,5 +1,6 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin
+from leaflet.admin import LeafletGeoAdminMixin
 from .models import MarketplaceProduct, MarketplaceCategory, ProductImage
 
 class ProductImageInline(admin.TabularInline):
@@ -12,12 +13,17 @@ class MarketplaceCategoryAdmin(ModelAdmin):
     search_fields = ('name',)
 
 @admin.register(MarketplaceProduct)
-class MarketplaceProductAdmin(ModelAdmin):
+class MarketplaceProductAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_display = ('name', 'seller', 'price', 'status', 'listing_type', 'h3_index', 'expiry_date')
     list_filter = ('status', 'listing_type', 'category')
     search_fields = ('name', 'description', 'seller__username')
     inlines = [ProductImageInline]
-    
+
+    settings_overrides = {
+        'DEFAULT_CENTER': (-6.7924, 39.2083),
+        'DEFAULT_ZOOM': 13,
+    }
+
     actions = ['activate_selected', 'expire_selected']
 
     def activate_selected(self, request, queryset):
