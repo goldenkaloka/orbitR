@@ -10,6 +10,7 @@ from apps.users.models import User, OTPCode
 from domain.events.bus import EventBus
 from domain.events.types import AuthOTPRequested, AuthUserVerified, AuthUserRegistered
 from django.db import transaction
+from django.core.cache import cache
 
 def normalize_phone(phone):
     """
