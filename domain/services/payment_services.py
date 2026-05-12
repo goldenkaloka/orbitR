@@ -129,7 +129,7 @@ class CompletePaymentService:
                 if not payment:
                     raise ValueError(f"No payment found for Ref: {provider_reference} or ID: {payment_id}")
                 
-                if payment.status in ['COLLECTED', 'DISBURSED']:
+                if payment.status in ['COLLECTED', 'DISBURSED', 'FAILED']:
                     import logging
                     logging.getLogger(__name__).warning(f"Payment {payment.id} already {payment.status}. Ignoring duplicate webhook.")
                     return payment
@@ -334,8 +334,15 @@ class RefundPaymentService:
                             transaction_type='platform_to_customer_refund',
                             status='COMPLETED'
                         )
+                    
+                    # Use a function to capture the current payment in the closure
+                    def publish_refund(p=payment):
+                        EventBus.publish(PaymentRefunded(
+                            aggregate_id=p.id, 
+                            payload={'type': p.payable_type, 'payable_id': str(p.payable_id)}
+                        ))
+                    transaction.on_commit(publish_refund)
             
-            transaction.on_commit(lambda: EventBus.publish(PaymentRefunded(aggregate_id=payment.id, payload={'type': payment.payable_type, 'payable_id': str(payment.payable_id)})))
             return True
 
 

@@ -3,6 +3,17 @@
 from django.db import migrations
 
 
+def migrate_lat_lng_to_geo(apps, schema_editor):
+    Restaurant = apps.get_model('restaurants', 'Restaurant')
+    from django.contrib.gis.geos import Point
+    for restaurant in Restaurant.objects.all():
+        if restaurant.latitude and restaurant.longitude and not restaurant.geo_location:
+            try:
+                restaurant.geo_location = Point(float(restaurant.longitude), float(restaurant.latitude))
+                restaurant.save(update_fields=['geo_location'])
+            except (ValueError, TypeError):
+                continue
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,6 +21,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(migrate_lat_lng_to_geo, reverse_code=migrations.RunPython.noop),
         migrations.DeleteModel(
             name='OperationalZone',
         ),

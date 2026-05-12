@@ -43,16 +43,18 @@ class RequestOTPView(APIView):
                 'error': 'Invalid phone number format. Use 07XXXXXXXX or +2557XXXXXXXX'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Rate limiting: max 3 OTP requests per phone per 5 minutes
-        from django.core.cache import cache
-        rate_key = f"otp_rate_{phone}"
-        attempts = cache.get(rate_key, 0)
-        if attempts >= 3:
-            return Response(
-                {'error': 'Too many OTP requests. Please wait a few minutes.'},
-                status=status.HTTP_429_TOO_MANY_REQUESTS
-            )
-        cache.set(rate_key, attempts + 1, 300)  # 5-minute window
+        # Atomic rate limiting
+        try:
+            attempts = cache.get(rate_key, 0)
+            if attempts >= 3:
+                return Response(
+                    {'error': 'Too many OTP requests. Please wait a few minutes.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            cache.incr(rate_key)
+        except (ValueError, TypeError):
+            # If key doesn't exist or is not a number, set it
+            cache.set(rate_key, 1, 300)
 
         # Generate OTP
         code = str(random.randint(100000, 999999))

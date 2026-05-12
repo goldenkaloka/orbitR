@@ -254,3 +254,30 @@ class PoolOrderService:
             ConfirmOrderService.execute(master_order.id, master_order.customer)
             
             return master_order
+    @staticmethod
+    def cancel_pool(pool_id, actor):
+        with transaction.atomic():
+            from apps.orders.models import OrderPool
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            
+            # Authorization check: only initiator or admin can cancel
+            if pool.initiator != actor and actor.role != 'admin':
+                raise PermissionError("Only the initiator or an admin can cancel the pool.")
+            
+            if pool.status not in ['OPEN', 'LOCKED']:
+                raise ValueError(f"Cannot cancel pool in {pool.status} state.")
+            
+            pool.status = 'CANCELLED'
+            pool.save()
+            
+            # Trigger refunds for all paid members
+            from domain.services.payment_services import RefundPaymentService
+            for member in pool.members.filter(status='PAID'):
+                try:
+                    RefundPaymentService.execute('pool_member', member.id)
+                except Exception as e:
+                    logger.error(f"Failed to refund pool member {member.id} during pool cancellation: {str(e)}")
+            
+            from apps.events.utils import broadcast_pool_status
+            transaction.on_commit(lambda: broadcast_pool_status(str(pool.id), 'CANCELLED', message="Pool has been cancelled by the initiator."))
+            return pool

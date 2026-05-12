@@ -3,6 +3,17 @@
 from django.db import migrations
 
 
+def migrate_lat_lng_to_geo(apps, schema_editor):
+    Driver = apps.get_model('delivery', 'Driver')
+    from django.contrib.gis.geos import Point
+    for driver in Driver.objects.all():
+        if driver.latitude and driver.longitude and not driver.location:
+            try:
+                driver.location = Point(float(driver.longitude), float(driver.latitude))
+                driver.save(update_fields=['location'])
+            except (ValueError, TypeError):
+                continue
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,6 +21,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(migrate_lat_lng_to_geo, reverse_code=migrations.RunPython.noop),
         migrations.RemoveField(
             model_name='driver',
             name='latitude',

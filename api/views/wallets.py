@@ -2,6 +2,7 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from django.db import transaction
 from apps.wallets.models import Wallet, WalletTransaction
 from api.serializers.wallets import WalletSerializer, TransactionSerializer
 
@@ -19,13 +20,17 @@ class WalletViewSet(viewsets.GenericViewSet):
         return Response(serializer.data)
 
     @action(detail=False, methods=['POST'])
+    @transaction.atomic
     def cashout(self, request):
-        # This is where we would call the EasyPay Payout API
-        wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        # We lock the wallet to prevent double-debit race conditions
+        try:
+            wallet = Wallet.objects.select_for_update().get(user=request.user)
+        except Wallet.DoesNotExist:
+            wallet = Wallet.objects.create(user=request.user)
+            
         if wallet.balance <= 0:
             return Response({"error": "Insufficient balance"}, status=400)
             
-        # Mocking the payout process for now
         amount = wallet.balance
         wallet.balance = 0
         wallet.save()

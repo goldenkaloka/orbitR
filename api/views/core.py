@@ -33,9 +33,13 @@ from domain.services.order_services import (
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = User.objects.all()
-    serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
+    serializer_class = UserSerializer
+
+    def get_queryset(self):
+        # Security: Prevent PII leak. Regular users can only see themselves.
+        # Admins should use the AdminViewSet for bulk user management.
+        return User.objects.filter(id=self.request.user.id)
 
     @action(detail=False, methods=['GET'])
     def me(self, request):

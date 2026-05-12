@@ -31,10 +31,9 @@ class CancelOrderService:
             order.status = new_state
             
             if order.is_paid:
-                try:
-                    RefundPaymentService.execute('order', order.id)
-                except Exception as e:
-                    logger.error(f"Refund failed for Order {order.id}: {str(e)}")
+                # If refund fails, we rollback the cancellation to keep state consistent
+                # This ensures we don't have CANCELLED orders with COLLECTED payments
+                RefundPaymentService.execute('order', order.id)
 
             if order.driver:
                 if order.driver.status != 'AVAILABLE':

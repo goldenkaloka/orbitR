@@ -25,5 +25,10 @@ END
     echo "PostgreSQL is up - executing migrations"
 fi
 
+# Collect static files and rebuild the manifest
+# Necessary whenever package static files change (e.g. django-unfold upgrades)
+echo "Collecting static files..."
+python manage.py collectstatic --noinput --clear 2>&1
+
 # Run the provided command
 exec "$@"

@@ -107,7 +107,7 @@ class DisputeOrderService:
                 payload={'order_id': str(order.id), 'disputed_by': str(actor.id), 'reason': reason}
             ))
 
-            return dispute
+            return order
 
 class RegisterTempDriverService:
     @staticmethod

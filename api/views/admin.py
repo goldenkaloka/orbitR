@@ -212,7 +212,8 @@ class AdminViewSet(viewsets.GenericViewSet):
             return Response({'error': 'order_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            order = DisputeOrderService.execute(order_id)
+            reason = request.data.get('reason', 'Admin Dispute')
+            order = DisputeOrderService.execute(order_id, request.user, reason)
         except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         except InvalidStateTransitionError as e:
