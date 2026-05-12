@@ -44,6 +44,7 @@ class RequestOTPView(APIView):
                 'error': 'Invalid phone number format. Use 07XXXXXXXX or +2557XXXXXXXX'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        rate_key = f"otp_rate_{phone}"
         # Atomic rate limiting
         try:
             attempts = cache.get(rate_key, 0)
