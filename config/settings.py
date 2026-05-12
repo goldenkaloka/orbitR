@@ -281,8 +281,8 @@ def environment_callback(request):
 
 
 UNFOLD = {
-    "SITE_TITLE": "Mwanachuoshop",
-    "SITE_HEADER": "Mwanachuoshop",
+    "SITE_TITLE": "Orbitr Admin",
+    "SITE_HEADER": "Orbitr Admin",
     "SITE_SUBHEADER": "Logistics Admin",
     "SITE_URL": "/",
     "SITE_SYMBOL": "local_shipping",
