@@ -30,7 +30,7 @@ def dashboard_callback(request, context):
     new_users_7d = User.objects.filter(date_joined__gte=now - timedelta(days=7)).count()
     total_users  = User.objects.count()
     open_pools   = OrderPool.objects.filter(status='OPEN').count()
-    active_drivers = Driver.objects.filter(is_available=True).count()
+    active_drivers = Driver.objects.filter(status='ONLINE').count()
 
     # ── Chart: Orders last 8 days ────────────────────────────────────────────
     last_8_days_qs = (
