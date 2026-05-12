@@ -125,6 +125,8 @@ LEAFLET_CONFIG = {
     'MAX_ZOOM': 18,
     'SCALE': 'metric',
     'ATTRIBUTION_PREFIX': 'Mwanachuo',
+    'MAP_HEIGHT': '600px',
+    'MAP_WIDTH': '100%',
     'RESET_VIEW': False,
 }
 

@@ -1,0 +1,14 @@
+/* Force Leaflet map to take full width and more height in Unfold Admin */
+.leaflet-container-wrapper {
+    width: 100% !important;
+    min-height: 600px !important;
+}
+
+#id_boundary_map {
+    width: 100% !important;
+    height: 600px !important;
+}
+
+.unfold-field-wrapper .leaflet-container {
+    width: 100% !important;
+}

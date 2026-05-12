@@ -33,6 +33,9 @@ class OperationalZoneAdmin(LeafletGeoAdminMixin, ModelAdmin):
     h3_cell_count.short_description = "H3 Cells"
 
     class Media:
+        css = {
+            'all': ('admin/css/geo_custom.css',)
+        }
         js = (
             'admin/js/geo_locate.js',
             'admin/js/h3_visualizer.js',
