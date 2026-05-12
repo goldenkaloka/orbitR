@@ -104,14 +104,14 @@ class OrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Order
         fields = [
-            'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'total_amount', 
+            'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude', 
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown'
         ]
 
-        read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'total_amount', 'delivery_otp']
+        read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp']
 
 
     def get_restaurant_latitude(self, obj):
@@ -216,7 +216,7 @@ class PoolMemberSerializer(serializers.ModelSerializer):
     class Meta:
         from apps.orders.models import PoolMember
         model = PoolMember
-        fields = ['id', 'user', 'username', 'status', 'delivery_fee_share', 'items_subtotal', 'items']
+        fields = ['id', 'user', 'username', 'status', 'delivery_fee_share', 'service_fee_share', 'items_subtotal', 'items']
 
     def get_id(self, obj):
         return str(obj.id)
@@ -244,7 +244,7 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
-            'total_delivery_fee', 'members', 'created_at', 'expires_at',
+            'total_delivery_fee', 'service_fee', 'members', 'created_at', 'expires_at',
             'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']

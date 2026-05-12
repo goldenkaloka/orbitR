@@ -3,6 +3,13 @@ from unfold.admin import ModelAdmin, TabularInline
 from .models import OperationalZone, ZoneH3Index
 from django.contrib.gis.admin import GISModelAdmin
 
+from apps.pricing.models import ZonePricingTier
+
+class ZonePricingTierInline(TabularInline):
+    model = ZonePricingTier
+    extra = 1
+    max_num = 1
+
 class ZoneH3IndexInline(TabularInline):
     model = ZoneH3Index
     extra = 0
@@ -14,7 +21,7 @@ class OperationalZoneAdmin(ModelAdmin, GISModelAdmin):
     list_display = ('name', 'is_active', 'h3_cell_count', 'created_at')
     list_filter = ('is_active',)
     search_fields = ('name', 'description')
-    inlines = [ZoneH3IndexInline]
+    inlines = [ZonePricingTierInline, ZoneH3IndexInline]
     
     def h3_cell_count(self, obj):
         return obj.metadata.get('h3_count', 0)
@@ -33,4 +40,5 @@ class OperationalZoneAdmin(ModelAdmin, GISModelAdmin):
         js = (
             'admin/js/geo_locate.js',
             'admin/js/h3_visualizer.js',
+            'admin/js/deck_h3_editor.js',
         )

@@ -13,6 +13,7 @@ from api.views.payments import AirpayWebhookView, InitiatePaymentView
 from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView
 from api.views.marketplace import MarketplaceProductViewSet, MarketplaceCategoryViewSet
 from api.views.geo import OperationalZoneViewSet
+from api.views.pricing import PricingPolicyViewSet, ZonePricingTierViewSet, DeliveryFeeLogViewSet
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -30,6 +31,9 @@ router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'marketplace/products', MarketplaceProductViewSet, basename='marketplace-product')
 router.register(r'marketplace/categories', MarketplaceCategoryViewSet, basename='marketplace-category')
 router.register(r'geo/zones', OperationalZoneViewSet, basename='geo-zone')
+router.register(r'pricing/policies', PricingPolicyViewSet, basename='pricing-policy')
+router.register(r'pricing/tiers', ZonePricingTierViewSet, basename='pricing-tier')
+router.register(r'pricing/logs', DeliveryFeeLogViewSet, basename='pricing-log')
 
 urlpatterns = router.urls + [
     path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),

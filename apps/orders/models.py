@@ -24,6 +24,7 @@ class Order(models.Model):
     # Financials
     items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
+    service_fee = models.DecimalField(max_digits=10, decimal_places=2, default=300.00)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     delivery_address = models.TextField(null=True, blank=True)
@@ -120,6 +121,7 @@ class OrderPool(models.Model):
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    service_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
@@ -160,6 +162,7 @@ class PoolMember(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='JOINED')
     
     delivery_fee_share = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    service_fee_share = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     joined_at = models.DateTimeField(auto_now_add=True)

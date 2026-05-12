@@ -92,6 +92,7 @@ INSTALLED_APPS = [
     'apps.geo',
     'apps.events',
     'apps.marketplace',
+    'apps.pricing',
     'django.contrib.gis',
     'apps.reviews',
 ]

@@ -12,8 +12,8 @@ class OperationalZone(models.Model):
     name = models.CharField(max_length=100, unique=True)
     description = models.TextField(blank=True, null=True)
     
-    # PostGIS PolygonField stores the actual shape drawn in Admin
-    boundary = gis_models.PolygonField(geography=True, db_index=True)
+    # PostGIS MultiPolygonField stores the actual shape drawn in Admin or selected via H3
+    boundary = gis_models.MultiPolygonField(geography=True, db_index=True)
     
     is_active = models.BooleanField(default=True, db_index=True)
     metadata = models.JSONField(default=dict, blank=True)

@@ -50,8 +50,18 @@ class PlaceOrderService:
             
         delivery_location = validated_data.get('delivery_location')
         
-        # Calculate dynamic delivery fee
-        dynamic_fee = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+        # Calculate dynamic delivery and service fees
+        dynamic_fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+        
+        # Validate against client expectations to detect stale UI prices
+        expected_delivery = validated_data.pop('expected_delivery_fee', None)
+        expected_service = validated_data.pop('expected_service_fee', None)
+        
+        if expected_delivery is not None and abs(Decimal(str(expected_delivery)) - dynamic_fee) > 10:
+            logger.warning(f"Delivery fee mismatch: Client expected {expected_delivery}, Backend calculated {dynamic_fee}")
+            
+        if expected_service is not None and abs(Decimal(str(expected_service)) - service_fee) > 10:
+            logger.warning(f"Service fee mismatch: Client expected {expected_service}, Backend calculated {service_fee}")
         
         # Tag Zone for Batching
         zone = None
@@ -79,7 +89,7 @@ class PlaceOrderService:
             quantity = item_data['quantity']
             items_subtotal += (food.price * quantity)
             
-        total_amount = items_subtotal + dynamic_fee
+        total_amount = items_subtotal + dynamic_fee + service_fee
         otp = str(random.randint(1000, 9999))
         
         with transaction.atomic():
@@ -87,6 +97,7 @@ class PlaceOrderService:
             order = Order.objects.create(
                 items_subtotal=items_subtotal,
                 delivery_fee=dynamic_fee, 
+                service_fee=service_fee,
                 total_amount=total_amount,
                 delivery_otp=otp,
                 zone=zone,
@@ -94,7 +105,12 @@ class PlaceOrderService:
                 **validated_data
             )
             
-            # 2. Bulk create items
+            # 2. Link pricing log to order
+            if fee_log:
+                fee_log.order = order
+                fee_log.save()
+            
+            # 3. Bulk create items
             order_items = []
             for item_data in items_data:
                 food = item_data['food']
@@ -337,23 +353,31 @@ class PoolOrderService:
             
             pool.status = 'LOCKED'
             
-            # Calculate total delivery fee for the location
-            total_fee = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location)
+            # Calculate total fees for the location
+            total_fee, s_fee, _ = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location, pool=pool)
             pool.total_delivery_fee = total_fee
+            pool.service_fee = s_fee
             
             # Round-robin fee split to eliminate penny loss
-            # e.g. 1000 TSh / 3 members = 333, 334, 333 (not 333.33 each)
             n = len(members)
-            base_share = total_fee // n                    # Integer division
-            remainder_units = total_fee - (base_share * n)  # e.g. 1 unit if 1000/3
-            smallest_unit = Decimal('1')                   # 1 TSh resolution
+            
+            def split_amount(amount, num_parts):
+                base = amount // num_parts
+                rem = amount - (base * num_parts)
+                return base, rem
+
+            d_base, d_rem = split_amount(total_fee, n)
+            s_base, s_rem = split_amount(s_fee, n)
             
             for i, member in enumerate(members):
-                # First `remainder_units` members absorb the leftover TSh
-                extra = smallest_unit if Decimal(str(i)) < remainder_units else Decimal('0')
-                member.delivery_fee_share = base_share + extra
+                # Apply remainders round-robin
+                d_extra = Decimal('1') if Decimal(str(i)) < d_rem else Decimal('0')
+                s_extra = Decimal('1') if Decimal(str(i)) < s_rem else Decimal('0')
+                
+                member.delivery_fee_share = d_base + d_extra
+                member.service_fee_share = s_base + s_extra
             
-            PoolMember.objects.bulk_update(members, ['delivery_fee_share'])
+            PoolMember.objects.bulk_update(members, ['delivery_fee_share', 'service_fee_share'])
             pool.save()
             
             from apps.events.utils import broadcast_pool_status

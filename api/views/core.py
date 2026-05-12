@@ -204,13 +204,15 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         restaurant = self.get_object()
         from django.contrib.gis.geos import Point
         try:
-            point = Point(float(lng), float(lat))
+            delivery_location = Point(float(lng), float(lat))
             from domain.services.pricing_service import PricingService
-            fee = PricingService.calculate_delivery_fee(restaurant, point)
+            # Calculate dynamic fee
+            fee, service_fee, _ = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+            
             return Response({
-                'restaurant_id': restaurant.id,
-                'delivery_fee': float(fee),
-                'currency': 'TSh'
+                "delivery_fee": float(fee),
+                "service_fee": float(service_fee),
+                "currency": "TSh"
             })
         except (ValueError, TypeError):
             return Response({'error': 'Invalid lat or lng'}, status=400)
