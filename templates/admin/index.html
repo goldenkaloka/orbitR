@@ -1,0 +1,181 @@
+{% extends "unfold/layouts/base_simple.html" %}
+{% load i18n %}
+
+{% block title %}{% trans "Dashboard" %} | {{ site_title|default:_('Django administration') }}{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></h1>
+{% endblock %}
+
+{% block content %}
+<div style="padding: 0 0 2rem 0;">
+
+  {# ── KPI Cards ────────────────────────────────────────────────────────── #}
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:1rem; margin-bottom:2rem;">
+
+    {% include "admin/dashboard/_kpi_card.html" with title="Today's Revenue" value=kpi_today_revenue icon="payments" color="#0d9488" %}
+    {% include "admin/dashboard/_kpi_card.html" with title="Active Orders" value=kpi_active_orders icon="shopping_cart" color="#7c3aed" %}
+    {% include "admin/dashboard/_kpi_card.html" with title="Active Drivers" value=kpi_active_drivers icon="directions_bike" color="#ea580c" %}
+    {% include "admin/dashboard/_kpi_card.html" with title="New Users (7d)" value=kpi_new_users_7d icon="person_add" color="#0284c7" %}
+    {% include "admin/dashboard/_kpi_card.html" with title="Total Users" value=kpi_total_users icon="people" color="#16a34a" %}
+    {% include "admin/dashboard/_kpi_card.html" with title="Open Group Pools" value=kpi_open_pools icon="group" color="#db2777" %}
+
+  </div>
+
+  {# ── Charts Row ───────────────────────────────────────────────────────── #}
+  <div style="display:grid; grid-template-columns: 2fr 1fr; gap:1rem; margin-bottom:2rem;">
+
+    {# Line chart: Orders & Revenue #}
+    <div style="background:var(--color-base-900,#1e293b); border-radius:12px; padding:1.5rem;">
+      <h3 style="margin:0 0 1rem; color:var(--color-primary-400,#2dd4bf); font-size:.9rem; text-transform:uppercase; letter-spacing:.05em;">Orders & Revenue — Last 7 Days</h3>
+      <canvas id="ordersChart" height="120"></canvas>
+    </div>
+
+    {# Doughnut chart: Payment Status #}
+    <div style="background:var(--color-base-900,#1e293b); border-radius:12px; padding:1.5rem;">
+      <h3 style="margin:0 0 1rem; color:var(--color-primary-400,#2dd4bf); font-size:.9rem; text-transform:uppercase; letter-spacing:.05em;">Payment Status</h3>
+      <canvas id="paymentChart" height="180"></canvas>
+    </div>
+
+  </div>
+
+  {# ── Tables Row ───────────────────────────────────────────────────────── #}
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+
+    {# Recent Orders #}
+    <div style="background:var(--color-base-900,#1e293b); border-radius:12px; padding:1.5rem; overflow:auto;">
+      <h3 style="margin:0 0 1rem; color:var(--color-primary-400,#2dd4bf); font-size:.9rem; text-transform:uppercase; letter-spacing:.05em;">Recent Orders</h3>
+      <table style="width:100%; border-collapse:collapse; font-size:.85rem;">
+        <thead>
+          <tr style="color:#94a3b8; border-bottom:1px solid #334155;">
+            <th style="text-align:left; padding:.5rem .25rem;">Customer</th>
+            <th style="text-align:left; padding:.5rem .25rem;">Restaurant</th>
+            <th style="text-align:left; padding:.5rem .25rem;">Status</th>
+            <th style="text-align:right; padding:.5rem .25rem;">Date</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for order in recent_orders %}
+          <tr style="border-bottom:1px solid #1e293b; color:#e2e8f0;">
+            <td style="padding:.5rem .25rem;">{{ order.customer.username }}</td>
+            <td style="padding:.5rem .25rem;">{{ order.restaurant.name }}</td>
+            <td style="padding:.5rem .25rem;">
+              <span style="padding:.15rem .5rem; border-radius:99px; font-size:.75rem;
+                background:{% if order.status == 'DELIVERED' %}#166534{% elif order.status == 'CANCELLED' %}#7f1d1d{% else %}#1e3a5f{% endif %};
+                color:{% if order.status == 'DELIVERED' %}#86efac{% elif order.status == 'CANCELLED' %}#fca5a5{% else %}#93c5fd{% endif %};">
+                {{ order.status }}
+              </span>
+            </td>
+            <td style="padding:.5rem .25rem; text-align:right; color:#64748b;">{{ order.created_at|date:"M d, H:i" }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="4" style="padding:1rem; color:#64748b; text-align:center;">No orders yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <a href="{% url 'admin:orders_order_changelist' %}" style="display:block; margin-top:1rem; text-align:right; color:var(--color-primary-400,#2dd4bf); font-size:.8rem;">View all orders →</a>
+    </div>
+
+    {# Recent Users #}
+    <div style="background:var(--color-base-900,#1e293b); border-radius:12px; padding:1.5rem; overflow:auto;">
+      <h3 style="margin:0 0 1rem; color:var(--color-primary-400,#2dd4bf); font-size:.9rem; text-transform:uppercase; letter-spacing:.05em;">Recent Users</h3>
+      <table style="width:100%; border-collapse:collapse; font-size:.85rem;">
+        <thead>
+          <tr style="color:#94a3b8; border-bottom:1px solid #334155;">
+            <th style="text-align:left; padding:.5rem .25rem;">Username</th>
+            <th style="text-align:left; padding:.5rem .25rem;">Phone</th>
+            <th style="text-align:left; padding:.5rem .25rem;">Role</th>
+            <th style="text-align:right; padding:.5rem .25rem;">Joined</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in recent_users %}
+          <tr style="border-bottom:1px solid #1e293b; color:#e2e8f0;">
+            <td style="padding:.5rem .25rem;">{{ u.username }}</td>
+            <td style="padding:.5rem .25rem; color:#64748b;">{{ u.phone }}</td>
+            <td style="padding:.5rem .25rem;">
+              <span style="padding:.15rem .5rem; border-radius:99px; font-size:.75rem;
+                background:{% if u.role == 'driver' %}#1e3a5f{% elif u.role == 'admin' %}#4c1d95{% else %}#1c3128{% endif %};
+                color:{% if u.role == 'driver' %}#93c5fd{% elif u.role == 'admin' %}#c4b5fd{% else %}#86efac{% endif %};">
+                {{ u.role }}
+              </span>
+            </td>
+            <td style="padding:.5rem .25rem; text-align:right; color:#64748b;">{{ u.date_joined|date:"M d, H:i" }}</td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="4" style="padding:1rem; color:#64748b; text-align:center;">No users yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <a href="{% url 'admin:users_user_changelist' %}" style="display:block; margin-top:1rem; text-align:right; color:var(--color-primary-400,#2dd4bf); font-size:.8rem;">View all users →</a>
+    </div>
+
+  </div>
+</div>
+
+{# ── Chart.js ─────────────────────────────────────────────────────────────── #}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<script>
+const teal   = '#2dd4bf';
+const purple = '#a78bfa';
+const orange = '#fb923c';
+
+// Orders & Revenue dual-axis line chart
+new Chart(document.getElementById('ordersChart'), {
+  type: 'line',
+  data: {
+    labels: {{ chart_order_labels|safe }},
+    datasets: [
+      {
+        label: 'Orders',
+        data:  {{ chart_order_data|safe }},
+        borderColor: teal,
+        backgroundColor: 'rgba(45,212,191,.1)',
+        fill: true,
+        tension: .4,
+        yAxisID: 'y',
+      },
+      {
+        label: 'Revenue (TSh)',
+        data:  {{ chart_revenue_data|safe }},
+        borderColor: purple,
+        backgroundColor: 'rgba(167,139,250,.1)',
+        fill: true,
+        tension: .4,
+        yAxisID: 'y1',
+      }
+    ]
+  },
+  options: {
+    responsive: true,
+    interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { color: '#94a3b8' } } },
+    scales: {
+      x:  { ticks: { color: '#64748b' }, grid: { color: '#1e293b' } },
+      y:  { ticks: { color: '#64748b' }, grid: { color: '#1e293b' }, position: 'left' },
+      y1: { ticks: { color: '#64748b' }, grid: { drawOnChartArea: false }, position: 'right' }
+    }
+  }
+});
+
+// Payment status doughnut
+new Chart(document.getElementById('paymentChart'), {
+  type: 'doughnut',
+  data: {
+    labels:   {{ chart_payment_labels|safe }},
+    datasets: [{
+      data: {{ chart_payment_data|safe }},
+      backgroundColor: [teal, purple, orange, '#f472b6', '#34d399', '#60a5fa'],
+      borderWidth: 2,
+      borderColor: '#0f172a'
+    }]
+  },
+  options: {
+    responsive: true,
+    plugins: {
+      legend: { position: 'bottom', labels: { color: '#94a3b8', padding: 12 } }
+    }
+  }
+});
+</script>
+{% endblock %}
