@@ -1,7 +1,10 @@
 import json
+import logging
 from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
 from apps.core.models import IdempotencyKey
+
+logger = logging.getLogger(__name__)
 
 class IdempotencyMiddleware(MiddlewareMixin):
     def process_request(self, request):
@@ -40,7 +43,11 @@ class IdempotencyMiddleware(MiddlewareMixin):
                     content = response.data
                 else:
                     content = json.loads(response.content.decode('utf-8'))
-            except:
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                logger.warning(f"Failed to parse response body for idempotency key: {e}")
+                content = {}
+            except Exception as e:
+                logger.error(f"Unexpected error in idempotency middleware: {e}")
                 content = {}
 
             IdempotencyKey.objects.get_or_create(

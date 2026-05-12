@@ -58,6 +58,62 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         )
         serializer.instance = product
 
+    def create(self, request, *args, **kwargs):
+        """
+        Override create to auto-initiate payment when payment fields are provided.
+        This makes listing creation seamless — create + pay in one step.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        product = serializer.instance
+
+        # Auto-initiate payment if payment fields are present
+        payment_phone = request.data.get('payment_phone')
+        if payment_phone:
+            from domain.services.payment_services import InitiatePaymentService
+            try:
+                result = InitiatePaymentService.execute(
+                    payable_type='marketplace_product',
+                    payable_id=product.id,
+                    provider=request.data.get('provider', 'AIRPAY'),
+                    phone=payment_phone,
+                    bank_code=request.data.get('bank_code'),
+                )
+                payment = result['payment']
+                gateway_response = result['gateway_response']
+
+                # Re-fetch the product after payment to get updated status
+                if gateway_response.get('instant_success'):
+                    product.refresh_from_db()
+
+                # Re-serialize with fresh data
+                response_data = self.get_serializer(product).data
+                response_data['payment'] = {
+                    'payment_id': str(payment.id),
+                    'status': 'ACTIVE' if gateway_response.get('instant_success') else 'PENDING',
+                    'instant_success': gateway_response.get('instant_success', False),
+                    'is_push': gateway_response.get('is_push', False),
+                    'message': 'Payment successful! Product is now ACTIVE.' if gateway_response.get('instant_success')
+                               else 'USSD Push initiated. Check your phone to confirm.',
+                }
+                if gateway_response.get('params'):
+                    response_data['payment']['params'] = gateway_response['params']
+                if gateway_response.get('endpoint'):
+                    response_data['payment']['endpoint'] = gateway_response['endpoint']
+
+                return Response(response_data, status=status.HTTP_201_CREATED)
+
+            except Exception as e:
+                response_data = serializer.data
+                response_data['payment'] = {
+                    'status': 'FAILED',
+                    'error': str(e),
+                }
+                return Response(response_data, status=status.HTTP_201_CREATED)
+
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=['POST'])
     def pay(self, request, pk=None):
         """
