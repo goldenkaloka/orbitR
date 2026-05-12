@@ -81,10 +81,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/admin/"]
-      interval: 30s
+      test: ["CMD", "curl", "-fL", "http://127.0.0.1:8000/admin/login/"]
+      interval: 20s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   celery-worker:
     build: .
