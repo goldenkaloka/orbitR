@@ -1,14 +1,47 @@
-/* Force Leaflet map to take full width and more height in Unfold Admin */
+/* High-priority overrides for Unfold Admin + Leaflet */
+
+/* 1. Target the field container to prevent clipping */
+.field-boundary {
+    width: 100% !important;
+    display: block !important;
+    clear: both !important;
+}
+
+.field-boundary .unfold-field-wrapper {
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 100% !important;
+}
+
+/* 2. Target the Leaflet container specifically */
 .leaflet-container-wrapper {
     width: 100% !important;
-    min-height: 600px !important;
+    height: 700px !important;
+    min-height: 700px !important;
+    margin-top: 10px !important;
+    border: 2px solid #ccc !important;
+    border-radius: 8px !important;
+    overflow: hidden !important;
 }
 
-#id_boundary_map {
+.leaflet-container {
     width: 100% !important;
-    height: 600px !important;
+    height: 100% !important;
+    min-height: 700px !important;
 }
 
-.unfold-field-wrapper .leaflet-container {
+/* 3. Handle IDs that Django might generate */
+#id_boundary-map, #id_boundary_map, #id_boundary {
     width: 100% !important;
+    height: 700px !important;
+    min-height: 700px !important;
+}
+
+/* 4. Fix for Unfold's internal scrolling/clipping */
+div.inline-group div.tabular {
+    overflow-x: visible !important;
+}
+
+.unfold-admin-form {
+    max-width: none !important;
 }

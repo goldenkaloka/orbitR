@@ -289,6 +289,7 @@ UNFOLD = {
     "SHOW_HISTORY": True,
     "SHOW_VIEW_ON_SITE": True,
     "SHOW_BACK_BUTTON": True,
+    "DASHBOARD_CALLBACK": "apps.core.dashboard.dashboard_callback",
     "ENVIRONMENT": "config.settings.environment_callback",
     "BORDER_RADIUS": "8px",
     "COLORS": {
