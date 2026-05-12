@@ -254,9 +254,11 @@ STORAGES = {
         "BACKEND": "apps.core.storage.CustomS3Storage",
     },
     "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedStaticFilesStorage",
+        "BACKEND": "apps.core.storage.SafeCompressedManifestStaticFilesStorage",
     },
 }
+
+WHITENOISE_MANIFEST_STRICT = False
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
