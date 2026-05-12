@@ -17,8 +17,8 @@ def dashboard_callback(request, context):
     
     # --- 1. Metrics ---
     today_revenue = Payment.objects.filter(
-        status='COLLECTED', 
-        updated_at__gte=today_start
+        status='COLLECTED',
+        created_at__gte=today_start
     ).aggregate(total=Sum('amount'))['total'] or 0
     
     active_orders_count = Order.objects.filter(
