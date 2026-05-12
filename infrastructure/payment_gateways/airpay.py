@@ -109,19 +109,8 @@ class AirpayGateway(PaymentGateway):
                 if 'response' in res_json:
                     # [Previous safe_json_loads logic follows here...]
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
-                    def safe_json_loads(s):
-                        try:
-                            return json.loads(s)
-                        except json.JSONDecodeError:
-                            import re
-                            # Find the first { to the last }
-                            match = re.search(r'(\{.*\})', s, re.DOTALL)
-                            if match:
-                                return json.loads(match.group(1))
-                            raise
-
                     try:
-                        res_data = safe_json_loads(decrypted)
+                        res_data = self.transformer.safe_json_loads(decrypted)
                     except Exception as e:
                         logger.error(f"AIRPAY_DEBUG: Failed to parse decrypted JSON: {str(e)}. String: {decrypted}")
                         return {'success': False, 'error': f"Payment provider returned malformed data: {str(e)}"}
@@ -222,19 +211,8 @@ class AirpayGateway(PaymentGateway):
                     last_brace = text.rfind('}')
                     res_json = json.loads(text[:last_brace+1])
                 if 'response' in res_json:
-                    # Use safe loading for verify response
-                    def safe_json_loads(s):
-                        try:
-                            return json.loads(s)
-                        except json.JSONDecodeError:
-                            import re
-                            match = re.search(r'(\{.*\})', s, re.DOTALL)
-                            if match:
-                                return json.loads(match.group(1))
-                            raise
-
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
-                    res_data = safe_json_loads(decrypted)
+                    res_data = self.transformer.safe_json_loads(decrypted)
                     actual_data = res_data.get('data', {})
                     
                     status = actual_data.get('transaction_status')
@@ -319,20 +297,9 @@ class AirpayGateway(PaymentGateway):
                     last_brace = text.rfind('}')
                     res_json = json.loads(text[:last_brace+1])
                 if 'response' in res_json:
-                    # Use safe loading for OAuth response
-                    def safe_json_loads(s):
-                        try:
-                            return json.loads(s)
-                        except json.JSONDecodeError:
-                            import re
-                            match = re.search(r'(\{.*\})', s, re.DOTALL)
-                            if match:
-                                return json.loads(match.group(1))
-                            raise
-
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
                     try:
-                        res_data = safe_json_loads(decrypted)
+                        res_data = self.transformer.safe_json_loads(decrypted)
                     except Exception as e:
                         logger.error(f"AIRPAY_DEBUG: OAuth parse failed: {str(e)}. Decrypted: {decrypted}")
                         raise

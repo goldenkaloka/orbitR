@@ -113,3 +113,18 @@ class AirpayTransformer:
         merchant_secure_hash = merchant_secure_hash & 0xffffffff
         
         return str(merchant_secure_hash) == received_hash
+    @staticmethod
+    def safe_json_loads(s):
+        """
+        Attempts to parse JSON, falling back to regex extraction if parsing fails.
+        Useful for cleaning up responses with trailing 'junk' characters.
+        """
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            import re
+            # Find the first { to the last }
+            match = re.search(r'(\{.*\})', s, re.DOTALL)
+            if match:
+                return json.loads(match.group(1))
+            raise

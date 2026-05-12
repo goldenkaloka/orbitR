@@ -4,6 +4,15 @@ import django.contrib.gis.db.models.fields
 from django.db import migrations
 
 
+def convert_polygons_to_multipolygons(apps, schema_editor):
+    # App label is 'geo'
+    table_name = 'geo_operationalzone'
+    # We use raw SQL to handle the conversion during the type change
+    # ST_Multi ensures all Polygons are wrapped as MultiPolygons
+    schema_editor.execute(
+        f"ALTER TABLE {table_name} ALTER COLUMN boundary TYPE geography(MultiPolygon, 4326) USING ST_Multi(boundary::geometry)::geography;"
+    )
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -11,6 +20,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(convert_polygons_to_multipolygons, reverse_code=migrations.RunPython.noop),
         migrations.AlterField(
             model_name='operationalzone',
             name='boundary',

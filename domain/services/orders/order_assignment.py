@@ -94,10 +94,42 @@ class AssignBatchService:
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
             if batch.status != 'CREATED':
+                logger.warning(f"Batch {batch_id} is in {batch.status} state, cannot assign.")
                 return batch
             
-            # Logic for batches would go here (simplified for refactoring)
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+            
+            # 1. Update Batch
             batch.status = 'ASSIGNED'
-            batch.driver_id = driver_id
+            batch.driver = driver
             batch.save()
+            
+            # 2. Update Driver
+            if driver.status != 'ASSIGNED':
+                driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
+            
+            # Get orders in this batch
+            orders = batch.orders.all()
+            driver.current_active_orders += orders.count()
+            driver.save(update_fields=['status', 'current_active_orders'])
+            
+            # 3. Update individual Orders
+            for order in orders:
+                order.status = OrderFSM.transition(order.status, 'ASSIGNED')
+                order.driver = driver
+                order.save()
+                
+                # Create DeliveryAssignment record for each
+                DeliveryAssignment.objects.update_or_create(
+                    order=order, 
+                    defaults={'driver': driver, 'batch': batch}
+                )
+                
+                # Publish Event for each order
+                transaction.on_commit(lambda o=order: EventBus.publish(DriverAssigned(
+                    aggregate_id=o.id, 
+                    payload={'driver_id': str(driver.id), 'batch_id': str(batch.id), 'actor_id': str(actor.id)}
+                )))
+            
             return batch
+
