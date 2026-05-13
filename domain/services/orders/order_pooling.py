@@ -73,6 +73,10 @@ class PoolOrderService:
                 raise ValueError(f"Pool is full (max {PoolOrderService.MAX_POOL_MEMBERS}).")
             
             member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
+            
+            if created:
+                broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} joined the pool!")
+            
             return pool
 
     @staticmethod
