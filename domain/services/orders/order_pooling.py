@@ -75,7 +75,9 @@ class PoolOrderService:
             member, created = PoolMember.objects.get_or_create(pool=pool, user=user)
             
             if created:
-                broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} joined the pool!")
+                _pool_id = str(pool.id)
+                _username = user.username
+                transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} joined the pool!"))
             
             return pool
 
@@ -105,7 +107,8 @@ class PoolOrderService:
             member.items_subtotal += (food.price * quantity)
             member.save()
             
-            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} added {food.name}")
+            _pool_id, _username, _food_name = str(pool.id), user.username, food.name
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} added {_food_name}"))
             return pool
 
     @staticmethod
@@ -128,7 +131,8 @@ class PoolOrderService:
             else:
                 item.save()
             
-            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} updated {food_name}")
+            _pool_id, _username, _food_name = str(pool.id), user.username, food_name
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} updated {_food_name}"))
             return pool
 
     @staticmethod
@@ -145,7 +149,8 @@ class PoolOrderService:
             member.status = 'READY'
             member.save()
             
-            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} is ready!")
+            _pool_id, _username = str(pool.id), user.username
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} is ready!"))
             return pool
 
     @staticmethod
@@ -156,7 +161,8 @@ class PoolOrderService:
                 raise PermissionError("Initiator cannot leave — cancel the pool instead.")
             
             PoolMember.objects.get(pool=pool, user=user).delete()
-            broadcast_pool_status(str(pool.id), 'OPEN', message=f"{user.username} left.")
+            _pool_id, _username = str(pool.id), user.username
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} left."))
             return pool
 
     @staticmethod
@@ -196,7 +202,8 @@ class PoolOrderService:
             PoolMember.objects.bulk_update(members, ['delivery_fee_share', 'service_fee_share'])
             pool.save()
             
-            broadcast_pool_status(str(pool.id), 'LOCKED', message="LOCKED! Time to pay.")
+            _pool_id = str(pool.id)
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'LOCKED', message="LOCKED! Time to pay."))
             return pool
 
     @staticmethod
@@ -249,7 +256,8 @@ class PoolOrderService:
             pool.final_order = master_order
             pool.save()
             
-            broadcast_pool_status(str(pool.id), 'COMPLETED', message="Paid! Processing...")
+            _pool_id = str(pool.id)
+            transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'COMPLETED', message="Paid! Processing..."))
             
             transaction.on_commit(lambda: EventBus.publish(OrderCreated(aggregate_id=master_order.id, payload={'customer_id': str(master_order.customer.id), 'is_pool': True})))
             
