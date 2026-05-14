@@ -19,7 +19,7 @@ from apps.core.cache_keys import stable_cache_key
 
 from api.serializers.core import (
     UserSerializer, RestaurantSerializer, OrderSerializer, 
-    DriverSerializer, FoodSerializer, NotificationSerializer,
+    DriverSerializer, FoodSerializer, SearchFoodSerializer, NotificationSerializer,
     DisputeSerializer, RestaurantListSerializer
 )
 
@@ -621,19 +621,30 @@ class UniversalSearchView(APIView):
                 "products": []
             })
 
-        # Search Restaurants
-        restaurants = Restaurant.objects.filter(is_active=True).annotate(
+        # Search Restaurants — Prefetch foods to avoid N+1 in serializer
+        restaurants_qs = Restaurant.objects.filter(is_active=True).prefetch_related('foods').annotate(
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:15]
 
-        # Search Products — select_related prevents N+1 queries for vendor_id/vendor_name
-        products = Food.objects.select_related('vendor').filter(is_available=True).annotate(
+        # Search Products — select_related for vendor info
+        products_qs = Food.objects.select_related('vendor').filter(is_available=True).annotate(
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
 
+        # Collect all restaurants: those that matched the query + those that own matching products
+        # This ensures we have the full restaurant data for every product found.
+        all_restaurants = {r.id: r for r in restaurants_qs}
+        
+        # Prefetch menus for product vendors not already in the list
+        missing_vendor_ids = [p.vendor_id for p in products_qs if p.vendor_id not in all_restaurants]
+        if missing_vendor_ids:
+            missing_vendors = Restaurant.objects.filter(id__in=missing_vendor_ids).prefetch_related('foods')
+            for v in missing_vendors:
+                all_restaurants[v.id] = v
+
         return Response({
-            "restaurants": RestaurantListSerializer(restaurants, many=True, context={'request': request}).data,
-            "products": FoodSerializer(products, many=True, context={'request': request}).data
+            "restaurants": RestaurantListSerializer(all_restaurants.values(), many=True, context={'request': request}).data,
+            "products": FoodSerializer(products_qs, many=True, context={'request': request}).data
         })
 
 

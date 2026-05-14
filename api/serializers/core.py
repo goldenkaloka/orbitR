@@ -41,6 +41,8 @@ class FoodSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+
+
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     foods = FoodSerializer(many=True, read_only=True)
