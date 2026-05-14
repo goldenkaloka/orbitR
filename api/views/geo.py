@@ -56,7 +56,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         import requests
         import urllib.parse
         
-        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz&types=poi,landmark,place,address"
+        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz&types=poi,place,address,neighborhood,locality"
         
         if lat and lng:
             url += f"&proximity={lng},{lat}"
@@ -85,7 +85,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                         'lng': center[0],
                     })
                 return Response(results)
-            return Response({'error': 'Mapbox API error'}, status=502)
+            return Response({'error': 'Mapbox API error', 'details': response.text}, status=502)
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Autocomplete Error: {e}")
