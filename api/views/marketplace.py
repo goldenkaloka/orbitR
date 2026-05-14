@@ -18,8 +18,21 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         Filter by zone, category, and status.
         Only show ACTIVE products to general users.
         """
+        from django.db.models import Subquery, OuterRef
+        from apps.geo.models import ZoneH3Index
+        
         user = self.request.user
-        queryset = MarketplaceProduct.objects.select_related('seller', 'category').prefetch_related('images').all()
+        
+        # Optimize zone name resolution to prevent N+1 queries during serialization
+        zone_name_subquery = ZoneH3Index.objects.filter(
+            h3_index=OuterRef('h3_index')
+        ).values('zone__name')[:1]
+
+        queryset = MarketplaceProduct.objects.select_related(
+            'seller', 'category'
+        ).prefetch_related('images').annotate(
+            annotated_zone_name=Subquery(zone_name_subquery)
+        )
         
         # Filtering
         zone_h3 = self.request.query_params.get('zone')

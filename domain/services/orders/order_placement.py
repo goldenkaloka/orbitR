@@ -2,8 +2,10 @@ import logging
 import random
 from decimal import Decimal
 from django.db import transaction
+import h3
 from apps.orders.models import Order, OrderItem
-from apps.restaurants.models import Restaurant, DeliveryZone
+from apps.restaurants.models import Restaurant
+from apps.geo.models import ZoneH3Index
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated, OrderConfirmed
 from domain.services.pricing_service import PricingService
@@ -24,6 +26,34 @@ class PlaceOrderService:
             
         delivery_location = validated_data.get('delivery_location')
         
+        delivery_h3 = None
+        if delivery_location:
+            delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
+            
+            # --- Gate 1: OperationalZone check ---
+            op_zone = ZoneH3Index.objects.filter(
+                h3_index=delivery_h3,
+                resolution=ZONE_RESOLUTION,
+                zone__is_active=True
+            ).exists()
+
+            if not op_zone:
+                raise ValueError("Delivery location is not within an operational zone.")
+            
+            # --- Gate 2: Restaurant delivery radius check ---
+            if restaurant.geo_location:
+                restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
+                if restaurant_h3 and delivery_h3:
+                    r_lat, r_lng = h3.cell_to_latlng(restaurant_h3)
+                    d_lat, d_lng = h3.cell_to_latlng(delivery_h3)
+                    distance_km = h3.great_circle_distance((r_lat, r_lng), (d_lat, d_lng))
+                    
+                    if distance_km > restaurant.max_delivery_radius_km:
+                        raise ValueError(
+                            f"{restaurant.name} does not deliver beyond {restaurant.max_delivery_radius_km}km. "
+                            f"Your location is {distance_km:.1f}km away."
+                        )
+        
         # Calculate dynamic delivery and service fees
         dynamic_fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
         
@@ -36,16 +66,6 @@ class PlaceOrderService:
             
         if expected_service is not None and abs(Decimal(str(expected_service)) - service_fee) > 10:
             logger.warning(f"Service fee mismatch: Client expected {expected_service}, Backend calculated {service_fee}")
-        
-        zone = None
-        delivery_h3 = None
-        if delivery_location:
-            delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
-            zone = DeliveryZone.objects.filter(
-                restaurant=restaurant, 
-                is_active=True, 
-                h3_index=delivery_h3
-            ).order_by('-priority').first()
         
         if not restaurant.is_active:
             raise ValueError(f"Restaurant {restaurant.name} is currently not accepting orders.")
@@ -68,7 +88,6 @@ class PlaceOrderService:
                 service_fee=service_fee,
                 total_amount=total_amount,
                 delivery_otp=otp,
-                zone=zone,
                 h3_index=delivery_h3,
                 **validated_data
             )

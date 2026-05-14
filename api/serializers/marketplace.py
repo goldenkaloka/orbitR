@@ -17,13 +17,14 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
     seller_name = serializers.ReadOnlyField(source='seller.username')
     listing_fee = serializers.SerializerMethodField()
     whatsapp_url = serializers.SerializerMethodField()
+    zone_name = serializers.SerializerMethodField()
 
     class Meta:
         model = MarketplaceProduct
         fields = [
             'id', 'seller', 'seller_name', 'category', 'name', 'description', 
             'price', 'condition', 'whatsapp_number', 'whatsapp_url',
-            'location', 'h3_index', 'status', 'expiry_date', 
+            'location', 'h3_index', 'zone_name', 'status', 'expiry_date', 
             'listing_fee', 'is_fee_paid', 'images', 'created_at'
         ]
         read_only_fields = ['seller', 'status', 'expiry_date', 'is_fee_paid', 'h3_index']
@@ -35,8 +36,18 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
         # Format: https://wa.me/number?text=I'm interested in your [Product Name]
         import urllib.parse
         clean_number = obj.whatsapp_number.replace('+', '').replace(' ', '')
-        text = urllib.parse.quote(f"Hi, I'm interested in your {obj.name} on Mwanachuo.")
+        text = urllib.parse.quote(f"Hi, I'm interested in your {obj.name} on orbit.")
         return f"https://wa.me/{clean_number}?text={text}"
+
+    def get_zone_name(self, obj):
+        if hasattr(obj, 'annotated_zone_name') and obj.annotated_zone_name:
+            return obj.annotated_zone_name
+            
+        if not obj.h3_index:
+            return "Nearby"
+            
+        # Fallback to a user-friendly formatted H3 string
+        return f"Campus Zone {obj.h3_index[:5].upper()}"
 
     def to_internal_value(self, data):
         """Handle GeoJSON/Point conversion using shared utility."""

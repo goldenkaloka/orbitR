@@ -82,3 +82,30 @@ class DeliveryFeeLog(models.Model):
 
     def __str__(self):
         return f"Fee Log: {self.final_fee} TSh"
+
+class DistanceTier(models.Model):
+    """
+    Distance-based pricing escalation.
+    Allows the platform to charge progressively more for longer deliveries.
+    Example tiers:
+      0 - 2 km: 1.0x (base rate)
+      2 - 5 km: 1.3x
+      5 - 8 km: 1.6x
+      8+   km:  2.0x
+    """
+    policy = models.ForeignKey(PricingPolicy, on_delete=models.CASCADE, related_name='distance_tiers')
+    min_km = models.FloatField(help_text="Start of distance range (inclusive)")
+    max_km = models.FloatField(help_text="End of distance range (exclusive). Use 999 for unlimited.")
+    multiplier = models.DecimalField(
+        max_digits=4, decimal_places=2, default=1.00,
+        help_text="Multiplier applied to per_km_rate for this range"
+    )
+
+    class Meta:
+        ordering = ['policy', 'min_km']
+        unique_together = ('policy', 'min_km')
+        verbose_name = "Distance Tier"
+        verbose_name_plural = "Distance Tiers"
+
+    def __str__(self):
+        return f"{self.min_km}-{self.max_km}km: {self.multiplier}x"

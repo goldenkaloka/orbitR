@@ -2,7 +2,7 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import Restaurant, DeliveryZone
+from .models import Restaurant
 from apps.products.models import Food
 
 
@@ -12,20 +12,9 @@ class FoodInline(TabularInline):
     fields = ('name', 'price', 'is_available')
     show_change_link = True
 
-class DeliveryZoneInline(TabularInline):
-    model = DeliveryZone
-    extra = 0
-    fields = ('name', 'fee', 'priority', 'is_active')
-
-@admin.register(DeliveryZone)
-class DeliveryZoneAdmin(ModelAdmin):
-    list_display = ('name', 'restaurant', 'fee', 'priority', 'is_active')
-    list_filter = ('is_active', 'restaurant')
-    search_fields = ('name', 'restaurant__name')
-
 @admin.register(Restaurant)
 class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
-    list_display = ('display_header', 'location', 'show_active', 'food_count', 'created_at')
+    list_display = ('display_header', 'location', 'max_delivery_radius_km', 'show_active', 'food_count', 'created_at')
     list_filter = ('is_active', 'category', 'created_at')
     search_fields = ('name', 'location', 'owner__username', 'owner__email')
     ordering = ('-created_at',)
@@ -33,7 +22,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_per_page = 25
     raw_id_fields = ('owner',)
     readonly_fields = ('id', 'created_at')
-    inlines = [FoodInline, DeliveryZoneInline]
+    inlines = [FoodInline]
 
     settings_overrides = {
         'DEFAULT_CENTER': (-6.7924, 39.2083),
@@ -46,6 +35,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
         ('Location', {'fields': ('geo_location', 'location')}),
+        ('Delivery', {'fields': ('max_delivery_radius_km',)}),
         ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),
         ('Timestamps', {'fields': ('created_at',)}),
     )

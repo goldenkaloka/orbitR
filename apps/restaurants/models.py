@@ -1,6 +1,7 @@
 from django.db import models
 from apps.users.models import User
 import uuid
+from decimal import Decimal
 
 from django.contrib.gis.db import models as gis_models
 from apps.core.geo_utils import latlng_to_h3
@@ -19,6 +20,21 @@ class Restaurant(models.Model):
     # H3 Spatial Indexing
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
 
+    # Maximum delivery radius — replaces DeliveryZone model entirely.
+    # "Does this restaurant deliver here?" = distance <= max_delivery_radius_km
+    max_delivery_radius_km = models.FloatField(
+        default=5.0,
+        help_text="Maximum delivery distance in km from the restaurant"
+    )
+
+    # Commission rate for platform monetization
+    commission_rate = models.DecimalField(
+        max_digits=4, 
+        decimal_places=3, 
+        default=Decimal('0.100'),
+        help_text="Percentage of food subtotal taken by the platform (e.g., 0.100 for 10%)"
+    )
+
     category = models.CharField(max_length=100, default='General', db_index=True)
     price_range = models.CharField(max_length=50, default='TSH 2k–5k')
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
@@ -36,25 +52,3 @@ class Restaurant(models.Model):
 
     def __str__(self):
         return self.name
-
-class DeliveryZone(models.Model):
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='delivery_zones')
-    name = models.CharField(max_length=100)
-    
-    # H3 cell index that represents this zone
-    h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
-    
-    fee = models.DecimalField(max_digits=10, decimal_places=2, default=500.00)
-    priority = models.IntegerField(default=0, help_text="Higher priority zones take precedence if overlapping")
-    
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    def save(self, *args, **kwargs):
-        # We allow h3_index to be null initially if the field definition says so,
-        # but we encourage it to be set. The contradiction is removed here.
-        super().save(*args, **kwargs)
-
-    def __str__(self):
-        return f"{self.restaurant.name} - {self.name} ({self.fee} TZS)"
-

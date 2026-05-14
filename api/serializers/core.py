@@ -166,6 +166,19 @@ class OrderSerializer(serializers.ModelSerializer):
         from domain.services.order_services import PlaceOrderService
         return PlaceOrderService.execute(validated_data)
 
+    def to_internal_value(self, data):
+        """Handle coordinate dictionary conversion using shared utility."""
+        point = parse_coordinate_dict(data, 'delivery_location')
+        if point:
+            # We must make a mutable copy of the QueryDict if it's immutable
+            if hasattr(data, '_mutable'):
+                mutable_data = data.copy()
+                mutable_data['delivery_location'] = point
+                data = mutable_data
+            else:
+                data['delivery_location'] = point
+        return super().to_internal_value(data)
+
 
 
 class DriverSerializer(serializers.ModelSerializer):
@@ -289,7 +302,12 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         """Handle coordinate dictionary conversion using shared utility."""
         point = parse_coordinate_dict(data, 'delivery_location')
         if point:
-            data['delivery_location'] = point
+            if hasattr(data, '_mutable'):
+                mutable_data = data.copy()
+                mutable_data['delivery_location'] = point
+                data = mutable_data
+            else:
+                data['delivery_location'] = point
         return super().to_internal_value(data)
 
 

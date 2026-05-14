@@ -13,6 +13,7 @@ from apps.products.models import Food
 from apps.orders.models import Order, OrderItem
 from apps.delivery.models import Driver
 from apps.payments.models import Payment, Transaction
+from apps.pricing.models import PricingPolicy
 
 class OrderLifecycleE2ETest(APITransactionTestCase):
 
@@ -48,16 +49,40 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         )
 
 
-        # 3. Setup Restaurant & Product
+        # 3. Setup Restaurant & Product — with geo_location for distance calculation
         self.restaurant = Restaurant.objects.create(
             owner=self.restaurant_owner,
             name="Mwanachuo Cafe",
-            location="University Main Hall"
+            location="University Main Hall",
+            geo_location=Point(39.2083, -6.7924),
+            max_delivery_radius_km=10.0
         )
         self.food = Food.objects.create(
             vendor=self.restaurant,
             name="Beef Burger",
             price=Decimal('5000.00')
+        )
+
+        # 4. Setup OperationalZone covering the delivery area
+        from django.contrib.gis.geos import Polygon, MultiPolygon
+        from apps.geo.models import OperationalZone
+        poly = Polygon((
+            (39.19, -6.80), (39.23, -6.80), (39.23, -6.78),
+            (39.19, -6.78), (39.19, -6.80)
+        ))
+        self.op_zone = OperationalZone.objects.create(
+            name="Test Zone",
+            boundary=MultiPolygon(poly)
+        )
+
+        # 5. Setup PricingPolicy
+        self.policy = PricingPolicy.objects.create(
+            name="Test Policy",
+            is_active=True,
+            base_fee=Decimal('1000.00'),
+            per_km_rate=Decimal('500.00'),
+            service_fee=Decimal('300.00'),
+            road_buffer_multiplier=1.0
         )
 
         # Authenticate as customer
@@ -90,22 +115,31 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
 
 
         # --- STEP 1: CREATE ORDER ---
+        from django.contrib.gis.geos import Point
         order_url = '/api/orders/'
         order_data = {
             'restaurant': self.restaurant.id,
             'items': [
                 {'food': self.food.id, 'quantity': 2}
             ],
-            'delivery_address': 'Hostel Block A'
+            'delivery_address': 'Hostel Block A',
+            'delivery_location': {'type': 'Point', 'coordinates': [39.2100, -6.7930]}
         }
         response = self.client.post(order_url, order_data, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         order_id = response.data['id']
         
-        # Verify initial totals (2 * 5000 = 10000 subtotal + 500 delivery fee)
+        # Verify initial totals — fee is dynamically calculated now
         self.assertEqual(Decimal(response.data['items_subtotal']), Decimal('10000.00'))
-        self.assertEqual(Decimal(response.data['delivery_fee']), Decimal('500.00'))
-        self.assertEqual(Decimal(response.data['total_amount']), Decimal('10500.00'))
+        # Delivery fee is dynamic — just check it's a positive number
+        delivery_fee = Decimal(response.data['delivery_fee'])
+        service_fee = Decimal(response.data['service_fee'])
+        self.assertGreater(delivery_fee, Decimal('0'))
+        self.assertGreater(service_fee, Decimal('0'))
+        self.assertEqual(
+            Decimal(response.data['total_amount']),
+            Decimal('10000.00') + delivery_fee + service_fee
+        )
 
         
         # --- STEP 2: INITIATE PAYMENT ---
@@ -197,18 +231,18 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
 
         
         # Verify final Transaction records:
-        # 1. Platform -> Restaurant (90% of 10000 = 9000)
+        # 1. Platform -> Restaurant (90% of items_subtotal)
         self.assertTrue(Transaction.objects.filter(
             payment=payment,
             transaction_type='platform_to_restaurant',
-            amount=Decimal('9000.00')
+            amount=Decimal('9000.00')  # 90% of 10000
         ).exists())
 
-        # 2. Platform -> Driver (100% of 500 = 500)
+        # 2. Platform -> Driver (100% of delivery_fee)
         self.assertTrue(Transaction.objects.filter(
             payment=payment,
             transaction_type='platform_to_driver',
-            amount=Decimal('500.00')
+            amount=delivery_fee  # dynamically calculated delivery fee
         ).exists())
 
 

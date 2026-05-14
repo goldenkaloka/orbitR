@@ -106,6 +106,45 @@ def on_payment_disbursed(event: PaymentDisbursed):
     
     from apps.orders.models import Order
     try:
+        from django.db import transaction
+        from apps.users.models import User
+        from apps.payments.models import Transaction, Payment
+        from domain.services.wallet_services import WalletDomainService
+        
+        # EDA Wallet Updates
+        payment = Payment.objects.get(id=event.aggregate_id)
+        restaurant_owner_id = event.payload.get('restaurant_owner_id')
+        restaurant_payout_str = event.payload.get('restaurant_payout', '0')
+        driver_user_id = event.payload.get('driver_user_id')
+        driver_payout_str = event.payload.get('driver_payout', '0')
+        
+        from decimal import Decimal
+        restaurant_payout = Decimal(restaurant_payout_str)
+        driver_payout = Decimal(driver_payout_str)
+        
+        with transaction.atomic():
+            if restaurant_owner_id and restaurant_payout > 0:
+                restaurant_owner = User.objects.get(id=restaurant_owner_id)
+                WalletDomainService.credit(restaurant_owner, restaurant_payout, f"Earnings from Order #{order_id}")
+                Transaction.objects.create(
+                    payment=payment, 
+                    to_wallet=restaurant_owner, 
+                    amount=restaurant_payout, 
+                    transaction_type='platform_to_restaurant', 
+                    status='COMPLETED'
+                )
+                
+            if driver_user_id and driver_payout > 0:
+                driver_user = User.objects.get(id=driver_user_id)
+                WalletDomainService.credit(driver_user, driver_payout, f"Delivery for Order #{order_id}")
+                Transaction.objects.create(
+                    payment=payment, 
+                    to_wallet=driver_user, 
+                    amount=driver_payout, 
+                    transaction_type='platform_to_driver', 
+                    status='COMPLETED'
+                )
+                
         order = Order.objects.select_related('restaurant__owner', 'driver__user').get(id=order_id)
         # Notify Restaurant
         NotificationService.send_push(
@@ -181,11 +220,11 @@ def on_order_event(event):
         messages = {
             'OrderCreated': "Order placed successfully!",
             'OrderConfirmed': "Payment received! Restaurant is notified.",
-            'OrderPreparing': "Restaurant has started preparing your food! 🔥",
-            'FoodReady': "Food is ready for pickup! 🛵",
+            'OrderPreparing': "Restaurant has started preparing your food! ",
+            'FoodReady': "Food is ready for pickup! ",
             'DriverAssigned': "A rider is on the way to pick up your food.",
-            'OrderPicked': f"Rider has picked up your order! 🚀 Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
-            'OrderDelivered': "Order delivered! Enjoy your meal 😋",
+            'OrderPicked': f"Rider has picked up your order! Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
+            'OrderDelivered': "Order delivered! Enjoy your meal ",
             'OrderCancelled': "Order has been cancelled. 🛑",
         }
         

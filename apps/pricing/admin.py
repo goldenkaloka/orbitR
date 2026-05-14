@@ -1,17 +1,24 @@
 from django.contrib import admin
-from unfold.admin import ModelAdmin
-from .models import PricingPolicy, ZonePricingTier, DeliveryFeeLog
+from unfold.admin import ModelAdmin, TabularInline
+from .models import PricingPolicy, ZonePricingTier, DeliveryFeeLog, DistanceTier
+
+class DistanceTierInline(TabularInline):
+    model = DistanceTier
+    extra = 1
+    fields = ('min_km', 'max_km', 'multiplier')
+    ordering = ('min_km',)
 
 @admin.register(PricingPolicy)
 class PricingPolicyAdmin(ModelAdmin):
-    list_display = ('name', 'is_active', 'base_fee', 'per_km_rate', 'updated_at')
+    list_display = ('name', 'is_active', 'base_fee', 'per_km_rate', 'service_fee', 'updated_at')
     list_editable = ('is_active',)
+    inlines = [DistanceTierInline]
     fieldsets = (
         ('Platform Strategy', {
             'fields': ('name', 'is_active')
         }),
         ('Rate Constants', {
-            'fields': ('base_fee', 'per_km_rate', 'road_buffer_multiplier')
+            'fields': ('base_fee', 'per_km_rate', 'service_fee', 'road_buffer_multiplier')
         }),
         ('Dynamic Multipliers', {
             'fields': ('rainy_season_surcharge', 'night_surcharge_multiplier', 'rush_hour_multiplier')

@@ -230,7 +230,6 @@ class CompletePaymentService:
 class ReleasePaymentService:
     @staticmethod
     def execute(payment_id):
-        from domain.services.wallet_services import WalletDomainService
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
             
@@ -241,12 +240,14 @@ class ReleasePaymentService:
 
             if payment.payable_type == 'order':
                 order = Order.objects.get(id=payment.payable_id)
-                restaurant_payout = Decimal(str(order.items_subtotal or 0)) * Decimal('0.90')
+                commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
+                restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
                 driver_payout = Decimal(str(order.delivery_fee or 0)) if order.driver else Decimal('0')
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import PoolMember
                 member = PoolMember.objects.get(id=payment.payable_id)
-                restaurant_payout = Decimal(str(member.items_subtotal or 0)) * Decimal('0.90')
+                commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
+                restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
                 driver_payout = Decimal(str(member.delivery_fee_share or 0))
                 order = member.pool.final_order
                 if not order:
@@ -279,15 +280,16 @@ class ReleasePaymentService:
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
                 
-                WalletDomainService.credit(order.restaurant.owner, restaurant_payout, f"Earnings from Order #{order.id}")
-                if order.driver:
-                    WalletDomainService.credit(order.driver.user, driver_payout, f"Delivery for Order #{order.id}")
-                
-                Transaction.objects.create(payment=payment, to_wallet=order.restaurant.owner, amount=restaurant_payout, transaction_type='platform_to_restaurant', status='COMPLETED')
-                if order.driver:
-                    Transaction.objects.create(payment=payment, to_wallet=order.driver.user, amount=driver_payout, transaction_type='platform_to_driver', status='COMPLETED')
-                
-                transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(aggregate_id=payment.id, payload={'order_id': str(order.id)})))
+                transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(
+                    aggregate_id=payment.id, 
+                    payload={
+                        'order_id': str(order.id),
+                        'restaurant_owner_id': str(order.restaurant.owner.id) if (order.restaurant and order.restaurant.owner) else None,
+                        'restaurant_payout': str(restaurant_payout),
+                        'driver_user_id': str(order.driver.user.id) if (order.driver and order.driver.user) else None,
+                        'driver_payout': str(driver_payout) if order.driver else '0.0',
+                    }
+                )))
             else:
                 FailedPayout.objects.create(payment=payment, to_wallet=order.restaurant.owner, amount=restaurant_payout, transaction_type='split_settlement_failure', reason=response.get('error', 'Unknown Error'))
             

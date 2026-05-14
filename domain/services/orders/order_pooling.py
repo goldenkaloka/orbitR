@@ -6,12 +6,14 @@ from datetime import timedelta
 from django.db import transaction, IntegrityError
 from django.utils import timezone
 from apps.orders.models import Order, OrderItem, OrderPool, PoolMember, PoolItem
-from apps.restaurants.models import Restaurant, DeliveryZone
+from apps.restaurants.models import Restaurant
+from apps.geo.models import ZoneH3Index
 from apps.events.utils import broadcast_pool_status
 from domain.services.pricing_service import PricingService
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
+import h3
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +29,31 @@ class PoolOrderService:
         
         if not delivery_location or not hasattr(delivery_location, 'x'):
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
-                
+
         h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
+
+        op_zone = ZoneH3Index.objects.filter(
+            h3_index=h3_index,
+            resolution=ZONE_RESOLUTION,
+            zone__is_active=True
+        ).select_related('zone').first()
+
+        if not op_zone:
+            raise ValueError("Delivery location is not within an operational zone.")
+
+        # --- Gate 2: Restaurant delivery radius check ---
+        if restaurant.geo_location:
+            restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
+            if restaurant_h3 and h3_index:
+                r_lat, r_lng = h3.cell_to_latlng(restaurant_h3)
+                d_lat, d_lng = h3.cell_to_latlng(h3_index)
+                distance_km = h3.great_circle_distance((r_lat, r_lng), (d_lat, d_lng))
+                
+                if distance_km > restaurant.max_delivery_radius_km:
+                    raise ValueError(
+                        f"{restaurant.name} does not deliver beyond {restaurant.max_delivery_radius_km}km. "
+                        f"Your location is {distance_km:.1f}km away."
+                    )
             
         max_retries = 3
         pool = None
@@ -217,7 +242,6 @@ class PoolOrderService:
                 raise ValueError("Not all members have paid")
             
             pool_h3 = latlng_to_h3(pool.delivery_location.y, pool.delivery_location.x, ZONE_RESOLUTION)
-            zone = DeliveryZone.objects.filter(restaurant=pool.restaurant, is_active=True, h3_index=pool_h3).order_by('-priority').first()
             
             master_order = Order.objects.create(
                 customer=pool.initiator,
@@ -227,7 +251,6 @@ class PoolOrderService:
                 delivery_fee=pool.total_delivery_fee,
                 delivery_otp=str(random.randint(1000, 9999)),
                 pool=pool,
-                zone=zone,
                 h3_index=pool_h3,
                 status='CREATED',
                 is_paid=True

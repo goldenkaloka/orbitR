@@ -211,12 +211,19 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             delivery_location = Point(float(lng), float(lat))
             from domain.services.pricing_service import PricingService
             # Calculate dynamic fee
-            fee, service_fee, _ = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+            fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+            
+            # Extract breakdown from fee_log
+            breakdown = {
+                "base_fee": float(fee_log.base_fee_used) if fee_log else 1000.0,
+                "adjustments": fee_log.adjustments if fee_log else {}
+            }
             
             return Response({
                 "delivery_fee": float(fee),
                 "service_fee": float(service_fee),
-                "currency": "TSh"
+                "currency": "TSh",
+                "breakdown": breakdown
             })
         except (ValueError, TypeError):
             return Response({'error': 'Invalid lat or lng'}, status=400)

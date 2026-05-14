@@ -93,6 +93,7 @@ def get_neighbors(h3_index, k=1):
         # Safer default: return empty so callers can decide fallback behavior.
         return []
 
+
 def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
     """
     Converts a GEOS Polygon to a list of H3 cell indexes at the given resolution.
