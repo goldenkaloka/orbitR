@@ -401,11 +401,6 @@ UNFOLD = {
                         "icon": "map",
                         "link": reverse_lazy("admin:geo_operationalzone_changelist"),
                     },
-                    {
-                        "title": _("Delivery Zones"),
-                        "icon": "local_shipping",
-                        "link": reverse_lazy("admin:restaurants_deliveryzone_changelist"),
-                    },
                 ],
             },
             {
