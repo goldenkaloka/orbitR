@@ -14,6 +14,7 @@ from apps.orders.models import Order
 from apps.delivery.models import Driver
 from apps.wallets.models import Wallet
 from apps.core.models import Notification
+from apps.marketplace.models import MarketplaceProduct
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, get_neighbors
 from apps.core.cache_keys import stable_cache_key
 
@@ -22,6 +23,7 @@ from api.serializers.core import (
     DriverSerializer, FoodSerializer, NotificationSerializer,
     DisputeSerializer, RestaurantListSerializer
 )
+from api.serializers.marketplace import MarketplaceProductSerializer
 
 from django.core.cache import cache
 from domain.services.order_services import (
@@ -631,6 +633,13 @@ class UniversalSearchView(APIView):
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
 
+        # Search Marketplace
+        marketplace_qs = MarketplaceProduct.objects.select_related('seller', 'category').prefetch_related('images').filter(
+            status='ACTIVE'
+        ).annotate(
+            similarity=TrigramSimilarity('name', query)
+        ).filter(similarity__gt=0.1).order_by('-similarity')[:20]
+
         # Collect all required vendor data for the products found
         vendor_ids = set(p.vendor_id for p in products_qs)
         # Also include restaurants that matched the name search
@@ -642,6 +651,7 @@ class UniversalSearchView(APIView):
         return Response({
             "restaurants": RestaurantListSerializer(restaurants_qs, many=True, context={'request': request}).data,
             "products": FoodSerializer(products_qs, many=True, context={'request': request}).data,
+            "marketplace": MarketplaceProductSerializer(marketplace_qs, many=True, context={'request': request}).data,
             "vendors": RestaurantListSerializer(all_vendors, many=True, context={'request': request}).data
         })
 
