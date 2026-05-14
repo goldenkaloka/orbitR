@@ -1,8 +1,8 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from api.views.core import (
     UserViewSet, RestaurantViewSet, OrderViewSet, 
-    FoodViewSet, NotificationViewSet, DisputeViewSet
+    FoodViewSet, NotificationViewSet, DisputeViewSet,
+    UniversalSearchView
 )
 from api.views.driver import DriverViewSet, DeliveryProofViewSet
 from api.views.wallets import WalletViewSet
@@ -42,4 +42,5 @@ urlpatterns = router.urls + [
     path('auth/me/', MeView.as_view(), name='auth-me'),
     path('payments/airpay/callback/', AirpayWebhookView.as_view(), name='airpay-callback'),
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
+    path('search/', UniversalSearchView.as_view(), name='universal-search'),
 ]
