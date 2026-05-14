@@ -3,7 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.geo.models import OperationalZone, ZoneH3Index
 from api.serializers.geo import OperationalZoneSerializer, OperationalZoneMinimalSerializer
-from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION
+from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION, get_neighbors
 
 class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = OperationalZone.objects.filter(is_active=True)
@@ -32,6 +32,16 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             
             if zone_index:
                 return Response(OperationalZoneMinimalSerializer(zone_index.zone).data)
+            
+            # If not found, check neighboring cells (for edge cases near zone boundaries)
+            neighbor_h3_cells = get_neighbors(h3_index)
+            neighbor_zones = ZoneH3Index.objects.filter(
+                h3_index__in=neighbor_h3_cells,
+                zone__is_active=True
+            ).select_related('zone').first()
+            
+            if neighbor_zones:
+                return Response(OperationalZoneMinimalSerializer(neighbor_zones.zone).data)
             
             return Response({'detail': 'No zone found for these coordinates'}, status=404)
         except (ValueError, TypeError):

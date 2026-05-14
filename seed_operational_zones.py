@@ -5,7 +5,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
-from django.contrib.gis.geos import Point
+from django.contrib.gis.geos import Point, MultiPolygon
 from apps.geo.models import OperationalZone
 
 
@@ -40,7 +40,7 @@ def seed_operational_zones():
         # 0.001 degrees is roughly 111m
         p = Point(row["lng"], row["lat"])
         # Buffer creates a circular-ish polygon. For seeding, this is perfect.
-        boundary = p.buffer(0.0015) 
+        boundary = MultiPolygon(p.buffer(0.0015)) 
 
         zone, was_created = OperationalZone.objects.update_or_create(
             name=row["name"],
