@@ -56,7 +56,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         import requests
         import urllib.parse
         
-        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz&types=poi,place,address,neighborhood,locality"
+        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz"
         
         if lat and lng:
             url += f"&proximity={lng},{lat}"
