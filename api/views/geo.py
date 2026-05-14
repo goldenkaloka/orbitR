@@ -90,3 +90,44 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             import logging
             logging.getLogger(__name__).error(f"Autocomplete Error: {e}")
             return Response({'error': str(e)}, status=500)
+
+    @action(detail=False, methods=['GET'])
+    def reverse_geocode(self, request):
+        """
+        Proxy endpoint for Mapbox reverse geocoding (GPS to Address).
+        """
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        
+        if not lat or not lng:
+            return Response({'error': 'lat and lng are required'}, status=400)
+            
+        token = "pk.eyJ1IjoiZ29sZGVua2Fsb2thIiwiYSI6ImNtbnI4OGxpbjAxYmMyb3F5YjV3dXRhOXUifQ.Ch12y0VZXfYo8j8HvFjz4g"
+        
+        import requests
+        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lng},{lat}.json?access_token={token}&types=poi,place,neighborhood,locality"
+        
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                results = []
+                for feature in data.get('features', []):
+                    place_name = feature.get('text', '')
+                    center = feature.get('center', [0, 0])
+                    context = [c.get('text') for c in feature.get('context', [])]
+                    address = ", ".join(context) if context else feature.get('place_name', '')
+                    
+                    results.append({
+                        'id': feature.get('id'),
+                        'name': place_name,
+                        'address': address,
+                        'lat': center[1],
+                        'lng': center[0],
+                    })
+                return Response(results)
+            return Response({'error': 'Mapbox API error', 'details': response.text}, status=502)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Reverse Geocode Error: {e}")
+            return Response({'error': str(e)}, status=500)
