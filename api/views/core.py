@@ -626,8 +626,8 @@ class UniversalSearchView(APIView):
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:15]
 
-        # Search Products
-        products = Food.objects.filter(is_available=True).annotate(
+        # Search Products — select_related prevents N+1 queries for vendor_id/vendor_name
+        products = Food.objects.select_related('vendor').filter(is_available=True).annotate(
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
 

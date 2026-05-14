@@ -25,10 +25,12 @@ class UserSerializer(serializers.ModelSerializer):
 
 class FoodSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
+    vendor_id = serializers.CharField(source='vendor.id', read_only=True)
+    vendor_name = serializers.CharField(source='vendor.name', read_only=True)
 
     class Meta:
         model = Food
-        fields = ['id', 'name', 'description', 'price', 'category', 'is_available', 'image', 'image_url']
+        fields = ['id', 'name', 'description', 'price', 'category', 'is_available', 'image', 'image_url', 'vendor_id', 'vendor_name']
 
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
