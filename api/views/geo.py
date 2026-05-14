@@ -40,8 +40,9 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['GET'])
     def autocomplete(self, request):
         """
-        Proxy endpoint for Mapbox forward geocoding (search autocomplete).
-        Keeps Mapbox tokens secure and parses response for the mobile app.
+        Proxy endpoint for location search (autocomplete).
+        Uses Mapbox Search Box API first, falls back to Geocoding v5 if no results.
+        Search Box API is better for POI search, Geocoding v5 provides broader coverage.
         """
         query = request.query_params.get('q', '')
         if not query or len(query) < 2:
@@ -50,51 +51,85 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
         
-        # In a real production setup, this moves to settings.py
         token = "pk.eyJ1IjoiZ29sZGVua2Fsb2thIiwiYSI6ImNtbnI4OGxpbjAxYmMyb3F5YjV3dXRhOXUifQ.Ch12y0VZXfYo8j8HvFjz4g"
         
         import requests
         import urllib.parse
         
-        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz"
+        results = []
         
-        if lat and lng:
-            url += f"&proximity={lng},{lat}"
-            
         try:
-            response = requests.get(url, timeout=5)
+            search_box_url = f"https://api.mapbox.com/search/searchbox/v1/forward?access_token={token}&q={urllib.parse.quote(query)}&country=tz&limit=10&types=poi,address,place,locality"
+            if lat and lng:
+                search_box_url += f"&proximity={lng},{lat}"
+            
+            response = requests.get(search_box_url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                results = []
                 for feature in data.get('features', []):
-                    # We prefer the short text name as primary
-                    place_name = feature.get('text', '')
+                    feature_type = feature.get('properties', {}).get('feature_type', '')
+                    props = feature.get('properties', {})
                     
-                    # Mapbox 'center' is [longitude, latitude]
-                    center = feature.get('center', [0, 0])
+                    if feature_type == 'poi':
+                        name = props.get('name', '')
+                        full_address = props.get('full_address', '') or props.get('place_formatted', '')
+                    elif feature_type == 'address':
+                        name = props.get('address', '')
+                        full_address = props.get('full_address', '')
+                    else:
+                        name = props.get('name', '')
+                        full_address = props.get('place_formatted', '')
                     
-                    # Context gives us region/city for the subtitle
-                    context = [c.get('text') for c in feature.get('context', [])]
-                    address = ", ".join(context) if context else feature.get('place_name', '')
+                    coords = props.get('coordinates', {})
                     
                     results.append({
-                        'id': feature.get('id'),
-                        'name': place_name,
-                        'address': address,
-                        'lat': center[1],
-                        'lng': center[0],
+                        'id': props.get('mapbox_id', ''),
+                        'name': name,
+                        'address': full_address,
+                        'lat': coords.get('latitude', 0),
+                        'lng': coords.get('longitude', 0),
+                        'feature_type': feature_type,
+                        'source': 'searchbox',
                     })
-                return Response(results)
-            return Response({'error': 'Mapbox API error', 'details': response.text}, status=502)
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Autocomplete Error: {e}")
-            return Response({'error': str(e)}, status=500)
+            logging.getLogger(__name__).warning(f"Search Box API failed, trying fallback: {e}")
+        
+        if not results:
+            try:
+                geocode_url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{urllib.parse.quote(query)}.json?access_token={token}&country=tz&limit=10"
+                if lat and lng:
+                    geocode_url += f"&proximity={lng},{lat}"
+                
+                response = requests.get(geocode_url, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    for feature in data.get('features', []):
+                        place_name = feature.get('text', '')
+                        center = feature.get('center', [0, 0])
+                        context = [c.get('text') for c in feature.get('context', [])]
+                        address = ", ".join(context) if context else feature.get('place_name', '')
+                        
+                        results.append({
+                            'id': feature.get('id', ''),
+                            'name': place_name,
+                            'address': address,
+                            'lat': center[1],
+                            'lng': center[0],
+                            'feature_type': feature.get('place_type', [''])[0] if feature.get('place_type') else '',
+                            'source': 'geocoding',
+                        })
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Geocoding fallback also failed: {e}")
+        
+        return Response(results)
 
     @action(detail=False, methods=['GET'])
     def reverse_geocode(self, request):
         """
-        Proxy endpoint for Mapbox reverse geocoding (GPS to Address).
+        Proxy endpoint for reverse geocoding (GPS to Address).
+        Uses Mapbox Search Box API first, falls back to Geocoding v5 if no results.
         """
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
@@ -105,29 +140,67 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         token = "pk.eyJ1IjoiZ29sZGVua2Fsb2thIiwiYSI6ImNtbnI4OGxpbjAxYmMyb3F5YjV3dXRhOXUifQ.Ch12y0VZXfYo8j8HvFjz4g"
         
         import requests
-        url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lng},{lat}.json?access_token={token}&types=poi,place,neighborhood,locality"
+        import urllib.parse
+        
+        results = []
         
         try:
+            url = f"https://api.mapbox.com/search/searchbox/v1/reverse?access_token={token}&latitude={lat}&longitude={lng}&limit=5"
             response = requests.get(url, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                results = []
                 for feature in data.get('features', []):
-                    place_name = feature.get('text', '')
-                    center = feature.get('center', [0, 0])
-                    context = [c.get('text') for c in feature.get('context', [])]
-                    address = ", ".join(context) if context else feature.get('place_name', '')
+                    props = feature.get('properties', {})
+                    feature_type = props.get('feature_type', '')
+                    
+                    if feature_type == 'poi':
+                        name = props.get('name', '')
+                        full_address = props.get('full_address', '') or props.get('place_formatted', '')
+                    elif feature_type == 'address':
+                        name = props.get('address', '')
+                        full_address = props.get('full_address', '')
+                    else:
+                        name = props.get('name', '')
+                        full_address = props.get('place_formatted', '')
+                    
+                    coords = props.get('coordinates', {})
                     
                     results.append({
-                        'id': feature.get('id'),
-                        'name': place_name,
-                        'address': address,
-                        'lat': center[1],
-                        'lng': center[0],
+                        'id': props.get('mapbox_id', ''),
+                        'name': name,
+                        'address': full_address,
+                        'lat': coords.get('latitude', 0),
+                        'lng': coords.get('longitude', 0),
+                        'feature_type': feature_type,
+                        'source': 'searchbox',
                     })
-                return Response(results)
-            return Response({'error': 'Mapbox API error', 'details': response.text}, status=502)
         except Exception as e:
             import logging
-            logging.getLogger(__name__).error(f"Reverse Geocode Error: {e}")
-            return Response({'error': str(e)}, status=500)
+            logging.getLogger(__name__).warning(f"Search Box reverse failed, trying fallback: {e}")
+        
+        if not results:
+            try:
+                url = f"https://api.mapbox.com/geocoding/v5/mapbox.places/{lng},{lat}.json?access_token={token}&types=poi,place,neighborhood,locality"
+                response = requests.get(url, timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    for feature in data.get('features', []):
+                        place_name = feature.get('text', '')
+                        center = feature.get('center', [0, 0])
+                        context = [c.get('text') for c in feature.get('context', [])]
+                        address = ", ".join(context) if context else feature.get('place_name', '')
+                        
+                        results.append({
+                            'id': feature.get('id', ''),
+                            'name': place_name,
+                            'address': address,
+                            'lat': center[1],
+                            'lng': center[0],
+                            'feature_type': feature.get('place_type', [''])[0] if feature.get('place_type') else '',
+                            'source': 'geocoding',
+                        })
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Geocoding reverse fallback also failed: {e}")
+        
+        return Response(results)

@@ -119,16 +119,17 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         if category:
             queryset = queryset.filter(category__iexact=category)
             
-        # H3 Proximity Filtering
-        lat = self.request.query_params.get('lat')
-        lng = self.request.query_params.get('lng')
-        if lat and lng:
-            user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
-            if user_h3:
-                # Include neighbors for a better user experience
-                neighbor_cells = get_neighbors(user_h3, 1)
-                if neighbor_cells:
-                    queryset = queryset.filter(h3_index__in=neighbor_cells)
+        # H3 Proximity Filtering (only for list view)
+        if getattr(self, "action", None) == "list":
+            lat = self.request.query_params.get('lat')
+            lng = self.request.query_params.get('lng')
+            if lat and lng:
+                user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+                if user_h3:
+                    # Include neighbors for a better user experience
+                    neighbor_cells = get_neighbors(user_h3, 1)
+                    if neighbor_cells:
+                        queryset = queryset.filter(h3_index__in=neighbor_cells)
         return queryset
 
     def list(self, request, *args, **kwargs):
