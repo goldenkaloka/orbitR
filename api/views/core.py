@@ -603,4 +603,37 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response({'status': 'all marked as read'})
 
+class UniversalSearchView(APIView):
+    """
+    Search across multiple models (Restaurants, Foods).
+    Uses Postgres TrigramSimilarity for fuzzy matching.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        query = request.query_params.get('q', '')
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+
+        if not query or len(query) < 2:
+            return Response({
+                "restaurants": [],
+                "products": []
+            })
+
+        # Search Restaurants
+        restaurants = Restaurant.objects.filter(is_active=True).annotate(
+            similarity=TrigramSimilarity('name', query)
+        ).filter(similarity__gt=0.1).order_by('-similarity')[:15]
+
+        # Search Products
+        products = Food.objects.filter(is_available=True).annotate(
+            similarity=TrigramSimilarity('name', query)
+        ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
+
+        return Response({
+            "restaurants": RestaurantListSerializer(restaurants, many=True, context={'request': request}).data,
+            "products": FoodSerializer(products, many=True, context={'request': request}).data
+        })
+
 
