@@ -111,10 +111,12 @@ def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
         
         for poly in polygons:
             # Prepare coordinates for H3 (H3 expects [[lat, lng], ...])
-            # poly.exterior.coords gives (lng, lat)
-            exterior = [(p[1], p[0]) for p in poly.exterior.coords]
+            # GeoDjango Polygon exterior ring is poly[0] or poly.exterior_ring
+            # GEOS coords are (lng, lat)
+            exterior_ring = poly.exterior_ring if hasattr(poly, 'exterior_ring') else poly[0]
+            exterior = [(p[1], p[0]) for p in exterior_ring.coords]
             
-            # In H3 v4, polygon_to_cells takes a list of loops (exterior, [holes])
+            # In H3 v4, polygon_to_cells takes a h3.Polygon
             poly_cells = h3.polygon_to_cells(h3.Polygon(exterior), resolution)
             cells.update(poly_cells)
             
