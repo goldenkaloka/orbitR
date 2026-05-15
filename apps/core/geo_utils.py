@@ -116,16 +116,13 @@ def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
             exterior_ring = poly.exterior_ring if hasattr(poly, 'exterior_ring') else poly[0]
             exterior = [(p[1], p[0]) for p in exterior_ring.coords]
             
-            # Build a __geo_interface__ compliant dict (H3 accepts this)
-            geo_dict = {
-                "type": "Polygon",
-                "coordinates": [exterior]
-            }
-            
-            # H3 v4 uses polygon_to_cells, H3 v3 used polyfill
-            if hasattr(h3, 'polygon_to_cells'):
-                poly_cells = h3.polygon_to_cells(geo_dict, resolution)
+            # H3 v4 requires an H3Shape object like LatLngPoly
+            if hasattr(h3, 'LatLngPoly'):
+                h3_poly = h3.LatLngPoly(exterior)
+                poly_cells = h3.polygon_to_cells(h3_poly, resolution)
             else:
+                # Fallback for H3 v3 using geojson dict
+                geo_dict = {"type": "Polygon", "coordinates": [exterior]}
                 poly_cells = h3.polyfill(geo_dict, resolution)
                 
             cells.update(poly_cells)
