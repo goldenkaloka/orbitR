@@ -17,13 +17,13 @@
 
     // Load dependencies
     const scripts = [
-        'https://unpkg.com/deck.gl@latest/dist.min.js',
-        'https://unpkg.com/h3-js@latest/dist/h3-js.umd.js',
-        'https://unpkg.com/maplibre-gl@latest/dist/maplibre-gl.js'
+        'https://unpkg.com/deck.gl@8.9.33/dist.min.js',
+        'https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js',
+        'https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js'
     ];
 
     const styles = [
-        'https://unpkg.com/maplibre-gl@latest/dist/maplibre-gl.css',
+        'https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css',
         'https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap'
     ];
 
@@ -78,6 +78,10 @@
 
         const mainBtn = createControlBtn('🎨 Paint Zones: OFF', '#fff', '#1a1a1a');
         mainBtn.onclick = () => {
+            if (!deckInstance) {
+                console.error('Map not initialized yet');
+                return;
+            }
             isEditing = !isEditing;
             mainBtn.innerText = `🎨 Paint Zones: ${isEditing ? 'ON' : 'OFF'}`;
             mainBtn.style.background = isEditing ? '#4285f4' : '#1a1a1a';
@@ -86,10 +90,20 @@
         };
 
         const locateBtn = createControlBtn('📍 Locate Me', '#fff', '#1a1a1a');
-        locateBtn.onclick = () => autoLocate();
+        locateBtn.onclick = () => {
+            if (!deckInstance) {
+                console.error('Map not initialized yet');
+                return;
+            }
+            autoLocate();
+        };
 
         const clearBtn = createControlBtn('🗑️ Clear All', '#fff', '#1a1a1a');
         clearBtn.onclick = () => {
+            if (!deckInstance) {
+                console.error('Map not initialized yet');
+                return;
+            }
             if (confirm("Are you sure you want to clear all hexagons?")) {
                 selectedCells.clear();
                 updateLayers();
@@ -113,7 +127,13 @@
         mapContainer.parentNode.insertBefore(wrapper, mapContainer);
 
         // Initialize MapLibre with a premium Dark Style
-        mapInstance = new maplibregl.Map({
+        var maplibreGlobal = window.maplibregl || window.maplibre;
+        if (!maplibreGlobal) {
+            console.error('MapLibre GL not loaded');
+            return;
+        }
+
+        mapInstance = new maplibreGlobal.Map({
             container: mapContainerDiv,
             style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
             center: DEFAULT_CENTER,
@@ -123,7 +143,7 @@
 
         deckInstance = new deck.DeckGL({
             container: mapContainerDiv,
-            maplibregl: maplibre,
+            maplibregl: maplibreGlobal,
             initialViewState: {
                 longitude: DEFAULT_CENTER[0],
                 latitude: DEFAULT_CENTER[1],
@@ -133,12 +153,14 @@
             },
             controller: true,
             onViewStateChange: ({viewState}) => {
-                mapInstance.jumpTo({
-                    center: [viewState.longitude, viewState.latitude],
-                    zoom: viewState.zoom,
-                    bearing: viewState.bearing,
-                    pitch: viewState.pitch
-                });
+                if (mapInstance) {
+                    mapInstance.jumpTo({
+                        center: [viewState.longitude, viewState.latitude],
+                        zoom: viewState.zoom,
+                        bearing: viewState.bearing,
+                        pitch: viewState.pitch
+                    });
+                }
             },
             layers: []
         });
@@ -168,6 +190,7 @@
         }
 
         function autoLocate() {
+            if (!deckInstance) return;
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(pos => {
                     const {latitude, longitude} = pos.coords;
@@ -185,6 +208,7 @@
         }
 
         function updateLayers() {
+            if (!deckInstance) return;
             const data = Array.from(selectedCells).map(hex => ({hex}));
             
             const layers = [
