@@ -167,23 +167,13 @@ class OrderSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        # Extract delivery_location directly from initial_data to bypass DRF PointField stripping
+        point = parse_coordinate_dict(self.initial_data, 'delivery_location')
+        if point:
+            validated_data['delivery_location'] = point
+            
         from domain.services.order_services import PlaceOrderService
         return PlaceOrderService.execute(validated_data)
-
-    def to_internal_value(self, data):
-        """Handle coordinate dictionary conversion using shared utility."""
-        point = parse_coordinate_dict(data, 'delivery_location')
-        if point:
-            # We must make a mutable copy of the QueryDict if it's immutable
-            if hasattr(data, '_mutable'):
-                mutable_data = data.copy()
-                mutable_data['delivery_location'] = point
-                data = mutable_data
-            else:
-                data['delivery_location'] = point
-        return super().to_internal_value(data)
-
-
 
 class DriverSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -302,16 +292,14 @@ class OrderPoolSerializer(serializers.ModelSerializer):
                     return str(member.id)
         return None
 
-    def to_internal_value(self, data):
-        """Handle coordinate dictionary conversion using shared utility."""
-        point = parse_coordinate_dict(data, 'delivery_location')
+    def create(self, validated_data):
+        point = parse_coordinate_dict(self.initial_data, 'delivery_location')
         if point:
-            if hasattr(data, '_mutable'):
-                mutable_data = data.copy()
-                mutable_data['delivery_location'] = point
-                data = mutable_data
-            else:
-                data['delivery_location'] = point
-        return super().to_internal_value(data)
+            validated_data['delivery_location'] = point
+        return super().create(validated_data)
 
-
+    def update(self, instance, validated_data):
+        point = parse_coordinate_dict(self.initial_data, 'delivery_location')
+        if point:
+            validated_data['delivery_location'] = point
+        return super().update(instance, validated_data)
