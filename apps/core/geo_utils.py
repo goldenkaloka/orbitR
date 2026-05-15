@@ -103,15 +103,21 @@ def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
         return []
     
     try:
-        # Prepare coordinates for H3 (H3 expects [[lat, lng], ...])
-        # polygon.exterior.coords gives (lng, lat)
-        exterior = [(p[1], p[0]) for p in polygon.exterior.coords]
+        cells = set()
         
-        # In H3 v4, polygon_to_cells takes a list of loops (exterior, [holes])
-        # Or a GeoJson-like structure. We'll use the tuple (exterior, holes)
-        # but since we only have the exterior, we just pass the exterior loop.
-        # Actually, h3.polygon_to_cells takes a 'polygon' object which can be a loop.
-        cells = h3.polygon_to_cells((exterior,), resolution)
+        # A MultiPolygon is a collection of Polygons. We need to process each one.
+        # If it happens to be a single Polygon, we can just put it in a list.
+        polygons = polygon if polygon.geom_type == 'MultiPolygon' else [polygon]
+        
+        for poly in polygons:
+            # Prepare coordinates for H3 (H3 expects [[lat, lng], ...])
+            # poly.exterior.coords gives (lng, lat)
+            exterior = [(p[1], p[0]) for p in poly.exterior.coords]
+            
+            # In H3 v4, polygon_to_cells takes a list of loops (exterior, [holes])
+            poly_cells = h3.polygon_to_cells(h3.Polygon(exterior), resolution)
+            cells.update(poly_cells)
+            
         return list(cells)
     except Exception as e:
         logger.error(f"Failed to convert polygon to H3 cells: {str(e)}")
