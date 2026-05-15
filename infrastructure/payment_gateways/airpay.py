@@ -59,7 +59,8 @@ class AirpayGateway(PaymentGateway):
                 'bankcode': bank_code,
                 'currency_code': '834',
                 'iso_currency': 'TZS',
-                'merchant_id': self.mercid
+                'merchant_id': self.mercid,
+                'mer_dom': base64.b64encode(self.merchant_domain.encode()).decode()
             }
             
             # 2. Generate Security Keys

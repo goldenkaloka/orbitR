@@ -21,7 +21,7 @@ SECRET_KEY = get_env_var('AIRPAY_SECRET_KEY')
 CLIENT_ID = get_env_var('AIRPAY_CLIENT_ID')
 CLIENT_SECRET = get_env_var('AIRPAY_CLIENT_SECRET')
 
-OAUTH_URL = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth2/"
+OAUTH_URL = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth_jwt/"
 
 def encrypt_string(my_string, username, password):
     secret_key = hashlib.md5((username + "~:~" + password).encode()).hexdigest()
@@ -84,7 +84,34 @@ def test_token_request():
                 if res_data.get('status') == 'success' or res_data.get('data', {}).get('status') == 'success':
                     token = res_data.get('data', {}).get('access_token')
                     if token:
-                        print(f"\n✅ SUCCESS! Token obtained: {token[:10]}...")
+                        print(f"\n✅ SUCCESS! Raw Access Token obtained: {token[:20]}...")
+                        
+                        # 1. Try decoding the entire token as base64 to get the JWT
+                        print("\n▶ Attempting to base64 decode the entire token...")
+                        try:
+                            # Add padding if needed
+                            padded_token = token + '=' * (-len(token) % 4)
+                            full_decoded = base64.b64decode(padded_token).decode('utf-8')
+                            print(f"✅ Full Decoded Token (JWT): {full_decoded[:30]}...")
+                            if full_decoded.startswith("ey"):
+                                print("   -> This looks like a valid JWT!")
+                        except Exception as e:
+                            print(f"❌ Full token is not pure base64: {e}")
+
+                        # 2. Try decoding it as a JWT payload directly
+                        print("\n▶ Attempting to parse raw token as a JWT and read its payload...")
+                        try:
+                            parts = token.split('.')
+                            if len(parts) == 3:
+                                payload_part = parts[1]
+                                payload_part += '=' * (-len(payload_part) % 4)
+                                decoded_payload = base64.b64decode(payload_part).decode('utf-8')
+                                jwt_data = json.loads(decoded_payload)
+                                print(f"✅ Decoded JWT Payload: {json.dumps(jwt_data, indent=2)}")
+                            else:
+                                print(f"⚠️ Token does not look like a standard JWT (dots count: {len(parts)-1})")
+                        except Exception as e:
+                            print(f"❌ Failed to decode as JWT payload: {e}")
                     else:
                         print(f"\n❌ FAILED: Token missing in success response")
                 else:
