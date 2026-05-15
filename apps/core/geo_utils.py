@@ -116,8 +116,8 @@ def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
             exterior_ring = poly.exterior_ring if hasattr(poly, 'exterior_ring') else poly[0]
             exterior = [(p[1], p[0]) for p in exterior_ring.coords]
             
-            # In H3 v4, polygon_to_cells takes a h3.Polygon
-            poly_cells = h3.polygon_to_cells(h3.Polygon(exterior), resolution)
+            # In H3 Python bindings, polygon_to_cells takes a tuple of loops: (exterior, [holes])
+            poly_cells = h3.polygon_to_cells((exterior,), resolution)
             cells.update(poly_cells)
             
         return list(cells)
