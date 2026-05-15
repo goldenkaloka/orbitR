@@ -36,11 +36,10 @@ def seed_operational_zones():
     updated = 0
 
     for row in SEED_POINTS:
-        # Create a small polygon around the seed point (approx 200m square)
-        # 0.001 degrees is roughly 111m
+        # Create a large enough polygon to guarantee H3 resolution 9 centroid captures
+        # 0.015 degrees is roughly 1.6km radius
         p = Point(row["lng"], row["lat"])
-        # Buffer creates a circular-ish polygon. For seeding, this is perfect.
-        boundary = MultiPolygon(p.buffer(0.0015)) 
+        boundary = MultiPolygon(p.buffer(0.015)) 
 
         zone, was_created = OperationalZone.objects.update_or_create(
             name=row["name"],
