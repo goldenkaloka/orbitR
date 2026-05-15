@@ -23,6 +23,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             
         try:
             h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
+            print(f"🌍 RESOLVING ZONE FOR: Lat {lat}, Lng {lng} -> H3: {h3_index}")
             
             # Find the zone that contains this H3 cell
             zone_index = ZoneH3Index.objects.filter(
@@ -31,18 +32,24 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             ).select_related('zone').first()
             
             if zone_index:
+                print(f"✅ FOUND DIRECT MATCH in Zone: {zone_index.zone.name}")
                 return Response(OperationalZoneMinimalSerializer(zone_index.zone).data)
             
+            print(f"⚠️ NO DIRECT MATCH. Checking neighbors...")
             # If not found, check neighboring cells (for edge cases near zone boundaries)
             neighbor_h3_cells = get_neighbors(h3_index)
+            print(f"   Neighbors to check: {neighbor_h3_cells}")
+            
             neighbor_zones = ZoneH3Index.objects.filter(
                 h3_index__in=neighbor_h3_cells,
                 zone__is_active=True
             ).select_related('zone').first()
             
             if neighbor_zones:
+                print(f"✅ FOUND NEIGHBOR MATCH in Zone: {neighbor_zones.zone.name}")
                 return Response(OperationalZoneMinimalSerializer(neighbor_zones.zone).data)
             
+            print(f"❌ COMPLETELY OUT OF BOUNDS: No zones found even in neighbors.")
             return Response({'detail': 'No zone found for these coordinates'}, status=404)
         except (ValueError, TypeError):
             return Response({'error': 'Invalid lat or lng format'}, status=400)

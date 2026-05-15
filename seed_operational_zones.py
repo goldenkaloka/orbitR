@@ -54,6 +54,11 @@ def seed_operational_zones():
             created += 1
         else:
             updated += 1
+            
+        # FORCE REGENERATE HEXAGONS:
+        # Since the geometry didn't change from the broken run, the model's save() 
+        # skipped the regeneration. We must force it here.
+        zone.refresh_h3_indexes()
 
     print(
         f"OperationalZone seed complete. created={created}, updated={updated}, "
