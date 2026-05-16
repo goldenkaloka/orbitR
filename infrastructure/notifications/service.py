@@ -21,7 +21,9 @@ class NotificationService:
         logger.info(f"📲 SENDING SMS TO {phone} via RafikiSMS: {message}")
 
         try:
-            if getattr(settings, 'MOCK_SMS', True):
+            mock_sms = getattr(settings, 'MOCK_SMS', True)
+            logger.info(f"DEBUG: MOCK_SMS = {mock_sms} (type: {type(mock_sms).__name__})")
+            if mock_sms:
                 print(f"\n======== MOCK RAFIKISMS SMS ========")
                 print(f"To: {phone}")
                 print(f"Message: {message}")
