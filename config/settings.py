@@ -460,12 +460,13 @@ AIRPAY_CONFIG = {
     'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
 }
 
-# SMS & Notifications
-BEEM_CONFIG = {
-    'API_KEY': os.getenv('BEEM_API_KEY', ''),
-    'SECRET_KEY': os.getenv('BEEM_SECRET_KEY', ''),
-    'SENDER_ID': os.getenv('BEEM_SENDER_ID', 'INFO'),
+# SMS & Notifications (RafikiSMS)
+RAFIKI_CONFIG = {
+    'API_KEY': os.getenv('RAFIKI_API_KEY', ''),
+    'SENDER_NAME': os.getenv('RAFIKI_SENDER_NAME', ''),
+    'BASE_URL': 'https://api.rafikisms.com',
 }
+MOCK_SMS = config('MOCK_SMS', default='True') == 'True'
 
 # OneSignal
 ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID', '')

@@ -1,8 +1,6 @@
 import logging
 import threading
 import requests
-import json
-import base64
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -10,75 +8,63 @@ logger = logging.getLogger(__name__)
 class NotificationService:
     """
     Unified Notification Service
-    SMS: Beem Africa
+    SMS: RafikiSMS
     Push: OneSignal
     """
 
     @staticmethod
     def send_sms(phone, message):
         """
-        Send SMS via Beem Africa
-        Ref: https://docs.beem.africa/
+        Send SMS via RafikiSMS API
+        Ref: https://api.rafikisms.com
         """
-        logger.info(f"📲 SENDING SMS TO {phone} via Beem: {message}")
-        
+        logger.info(f"📲 SENDING SMS TO {phone} via RafikiSMS: {message}")
+
         try:
             if getattr(settings, 'MOCK_SMS', True):
-                print(f"\n======== MOCK BEEM SMS ========")
+                print(f"\n======== MOCK RAFIKISMS SMS ========")
                 print(f"To: {phone}")
                 print(f"Message: {message}")
-                print(f"===============================\n")
+                print(f"====================================\n")
                 return True
-                
-            # Beem requires 255XXXXXXXXX format
+
+            # RafikiSMS requires 255XXXXXXXXX format (international)
             clean_phone = phone.strip().replace('+', '')
             if clean_phone.startswith('0'):
                 clean_phone = '255' + clean_phone[1:]
             elif not clean_phone.startswith('255'):
                 clean_phone = '255' + clean_phone
 
-            config = settings.BEEM_CONFIG
+            config = settings.RAFIKI_CONFIG
             api_key = config.get('API_KEY')
-            secret_key = config.get('SECRET_KEY')
-            sender_id = config.get('SENDER_ID', 'INFO')
 
-            if not api_key or not secret_key:
-                logger.warning("Beem API credentials not found. Skipping SMS.")
+            if not api_key:
+                logger.warning("RafikiSMS API key not found. Skipping SMS.")
                 return False
 
-            url = "https://api.beem.africa/public/v1/messaging"
-            
-            payload = {
-                "source_addr": sender_id,
-                "schedule_time": "",
-                "message": message,
-                "recipients": [
-                    {
-                        "recipient_id": 1,
-                        "dest_addr": clean_phone
-                    }
-                ]
-            }
+            url = f"{config.get('BASE_URL', 'https://api.rafikisms.com')}/v1/vendor/send-sms"
 
-            auth_str = f"{api_key}:{secret_key}"
-            auth_base64 = base64.b64encode(auth_str.encode()).decode()
+            payload = {
+                "phone": clean_phone,
+                "message": message
+            }
 
             headers = {
                 "Content-Type": "application/json",
-                "Authorization": f"Basic {auth_base64}"
+                "X-API-Key": api_key
             }
 
             response = requests.post(url, json=payload, headers=headers, timeout=10)
-            
+
             if response.status_code in [200, 201]:
-                logger.info(f"✅ Beem SMS Sent successfully to {phone}")
+                logger.info(f"✅ RafikiSMS sent successfully to {phone}")
                 return True
             else:
-                logger.error(f"❌ Beem SMS Failed: {response.status_code} - {response.text}")
+                logger.error(f"❌ RafikiSMS failed: {response.status_code} - {response.text}")
                 return False
-                
+
         except Exception as e:
-            logger.error(f"Error sending Beem SMS: {str(e)}")
+            logger.error(f"Error sending RafikiSMS: {str(e)}")
             return False
 
     @staticmethod
