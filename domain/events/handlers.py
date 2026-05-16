@@ -189,7 +189,7 @@ def on_auth_otp_requested(event):
     otp = event.payload.get('otp')
     
     # Message template for OTP
-    message = f"Your Mwanachuo verification code is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
+    message = f"Your Orbit verification code is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
     
     # Send SMS (will print to terminal if MOCK_SMS=True)
     NotificationService.send_sms(phone, message)

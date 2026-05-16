@@ -12,7 +12,7 @@ def test_otp_flow():
     # Test sending OTP message
     phone = "255761234567"
     otp = "123456"
-    message = f"Your Mwanachuo verification code is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
+    message = f"Your Orbit verification code is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
 
     clean_phone = phone.strip().replace('+', '')
     if clean_phone.startswith('0'):
