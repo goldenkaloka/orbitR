@@ -60,11 +60,15 @@ class RequestOTPView(APIView):
 
         # Generate OTP
         code = str(random.randint(100000, 999999))
-        
-        # Save OTP (reset failed_attempts on new OTP generation)
-        OTPCode.objects.update_or_create(
+
+        # Delete any existing OTP to get fresh created_at timestamp (fresh 5-min timer)
+        OTPCode.objects.filter(phone=phone).delete()
+
+        # Create new OTP with fresh timestamp
+        OTPCode.objects.create(
             phone=phone,
-            defaults={'code': code, 'failed_attempts': 0}
+            code=code,
+            failed_attempts=0
         )
         
         # Publish Event
