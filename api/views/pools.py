@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from apps.orders.models import OrderPool
 from api.serializers.core import OrderPoolSerializer, PoolMemberSerializer
+from api.serializers.utils import parse_coordinate_dict
 from domain.services.order_services import PoolOrderService
 
 class PoolOrderViewSet(viewsets.ModelViewSet):
@@ -44,18 +45,17 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
 
     def perform_create(self, serializer):
-        # The service handles creation with initiator logic
-        # We use validated_data which contains the parsed Point object and IDs
         restaurant = serializer.validated_data.get('restaurant')
         restaurant_id = getattr(restaurant, 'id', restaurant)
-        
+
+        point = parse_coordinate_dict(serializer.initial_data, 'delivery_location')
+
         pool = PoolOrderService.create_pool(
             initiator=self.request.user,
             restaurant_id=restaurant_id,
             delivery_address=serializer.validated_data.get('delivery_address'),
-            delivery_location=serializer.validated_data.get('delivery_location')
+            delivery_location=point
         )
-        # We manually set the instance for the response
         serializer.instance = pool
 
 
