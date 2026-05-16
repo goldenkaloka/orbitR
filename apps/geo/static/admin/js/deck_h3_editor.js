@@ -135,10 +135,10 @@
 
         mapInstance = new maplibreGlobal.Map({
             container: mapContainerDiv,
-            style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+            style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json',
             center: DEFAULT_CENTER,
             zoom: 13,
-            pitch: 45
+            pitch: 0
         });
 
         deckInstance = new deck.DeckGL({
@@ -148,7 +148,7 @@
                 longitude: DEFAULT_CENTER[0],
                 latitude: DEFAULT_CENTER[1],
                 zoom: 13,
-                pitch: 45,
+                pitch: 0,
                 bearing: 0
             },
             controller: true,
@@ -190,15 +190,16 @@
         }
 
         function autoLocate() {
-            if (!deckInstance) return;
+            if (!deckInstance || !mapInstance) return;
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(pos => {
                     const {latitude, longitude} = pos.coords;
+                    mapInstance.flyTo({ center: [longitude, latitude], zoom: 14, duration: 1000 });
                     deckInstance.setProps({
                         initialViewState: {
                             longitude,
                             latitude,
-                            zoom: 15,
+                            zoom: 14,
                             transitionDuration: 1000,
                             transitionInterpolator: new deck.FlyToInterpolator()
                         }
@@ -207,54 +208,78 @@
             }
         }
 
-        function updateLayers() {
-            if (!deckInstance) return;
-            const data = Array.from(selectedCells).map(hex => ({hex}));
-            
-            const layers = [
-                new deck.H3HexagonLayer({
-                    id: 'h3-layer',
-                    data: data,
-                    getH3Hexagon: d => d.hex,
-                    getFillColor: [66, 133, 244, 140],
-                    getLineColor: [255, 255, 255, 200],
-                    lineWidthMinPixels: 1,
-                    pickable: true,
-                    extruded: true,
-                    getElevation: 20,
-                    material: {
-                        ambient: 0.64,
-                        diffuse: 0.6,
-                        shininess: 32,
-                        specularColor: [51, 51, 51]
-                    }
-                })
-            ];
-
-            deckInstance.setProps({
-                layers,
-                onClick: (info) => {
-                    if (!isEditing) return;
-                    
-                    let hex;
-                    if (info.layer && info.layer.id === 'h3-layer') {
-                        hex = info.object.hex;
-                    } else if (info.coordinate) {
-                        hex = h3.latLngToCell(info.coordinate[1], info.coordinate[0], RESOLUTION);
-                    }
-
-                    if (hex) {
-                        if (selectedCells.has(hex)) {
-                            selectedCells.delete(hex);
-                        } else {
-                            selectedCells.add(hex);
+        function getVisibleHexagons() {
+                if (!mapInstance) return [];
+                const bounds = mapInstance.getBounds();
+                if (!bounds) return [];
+                
+                const ne = bounds.getNorthEast();
+                const sw = bounds.getSouthWest();
+                
+                const centerLat = (ne.lat + sw.lat) / 2;
+                const centerLng = (ne.lng + sw.lng) / 2;
+                
+                const cells = [];
+                const latStep = 0.01;
+                const lngStep = 0.01;
+                
+                for (let lat = sw.lat; lat <= ne.lat; lat += latStep) {
+                    for (let lng = sw.lng; lng <= ne.lng; lng += lngStep) {
+                        const cell = h3.latLngToCell(lat, lng, RESOLUTION);
+                        if (cell && !cells.includes(cell)) {
+                            cells.push(cell);
                         }
-                        updateLayers();
-                        syncToDjango();
                     }
                 }
-            });
-        }
+                return cells;
+            }
+
+            function updateLayers() {
+                if (!deckInstance) return;
+                
+                const availableHexes = getVisibleHexagons();
+                const availableData = availableHexes.map(hex => ({hex, isSelected: selectedCells.has(hex)}));
+                const selectedData = Array.from(selectedCells).map(hex => ({hex}));
+                
+                const layers = [
+                    new deck.H3HexagonLayer({
+                        id: 'available-layer',
+                        data: availableData,
+                        getH3Hexagon: d => d.hex,
+                        getFillColor: d => d.isSelected ? [66, 133, 244, 180] : [200, 200, 200, 60],
+                        getLineColor: d => d.isSelected ? [255, 255, 255, 255] : [150, 150, 150, 120],
+                        lineWidthMinPixels: 2,
+                        pickable: true,
+                        extruded: false,
+                        filled: true
+                    })
+                ];
+
+                deckInstance.setProps({
+                    layers,
+                    onClick: (info) => {
+                        if (!isEditing) return;
+                        
+                        let hex = null;
+                        if (info.layer && info.layer.id === 'available-layer') {
+                            hex = info.object.hex;
+                        } else if (info.coordinate) {
+                            hex = h3.latLngToCell(info.coordinate[1], info.coordinate[0], RESOLUTION);
+                        }
+
+                        if (hex) {
+                            console.log('Clicked cell:', hex);
+                            if (selectedCells.has(hex)) {
+                                selectedCells.delete(hex);
+                            } else {
+                                selectedCells.add(hex);
+                            }
+                            updateLayers();
+                            syncToDjango();
+                        }
+                    }
+                });
+            }
 
         function syncToDjango() {
             if (selectedCells.size === 0) {
