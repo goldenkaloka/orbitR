@@ -105,17 +105,22 @@ class OrderSerializer(serializers.ModelSerializer):
     customer_name = serializers.ReadOnlyField(source='customer.username')
     customer_phone = serializers.ReadOnlyField(source='customer.phone')
     
+    batch = serializers.SerializerMethodField()
+    
     class Meta:
         model = Order
         fields = [
-            'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 
+            'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount',
+            'original_delivery_fee', 'discount_applied', 'discount_amount',
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'customer_name', 'customer_phone',
-            'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude', 
-            'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown'
+            'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
+            'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
+            'batch'
         ]
 
-        read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp']
+        read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
+                           'original_delivery_fee', 'discount_applied', 'discount_amount']
 
 
     def get_restaurant_latitude(self, obj):
@@ -134,18 +139,37 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
 
+    def get_batch(self, obj):
+        if not obj.batch:
+            return None
+        return {
+            'id': str(obj.batch.id),
+            'status': obj.batch.status,
+            'order_count': obj.batch.orders.count(),
+            'driver_payout': float(obj.batch.driver_payout) if obj.batch.driver_payout else None,
+            'route_distance_km': float(obj.batch.route_distance_km) if obj.batch.route_distance_km else None,
+        }
+
     def get_estimated_arrival_minutes(self, obj):
         if not obj.restaurant or not obj.delivery_location or not obj.restaurant.geo_location:
             return 30
-        
+
         try:
-            # Distance in km
             dist_km = obj.restaurant.geo_location.distance(obj.delivery_location) / 1000
-            # Estimate: 8 mins base (prep) + 4 mins per km
             est = 8 + (dist_km * 4)
             return int(max(15, min(60, est)))
         except Exception:
             return 30
+
+    def get_original_delivery_fee(self, obj):
+        if obj.original_delivery_fee and obj.original_delivery_fee > 0:
+            return float(obj.original_delivery_fee)
+        return float(obj.delivery_fee)
+
+    def get_discount_amount(self, obj):
+        if obj.discount_applied and obj.original_delivery_fee and obj.original_delivery_fee > 0:
+            return float(obj.original_delivery_fee - obj.delivery_fee)
+        return 0.0
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

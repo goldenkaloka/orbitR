@@ -1,48 +1,64 @@
 from django.db import transaction
+from django.core.cache import cache
 import logging
 from apps.core.geo_utils import get_neighbors
 
 logger = logging.getLogger(__name__)
+
+SINGLE_BATCH_LOCK_TTL = 15
 
 class BatchingService:
     """
     Service responsible for grouping separate orders into Delivery Batches
     based on Restaurant and H3 proximity.
     """
-    
+
     @staticmethod
     def attempt_batching(restaurant_id, h3_index):
-        """
-        Check if there are multiple READY orders for a specific restaurant
-        in nearby H3 cells and group them into a new DeliveryBatch.
-        """
+        lock_key = f"single_batch_lock:{restaurant_id}:{h3_index[:8]}"
+        lock_acquired = cache.add(lock_key, "1", SINGLE_BATCH_LOCK_TTL)
+
+        if not lock_acquired:
+            logger.debug(f"Another worker processing single batch for restaurant {restaurant_id}")
+            return None
+
+        try:
+            return BatchingService._process_batching(restaurant_id, h3_index)
+        finally:
+            cache.delete(lock_key)
+
+    @staticmethod
+    @transaction.atomic
+    def _process_batching(restaurant_id, h3_index):
         from apps.orders.models import Order, DeliveryBatch
-        
-        with transaction.atomic():
-            # Get current cell and immediate neighbors (1 ring = 7 cells total)
-            neighbor_cells = get_neighbors(h3_index, 1)
-            
-            orders = list(Order.objects.select_for_update().filter(
-                status='READY',
+
+        neighbor_cells = get_neighbors(h3_index, 1)
+
+        orders = list(Order.objects.select_for_update(
+            skip_locked=True
+        ).filter(
+            status='READY',
+            restaurant_id=restaurant_id,
+            h3_index__in=neighbor_cells,
+            batch__isnull=True
+        ))
+
+        count = len(orders)
+
+        if count > 1:
+            logger.info(f"Creating batch for {count} orders at Restaurant {restaurant_id} -> H3 Cell {h3_index}")
+
+            batch = DeliveryBatch.objects.create(
                 restaurant_id=restaurant_id,
-                h3_index__in=neighbor_cells,
-                batch__isnull=True
-            ))
-            
-            count = len(orders)
-            
-            if count > 1:
-                logger.info(f"Creating batch for {count} orders at Restaurant {restaurant_id} -> H3 Cell {h3_index}")
-                
-                batch = DeliveryBatch.objects.create(
-                    restaurant_id=restaurant_id,
-                    status='CREATED'
-                )
-                
-                for order in orders:
-                    order.batch = batch
-                    order.save()
-                
-                return batch
-        
+                batch_type='SINGLE_RESTAURANT',
+                status='CREATED'
+            )
+
+            for order in orders:
+                order.batch = batch
+
+            Order.objects.bulk_update(orders, ['batch'])
+
+            return batch
+
         return None

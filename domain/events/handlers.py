@@ -301,6 +301,26 @@ def on_order_event(event):
     payload['aggregate_id'] = str(event.aggregate_id)
     fire_order_webhook.delay(event.event_type, payload)
 
+def on_food_ready_cross_batching(event):
+    """
+    Trigger unified batching when order becomes READY.
+    Uses BatchingEngine with configurable strategies.
+    """
+    from apps.orders.models import Order
+    from domain.services.batching_engine import BatchingEngine
+
+    try:
+        order = Order.objects.select_related('restaurant').get(id=event.aggregate_id)
+        if order.h3_index:
+            result = BatchingEngine.attempt_batching(order)
+            if result:
+                logger.info(f"Batching succeeded: created {result.batch_type} batch {result.id} for order {order.id}")
+            else:
+                logger.debug(f"No batch created for order {order.id}")
+    except Exception as e:
+        logger.error(f"Error in batching handler: {str(e)}")
+
+
 def on_order_status_update_batch_lifecycle(event):
     """
     Manages the lifecycle of a DeliveryBatch based on its member orders.
@@ -347,6 +367,40 @@ def on_order_status_update_batch_lifecycle(event):
     except Exception as e:
         logger.error(f"Error in batch lifecycle handler: {str(e)}")
 
+
+def on_batch_offered(event):
+    """Handle batch offered to driver"""
+    logger.info(f"Batch {event.aggregate_id} offered to driver")
+
+
+def on_batch_accepted(event):
+    """Handle driver accepted batch - publish DriverAssigned for each order"""
+    from apps.orders.models import DeliveryBatch
+    from domain.events.types import DriverAssigned
+
+    try:
+        batch = DeliveryBatch.objects.select_related('driver').get(id=event.aggregate_id)
+        if batch.driver:
+            for order in batch.orders.all():
+                EventBus.publish(DriverAssigned(
+                    aggregate_id=order.id,
+                    payload={'driver_id': str(batch.driver.id), 'batch_id': str(batch.id)}
+                ))
+            logger.info(f"Batch {batch.id} accepted, published DriverAssigned for {batch.orders.count()} orders")
+    except Exception as e:
+        logger.error(f"Error in on_batch_accepted handler: {str(e)}")
+
+
+def on_batch_declined(event):
+    """Handle driver declined batch - already handled by re-offer in BatchDispatchService"""
+    logger.info(f"Batch {event.aggregate_id} declined, re-offer triggered")
+
+
+def on_batch_expired(event):
+    """Handle batch offer expired - log and let dispatch service handle re-offer"""
+    logger.info(f"Batch {event.aggregate_id} offer expired, reason: {event.payload.get('reason')}")
+
+
 def on_dispatch_failed(event):
     order_id = event.payload.get('order_id')
     attempt_retry = event.payload.get('attempt_retry', True)
@@ -391,7 +445,18 @@ def register_all_handlers():
     EventBus.subscribe(OrderPicked, on_order_status_update_batch_lifecycle)
     EventBus.subscribe(OrderDelivered, on_order_status_update_batch_lifecycle)
     EventBus.subscribe(OrderCancelled, on_order_status_update_batch_lifecycle)
-    
+
+    # Cross-Restaurant Batching
+    from domain.events.types import FoodReady
+    EventBus.subscribe(FoodReady, on_food_ready_cross_batching)
+
+    # Batch Dispatch Events
+    from domain.events.types import BatchOffered, BatchAccepted, BatchDeclined, BatchExpired
+    EventBus.subscribe(BatchOffered, on_batch_offered)
+    EventBus.subscribe(BatchAccepted, on_batch_accepted)
+    EventBus.subscribe(BatchDeclined, on_batch_declined)
+    EventBus.subscribe(BatchExpired, on_batch_expired)
+
     # Other Domain Events
     from domain.events.types import PaymentCollected, AuthOTPRequested, AuthUserVerified, AuthUserRegistered
     EventBus.subscribe(PaymentCollected, on_payment_collected)

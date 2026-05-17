@@ -91,45 +91,57 @@ class AssignDriverService:
 class AssignBatchService:
     @staticmethod
     def execute(batch_id, driver_id, actor):
+        from django.db.models import Count
+
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
             if batch.status != 'CREATED':
                 logger.warning(f"Batch {batch_id} is in {batch.status} state, cannot assign.")
                 return batch
-            
+
             driver = Driver.objects.select_for_update().get(id=driver_id)
-            
-            # 1. Update Batch
+
+            if driver.driver_type == 'temporary':
+                if batch.batch_type == 'CROSS_RESTAURANT':
+                    raise PermissionError("Temporary drivers cannot accept cross-restaurant batches.")
+                first_order = batch.orders.first()
+                if first_order and driver.assigned_by_id != first_order.restaurant_id:
+                    raise PermissionError("Temporary driver can only take orders from assigned restaurant.")
+
+            orders = batch.orders.all()
+            new_order_count = orders.count()
+            current_load = driver.assignments.filter(delivered_at__isnull=True).count()
+
+            if current_load + new_order_count > driver.max_active_orders:
+                raise ValueError(
+                    f"Driver cannot accept {new_order_count} more orders. "
+                    f"Current: {current_load}, Max: {driver.max_active_orders}"
+                )
+
             batch.status = 'ASSIGNED'
             batch.driver = driver
             batch.save()
-            
-            # 2. Update Driver
+
             if driver.status != 'ASSIGNED':
                 driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-            
-            # Get orders in this batch
-            orders = batch.orders.all()
-            driver.current_active_orders += orders.count()
+
+            driver.current_active_orders += new_order_count
             driver.save(update_fields=['status', 'current_active_orders'])
-            
-            # 3. Update individual Orders
+
             for order in orders:
                 order.status = OrderFSM.transition(order.status, 'ASSIGNED')
                 order.driver = driver
                 order.save()
-                
-                # Create DeliveryAssignment record for each
+
                 DeliveryAssignment.objects.update_or_create(
-                    order=order, 
+                    order=order,
                     defaults={'driver': driver, 'batch': batch}
                 )
-                
-                # Publish Event for each order
+
                 transaction.on_commit(lambda o=order: EventBus.publish(DriverAssigned(
-                    aggregate_id=o.id, 
+                    aggregate_id=o.id,
                     payload={'driver_id': str(driver.id), 'batch_id': str(batch.id), 'actor_id': str(actor.id)}
                 )))
-            
+
             return batch
 

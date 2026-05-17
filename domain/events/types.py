@@ -142,3 +142,23 @@ class MarketplaceProductExpired(DomainEvent):
 class PaymentFailed(DomainEvent):
     aggregate_type = 'Payment'
     event_type = 'PaymentFailed'
+
+@dataclass
+class BatchOffered(DomainEvent):
+    aggregate_type = 'DeliveryBatch'
+    event_type = 'BatchOffered'
+
+@dataclass
+class BatchAccepted(DomainEvent):
+    aggregate_type = 'DeliveryBatch'
+    event_type = 'BatchAccepted'
+
+@dataclass
+class BatchDeclined(DomainEvent):
+    aggregate_type = 'DeliveryBatch'
+    event_type = 'BatchDeclined'
+
+@dataclass
+class BatchExpired(DomainEvent):
+    aggregate_type = 'DeliveryBatch'
+    event_type = 'BatchExpired'

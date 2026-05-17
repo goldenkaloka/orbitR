@@ -2,7 +2,7 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import Order, OrderItem
+from .models import Order, OrderItem, BatchingStrategy
 
 
 class OrderItemInline(TabularInline):
@@ -122,3 +122,20 @@ class OrderItemAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('order', 'food')
+
+
+@admin.register(BatchingStrategy)
+class BatchingStrategyAdmin(ModelAdmin):
+    list_display = ('name', 'description', 'is_active', 'priority', 'cluster_by', 'h3_resolution')
+    list_filter = ('is_active', 'cluster_by', 'priority')
+    search_fields = ('name', 'description')
+    ordering = ('-priority', 'name')
+    list_editable = ('is_active', 'priority')
+
+    fieldsets = (
+        ('Basic Info', {'fields': ('name', 'description', 'is_active', 'priority')}),
+        ('Clustering', {'fields': ('cluster_by', 'h3_resolution', 'neighbor_ring_k')}),
+        ('Constraints', {'fields': ('constraints',)}),
+        ('Pricing', {'fields': ('pricing',)}),
+        ('Route Optimization', {'fields': ('route_optimization',)}),
+    )

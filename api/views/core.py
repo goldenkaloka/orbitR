@@ -572,6 +572,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         except ValueError as e:
             return Response({"error": str(e)}, status=400)
 
+    @action(detail=True, methods=['GET'], url_path='batch-details')
+    def batch_details(self, request, pk=None):
+        """Get all orders in the same batch as this order"""
+        order = self.get_object()
+        if not order.batch:
+            return Response({'error': 'No batch'}, status=404)
+        
+        batch_orders = order.batch.orders.select_related(
+            'restaurant', 'restaurant__owner', 'customer', 'driver', 'driver__user'
+        ).prefetch_related('items', 'items__food').all()
+        
+        return Response(OrderSerializer(batch_orders, many=True).data)
+
 class DisputeViewSet(viewsets.ModelViewSet):
     queryset = Dispute.objects.all()
     serializer_class = DisputeSerializer

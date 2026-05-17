@@ -42,8 +42,12 @@ class Order(models.Model):
     delivery_otp = models.CharField(max_length=6, null=True, blank=True)
     
     # Group Ordering Metadata
-    group_breakdown = models.JSONField(null=True, blank=True) # Stores {username, items, subtotal} for pool members
-    
+    group_breakdown = models.JSONField(null=True, blank=True)
+
+    route_sequence = models.PositiveIntegerField(null=True, blank=True, db_index=True)
+    original_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    discount_applied = models.BooleanField(default=False, db_index=True)
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
@@ -182,19 +186,98 @@ class PoolItem(models.Model):
 class DeliveryBatch(models.Model):
     STATUS_CHOICES = (
         ('CREATED', 'Batch Created'),
+        ('OFFERED', 'Offered to Driver'),
         ('ASSIGNED', 'Rider Assigned'),
         ('PICKED', 'Rider Picked Up'),
         ('COMPLETED', 'All Delivered'),
+        ('EXPIRED', 'Expired (No Driver)'),
         ('CANCELLED', 'Cancelled'),
     )
 
+    BATCH_TYPE_CHOICES = (
+        ('SINGLE_ORDER', 'Single Order'),
+        ('SINGLE_RESTAURANT', 'Single Restaurant'),
+        ('CROSS_RESTAURANT', 'Cross Restaurant'),
+        ('TIME_WINDOW', 'Time Window'),
+        ('INTER_ZONE', 'Inter-Zone'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='batches')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='batches', null=True, blank=True)
     driver = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='batches')
-    
+
+    batch_type = models.CharField(max_length=20, choices=BATCH_TYPE_CHOICES, default='SINGLE_RESTAURANT', db_index=True)
+
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
+    route_optimization = models.JSONField(null=True, blank=True)
+
+    user_paid_total = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total fees paid by users (delivery + service)")
+    original_total_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Original delivery fees before discount")
+    discounted_total_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Discounted delivery fees after batch discount")
+    driver_payout = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Total payout to driver")
+    company_profit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, help_text="Company profit (user_paid - driver_payout)")
+    route_distance_km = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text="Optimized route distance")
+    discount_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0.00, help_text="Discount rate applied to batch (e.g., 0.15 for 15%)")
+
+    offer_attempt = models.PositiveIntegerField(default=0, help_text="Number of times batch has been offered to drivers")
+    offer_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch was last offered")
+    
+    zone_ids = models.JSONField(null=True, blank=True, help_text="List of zone IDs this batch spans")
+    is_inter_zone = models.BooleanField(default=False, help_text="True if batch spans multiple zones")
+
     def __str__(self):
-        return f"Batch {self.id} - {self.restaurant.name} ({self.status})"
+        if self.restaurant:
+            return f"Batch {self.id} - {self.restaurant.name} ({self.status})"
+        return f"Batch {self.id} - Multi-Restaurant ({self.status})"
+
+
+class BatchRestaurant(models.Model):
+    batch = models.ForeignKey(DeliveryBatch, on_delete=models.CASCADE, related_name='batch_restaurants')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='batch_memberships')
+    pickup_sequence = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('batch', 'restaurant')
+        ordering = ['pickup_sequence']
+
+
+class BatchingStrategy(models.Model):
+    CLUSTER_BY_CHOICES = (
+        ('restaurant', 'Same Restaurant'),
+        ('delivery_h3', 'Delivery H3 Cluster'),
+        ('time_window', 'Time Window'),
+        ('hybrid', 'Hybrid (Restaurant + Location)'),
+    )
+
+    name = models.CharField(max_length=50, unique=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    priority = models.PositiveIntegerField(default=10)
+
+    cluster_by = models.CharField(max_length=30, choices=CLUSTER_BY_CHOICES, default='delivery_h3')
+    h3_resolution = models.PositiveIntegerField(default=10)
+    neighbor_ring_k = models.PositiveIntegerField(default=2)
+
+    constraints = models.JSONField(default=dict)
+    pricing = models.JSONField(default=dict)
+    route_optimization = models.JSONField(default=dict)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-priority', 'name']
+        verbose_name_plural = 'Batching Strategies'
+
+    def __str__(self):
+        return f"{self.name} (priority={self.priority}, active={self.is_active})"
+
+    def get_constraint(self, key, default=None):
+        return self.constraints.get(key, default)
+
+    def get_pricing(self, key, default=None):
+        return self.pricing.get(key, default)

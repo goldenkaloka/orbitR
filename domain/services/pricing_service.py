@@ -184,3 +184,69 @@ class PricingService:
         except Exception as e:
             logger.error(f"Error calculating delivery fee: {str(e)}")
             return Decimal('1000.00'), Decimal('300.00'), None
+
+    @classmethod
+    def calculate_batch_fee(cls, orders, batch_type='CROSS_RESTAURANT'):
+        from decimal import Decimal
+
+        CROSS_BATCH_DISCOUNT = Decimal('0.15')
+
+        original_total = Decimal('0')
+        per_order_fees = []
+
+        for order in orders:
+            fee, service_fee, log = cls.calculate_delivery_fee(
+                order.restaurant,
+                order.delivery_location,
+                order=order
+            )
+            original_total += fee
+            per_order_fees.append({
+                'order_id': str(order.id),
+                'original_fee': fee,
+                'discounted_fee': fee * (1 - CROSS_BATCH_DISCOUNT) if batch_type == 'CROSS_RESTAURANT' else fee
+            })
+
+        if batch_type == 'CROSS_RESTAURANT':
+            discount_amount = original_total * CROSS_BATCH_DISCOUNT
+            discounted_total = original_total - discount_amount
+        else:
+            discount_amount = Decimal('0')
+            discounted_total = original_total
+
+        return {
+            'original_total': original_total,
+            'discount_rate': CROSS_BATCH_DISCOUNT if batch_type == 'CROSS_RESTAURANT' else Decimal('0'),
+            'discount_amount': discount_amount,
+            'discounted_total': discounted_total,
+            'per_order_fees': per_order_fees
+        }
+
+    @classmethod
+    def apply_batch_fees(cls, batch):
+        from apps.orders.models import Order
+
+        orders = list(batch.orders.select_related('restaurant').all())
+        if not orders:
+            return None
+
+        batch_type = batch.batch_type
+        fee_result = cls.calculate_batch_fee(orders, batch_type)
+
+        batch.original_total_fee = fee_result['original_total']
+        batch.discounted_total_fee = fee_result['discounted_total']
+        batch.save()
+
+        discount_applied = batch_type == 'CROSS_RESTAURANT'
+        fee_map = {fee_info['order_id']: fee_info for fee_info in fee_result['per_order_fees']}
+
+        for order in orders:
+            fee_info = fee_map.get(str(order.id))
+            if fee_info:
+                order.original_delivery_fee = fee_info['original_fee']
+                order.delivery_fee = fee_info['discounted_fee']
+                order.discount_applied = discount_applied
+                order.total_amount = order.items_subtotal + order.delivery_fee + order.service_fee
+                order.save()
+
+        return fee_result

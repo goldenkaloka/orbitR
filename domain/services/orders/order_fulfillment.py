@@ -10,7 +10,6 @@ from domain.events.bus import EventBus
 from domain.events.types import (
     OrderPreparing, FoodReady, OrderPicked, OrderDelivered
 )
-from domain.services.batching_service import BatchingService
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +54,8 @@ class MarkReadyService:
             
             # Proactively try to batch
             if order.h3_index:
-                BatchingService.attempt_batching(order.restaurant.id, order.h3_index)
+                from domain.services.batching_engine import BatchingEngine
+                BatchingEngine.attempt_batching(order)
             
             transaction.on_commit(lambda: EventBus.publish(FoodReady(
                 aggregate_id=order.id, 
@@ -130,10 +130,22 @@ class DeliverOrderService:
             new_state = OrderFSM.transition(order.status, 'DELIVERED')
             order.status = new_state
             order.save()
-            
+
+            from domain.services.pricing_service import PricingService
+
+            if order.batch and order.batch.driver_payout:
+                batch_order_count = order.batch.orders.count()
+                order_driver_payout = order.batch.driver_payout / batch_order_count if batch_order_count > 0 else Decimal('0')
+            else:
+                policy = PricingService.get_active_policy()
+                driver_share = Decimal('0.90')
+                if policy and policy.single_order_driver_share:
+                    driver_share = policy.single_order_driver_share
+                order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
+
             driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
-            driver.total_earnings += order.delivery_fee
-            driver.today_earnings += order.delivery_fee
+            driver.total_earnings += order_driver_payout
+            driver.today_earnings += order_driver_payout
             driver.current_active_orders = max(0, driver.current_active_orders - 1)
             driver.save(update_fields=['status', 'total_earnings', 'today_earnings', 'current_active_orders'])
             

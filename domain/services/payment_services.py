@@ -239,10 +239,25 @@ class ReleasePaymentService:
             driver_payout = Decimal('0')
 
             if payment.payable_type == 'order':
-                order = Order.objects.get(id=payment.payable_id)
+                order = Order.objects.select_related('restaurant', 'batch', 'driver').get(id=payment.payable_id)
                 commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
-                driver_payout = Decimal(str(order.delivery_fee or 0)) if order.driver else Decimal('0')
+
+                if order.batch and order.batch.driver_payout:
+                    batch_order_count = order.batch.orders.count()
+                    if batch_order_count > 0:
+                        driver_payout = order.batch.driver_payout / batch_order_count
+                    else:
+                        driver_payout = Decimal('0')
+                elif order.driver:
+                    from domain.services.pricing_service import PricingService
+                    policy = PricingService.get_active_policy()
+                    driver_share = Decimal('0.90')
+                    if policy and policy.single_order_driver_share:
+                        driver_share = policy.single_order_driver_share
+                    driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
+                else:
+                    driver_payout = Decimal('0')
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import PoolMember
                 member = PoolMember.objects.get(id=payment.payable_id)
@@ -263,12 +278,18 @@ class ReleasePaymentService:
                 # Emergency guard: don't let platform go negative due to rounding
                 platform_cut = Decimal('0')
 
+            vendor_phone = order.restaurant.owner.phone if order.restaurant and order.restaurant.owner else None
+            if not vendor_phone:
+                raise ValueError(f"Cannot process payment: Restaurant {order.restaurant.id} has no owner")
+
             splits = [
                 {'identifier': 'PLATFORM_ESCROW', 'value': float(platform_cut)},
-                {'identifier': order.restaurant.owner.phone, 'value': float(restaurant_payout)},
+                {'identifier': vendor_phone, 'value': float(restaurant_payout)},
             ]
-            if order.driver:
-                splits.append({'identifier': order.driver.user.phone, 'value': float(driver_payout)})
+            if order.driver and order.driver.user:
+                driver_phone = order.driver.user.phone
+                if driver_phone:
+                    splits.append({'identifier': driver_phone, 'value': float(driver_payout)})
 
             response = gateway.split_settlement(
                 airpay_id=payment.provider_reference,

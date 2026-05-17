@@ -131,3 +131,101 @@ def polygon_to_h3_cells(polygon, resolution=ZONE_RESOLUTION):
     except Exception as e:
         logger.error(f"Failed to convert polygon to H3 cells: {str(e)}")
         return []
+
+
+def get_zone_from_h3(h3_index):
+    """
+    Get the OperationalZone that contains a given H3 index.
+    Returns the zone if found, None otherwise.
+    """
+    if not h3_index:
+        return None
+    try:
+        from apps.geo.models import ZoneH3Index, OperationalZone
+        zone_h3 = ZoneH3Index.objects.filter(
+            h3_index=h3_index,
+            zone__is_active=True
+        ).select_related('zone').first()
+        return zone_h3.zone if zone_h3 else None
+    except Exception as e:
+        logger.error(f"Failed to get zone from H3 index {h3_index}: {str(e)}")
+        return None
+
+
+def get_zone_ids_from_h3(h3_index, radius=1):
+    """
+    Get a list of zone IDs that cover the given H3 index and its neighbors.
+    Returns list of zone IDs.
+    """
+    if not h3_index:
+        return []
+    try:
+        neighbor_cells = get_neighbors(h3_index, radius)
+        if not neighbor_cells:
+            neighbor_cells = [h3_index]
+        
+        from apps.geo.models import ZoneH3Index
+        zone_ids = ZoneH3Index.objects.filter(
+            h3_index__in=neighbor_cells,
+            zone__is_active=True
+        ).values_list('zone_id', flat=True).distinct()
+        
+        return list(zone_ids)
+    except Exception as e:
+        logger.error(f"Failed to get zone IDs from H3 index {h3_index}: {str(e)}")
+        return []
+
+
+def get_neighboring_zone_ids(h3_index, max_distance_km=30):
+    """
+    Get zone IDs of neighboring zones within a maximum distance.
+    Used for inter-zone batching - finds zones that can share batches.
+    
+    Returns dict with 'same_zone' and 'neighbor_zones' lists.
+    """
+    if not h3_index:
+        return {'same_zone': [], 'neighbor_zones': []}
+    
+    try:
+        from apps.geo.models import OperationalZone, ZoneH3Index
+        
+        current_zone = get_zone_from_h3(h3_index)
+        if not current_zone:
+            return {'same_zone': [], 'neighbor_zones': []}
+        
+        current_zone_ids = [current_zone.id]
+        
+        lat, lng = h3.cell_to_latlng(h3_index)
+        
+        nearby_zones = OperationalZone.objects.filter(
+            is_active=True,
+            boundary__dwithin=(lng, lat, max_distance_km * 1000)
+        ).exclude(id=current_zone.id)
+        
+        neighbor_zone_ids = list(nearby_zones.values_list('id', flat=True))
+        
+        return {
+            'same_zone': current_zone_ids,
+            'neighbor_zones': neighbor_zone_ids
+        }
+    except Exception as e:
+        logger.error(f"Failed to get neighboring zones: {str(e)}")
+        return {'same_zone': [], 'neighbor_zones': []}
+
+
+def get_zone_h3_cells(zone_ids):
+    """
+    Get all H3 cells belonging to the given zone IDs.
+    Returns set of H3 index strings.
+    """
+    if not zone_ids:
+        return set()
+    try:
+        from apps.geo.models import ZoneH3Index
+        cells = ZoneH3Index.objects.filter(
+            zone_id__in=zone_ids
+        ).values_list('h3_index', flat=True).distinct()
+        return set(cells)
+    except Exception as e:
+        logger.error(f"Failed to get zone H3 cells: {str(e)}")
+        return set()
