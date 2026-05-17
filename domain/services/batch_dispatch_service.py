@@ -283,7 +283,7 @@ class BatchOfferExpiryHandler:
                 order.driver = None
                 order.save()
 
-EventBus.publish(BatchExpired(
+            EventBus.publish(BatchExpired(
                 aggregate_id=str(batch.id),
                 payload={'reason': 'offer_timeout'}
             ))
@@ -301,7 +301,7 @@ EventBus.publish(BatchExpired(
                 ))
                 return
 
-        BatchDispatchService.dispatch_batch(batch_id)
+            BatchDispatchService.dispatch_batch(batch_id)
 
         except Exception as e:
             logger.error(f"Error handling batch offer expiry: {str(e)}")
