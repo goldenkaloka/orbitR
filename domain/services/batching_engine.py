@@ -510,50 +510,67 @@ class BatchingEngine:
     @staticmethod
     @transaction.atomic
     def _create_single_order_batch(order):
-        """Create a single-order batch with 90% driver payout"""
+        """Create a single-order batch with percentage-based driver payout"""
         from apps.orders.models import Order, DeliveryBatch
         from domain.services.pricing_service import PricingService
-        
+        from domain.services.mapbox_routing_service import MapboxRoutingService
+
         locked_order = Order.objects.select_for_update().filter(
             id=order.id,
             batch__isnull=True
-        ).first()
-        
+        ).select_related('restaurant').first()
+
         if not locked_order:
             logger.info(f"Order {order.id} already batched by another worker")
             return None
-        
+
         policy = PricingService.get_active_policy()
         driver_share = Decimal('0.90')
         if policy and policy.single_order_driver_share:
             driver_share = policy.single_order_driver_share
-        
+
         delivery_fee = Decimal(str(locked_order.delivery_fee or 0))
         service_fee = Decimal(str(locked_order.service_fee or 0))
+        user_paid_total = delivery_fee + service_fee
+
+        route_dict = None
+        route_distance = Decimal('0')
+        route = MapboxRoutingService.get_route_for_batch([locked_order])
+
+        if route:
+            if hasattr(route, 'to_dict'):
+                route_dict = route.to_dict()
+            else:
+                route_dict = route
+
+            if route_dict and route_dict.get('total_distance_km'):
+                route_distance = Decimal(str(route_dict['total_distance_km']))
 
         driver_payout = delivery_fee * driver_share
-        user_paid_total = delivery_fee + service_fee
 
         if driver_payout > user_paid_total:
             driver_payout = user_paid_total
 
         company_profit = user_paid_total - driver_payout
-        
+
         batch = DeliveryBatch.objects.create(
             batch_type='SINGLE_ORDER',
             status='CREATED',
-            route_optimization=[],
-            route_distance_km=Decimal('0'),
+            route_optimization=route_dict,
+            route_distance_km=route_distance,
             user_paid_total=user_paid_total,
             driver_payout=driver_payout,
             company_profit=company_profit,
             offer_attempt=0,
         )
-        
+
         locked_order.batch = batch
         locked_order.route_sequence = 1
         locked_order.save()
-        
+
+        if route_dict:
+            MapboxRoutingService._emit_event('success', batch.id, route_dict)
+
         from domain.services.batch_dispatch_service import BatchDispatchService
         from django.db import transaction
         transaction.on_commit(lambda: BatchDispatchService.dispatch_batch(str(batch.id)))

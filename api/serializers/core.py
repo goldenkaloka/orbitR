@@ -145,9 +145,13 @@ class OrderSerializer(serializers.ModelSerializer):
         return {
             'id': str(obj.batch.id),
             'status': obj.batch.status,
+            'batch_type': obj.batch.batch_type,
             'order_count': obj.batch.orders.count(),
             'driver_payout': float(obj.batch.driver_payout) if obj.batch.driver_payout else None,
             'route_distance_km': float(obj.batch.route_distance_km) if obj.batch.route_distance_km else None,
+            'route_optimization': obj.batch.route_optimization,
+            'user_paid_total': float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None,
+            'company_profit': float(obj.batch.company_profit) if obj.batch.company_profit else None,
         }
 
     def get_estimated_arrival_minutes(self, obj):
