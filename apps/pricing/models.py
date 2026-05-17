@@ -14,12 +14,6 @@ class PricingPolicy(models.Model):
     base_fee = models.DecimalField(max_digits=10, decimal_places=2, default=1000.00, help_text="Minimum starting fee in TSh")
     per_km_rate = models.DecimalField(max_digits=10, decimal_places=2, default=500.00, help_text="Variable rate per kilometer")
     service_fee = models.DecimalField(max_digits=10, decimal_places=2, default=300.00, help_text="Flat platform service fee")
-    road_buffer_multiplier = models.FloatField(default=1.3, help_text="Multiplies crow-flies distance to estimate actual road distance")
-    
-    # Global Surcharges
-    rainy_season_surcharge = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
-    night_surcharge_multiplier = models.DecimalField(max_digits=4, decimal_places=2, default=1.20, help_text="1.20 = 20% extra")
-    rush_hour_multiplier = models.DecimalField(max_digits=4, decimal_places=2, default=1.15)
 
     # Reference Economics
     fuel_price_reference = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text="For tracking why this policy was created")

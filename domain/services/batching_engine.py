@@ -418,6 +418,8 @@ class BatchingEngine:
                 per_stop_rate = policy.driver_per_stop_rate
 
         route_dict = None
+        route_distance = Decimal('0')
+
         if route:
             if hasattr(route, 'to_dict'):
                 route_dict = route.to_dict()
@@ -443,7 +445,13 @@ class BatchingEngine:
         total_delivery_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in locked_orders)
         total_service_fees = sum(Decimal(str(o.service_fee or 0)) for o in locked_orders)
         user_paid_total = pricing_result['original_total'] + total_service_fees
-        company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+
+        original_driver_payout = driver_payout
+        if driver_payout > user_paid_total:
+            logger.warning(f"Driver payout capped for batch: {original_driver_payout} -> {user_paid_total} (user_paid_total)")
+            driver_payout = user_paid_total
+
+        company_profit = user_paid_total - driver_payout
 
         batch_type = 'INTER_ZONE' if is_inter_zone else strategy.name
         
@@ -522,10 +530,14 @@ class BatchingEngine:
         
         delivery_fee = Decimal(str(locked_order.delivery_fee or 0))
         service_fee = Decimal(str(locked_order.service_fee or 0))
-        
+
         driver_payout = delivery_fee * driver_share
         user_paid_total = delivery_fee + service_fee
-        company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+
+        if driver_payout > user_paid_total:
+            driver_payout = user_paid_total
+
+        company_profit = user_paid_total - driver_payout
         
         batch = DeliveryBatch.objects.create(
             batch_type='SINGLE_ORDER',

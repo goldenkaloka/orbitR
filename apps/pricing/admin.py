@@ -18,10 +18,7 @@ class PricingPolicyAdmin(ModelAdmin):
             'fields': ('name', 'is_active')
         }),
         ('Rate Constants', {
-            'fields': ('base_fee', 'per_km_rate', 'service_fee', 'road_buffer_multiplier')
-        }),
-        ('Dynamic Multipliers', {
-            'fields': ('rainy_season_surcharge', 'night_surcharge_multiplier', 'rush_hour_multiplier')
+            'fields': ('base_fee', 'per_km_rate', 'service_fee')
         }),
         ('Market Context', {
             'fields': ('fuel_price_reference',)

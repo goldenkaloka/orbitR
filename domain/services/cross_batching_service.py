@@ -161,8 +161,14 @@ class CrossBatchingService:
             total_delivery_fees = fee_result['original_total']
             total_service_fees = sum(Decimal(str(o.service_fee or 0)) for o in orders_to_batch)
             user_paid_total = total_delivery_fees + total_service_fees
-            company_profit = max(Decimal('0'), user_paid_total - driver_payout)
 
+            if driver_payout > user_paid_total:
+                driver_payout = user_paid_total
+                logger.warning(f"Driver payout capped for batch. Original > user_paid_total")
+
+            company_profit = user_paid_total - driver_payout
+
+            batch.driver_payout = driver_payout
             batch.company_profit = company_profit
             batch.original_total_fee = fee_result['original_total']
             batch.discounted_total_fee = fee_result['discounted_total']

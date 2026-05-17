@@ -87,10 +87,7 @@ class PricingService:
             if not policy:
                 return Decimal('1000.00'), service_fee, None
 
-            # 5. Apply road buffer
-            road_distance_km = distance_km * policy.road_buffer_multiplier
-
-            # 6. Regional adjustments via OperationalZone
+            # 5. Regional adjustments via OperationalZone
             from apps.geo.models import ZoneH3Index
             op_zone = None
             zone_index = ZoneH3Index.objects.filter(h3_index=delivery_h3).select_related('zone').first()
@@ -108,27 +105,26 @@ class PricingService:
                 except ZonePricingTier.DoesNotExist:
                     pass
 
-            # 7. Distance tier multiplier (replaces flat fee overrides)
+            # 6. Distance tier multiplier (replaces flat fee overrides)
             tiers = cls.get_distance_tiers(policy)
-            distance_tier_multiplier = cls.get_distance_tier_multiplier(tiers, road_distance_km)
+            distance_tier_multiplier = cls.get_distance_tier_multiplier(tiers, distance_km)
 
-            # 8. Fuel economic adjustment
+            # 7. Fuel economic adjustment
             fuel_adjustment = Decimal('0.00')
             if policy.fuel_price_reference and policy.fuel_price_reference > 3000:
                 fuel_adjustment = (policy.fuel_price_reference - 3000) / 100
 
-            # 9. Base calculation
+            # 8. Base calculation
             base_fee = base_override if base_override else policy.base_fee
             variable_fee = (
-                Decimal(str(road_distance_km))
+                Decimal(str(distance_km))
                 * policy.per_km_rate
                 * zone_multiplier
                 * distance_tier_multiplier
             )
-            
+
             final_fee = base_fee + variable_fee + fuel_adjustment
 
-            # 10. Time & seasonal surcharges (independent, non-compounding)
             adjustments = {}
             
             if distance_tier_multiplier != Decimal('1.00'):
@@ -140,38 +136,16 @@ class PricingService:
             if fuel_adjustment > 0:
                 adjustments['fuel_economic_surge'] = str(fuel_adjustment.quantize(Decimal('0.01')))
 
-            now_local = timezone.localtime(timezone.now())
-            hour = now_local.hour
-            month = now_local.month
-            
-            # Rush Hour (7-9 AM, 4-7 PM)
-            if (7 <= hour <= 9) or (16 <= hour <= 19):
-                rush_adj = (base_fee + variable_fee) * (policy.rush_hour_multiplier - Decimal('1.0'))
-                final_fee += rush_adj
-                adjustments['rush_hour'] = str(rush_adj.quantize(Decimal('0.01')))
-
-            # Night Surcharge (10 PM - 6 AM)
-            elif hour >= 22 or hour <= 6:
-                night_adj = (base_fee + variable_fee) * (policy.night_surcharge_multiplier - Decimal('1.0'))
-                final_fee += night_adj
-                adjustments['night'] = str(night_adj.quantize(Decimal('0.01')))
-
-            # Rainy Season (March-May, Oct-Dec)
-            is_rainy_season = (3 <= month <= 5) or (10 <= month <= 12)
-            if is_rainy_season and policy.rainy_season_surcharge > 0:
-                final_fee += policy.rainy_season_surcharge
-                adjustments['rainy_season'] = str(policy.rainy_season_surcharge)
-
-            # 11. Round to nearest 100 TSh
+            # 9. Round to nearest 100 TSh
             final_rounded = (final_fee / 100).quantize(Decimal('1'), rounding='ROUND_HALF_UP') * 100
 
-            # 12. Audit log
+            # 10. Audit log
             log = DeliveryFeeLog.objects.create(
                 order=order,
                 pool=pool,
                 restaurant=restaurant,
                 distance_km=distance_km,
-                estimated_road_distance_km=road_distance_km,
+                estimated_road_distance_km=distance_km,
                 base_fee_used=base_fee,
                 per_km_rate_used=policy.per_km_rate,
                 final_fee=final_rounded,

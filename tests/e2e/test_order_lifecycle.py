@@ -81,8 +81,7 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
             is_active=True,
             base_fee=Decimal('1000.00'),
             per_km_rate=Decimal('500.00'),
-            service_fee=Decimal('300.00'),
-            road_buffer_multiplier=1.0
+            service_fee=Decimal('300.00')
         )
 
         # Authenticate as customer

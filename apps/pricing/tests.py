@@ -22,8 +22,7 @@ class PricingServiceTest(TestCase):
             name="Standard Policy",
             is_active=True,
             base_fee=Decimal('1000.00'),
-            per_km_rate=Decimal('500.00'),
-            road_buffer_multiplier=1.0  # Keep math simple for test
+            per_km_rate=Decimal('500.00')
         )
 
     def test_calculate_fee_standard(self):
