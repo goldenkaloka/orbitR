@@ -417,11 +417,19 @@ class BatchingEngine:
             if policy.driver_per_stop_rate:
                 per_stop_rate = policy.driver_per_stop_rate
 
-        if route and route.get('total_distance_km'):
-            route_distance = Decimal(str(route['total_distance_km']))
+        route_dict = None
+        if route:
+            if hasattr(route, 'to_dict'):
+                route_dict = route.to_dict()
+            elif isinstance(route, dict):
+                route_dict = route
 
-            num_pickups = len([s for s in route if s.get('type') == 'pickup'])
-            num_deliveries = len([s for s in route if s.get('type') == 'delivery'])
+        if route_dict and route_dict.get('total_distance_km'):
+            route_distance = Decimal(str(route_dict['total_distance_km']))
+
+            stop_sequence = route_dict.get('stop_sequence', [])
+            num_pickups = len([s for s in stop_sequence if s.get('type') == 'pickup'])
+            num_deliveries = len([s for s in stop_sequence if s.get('type') == 'delivery'])
             total_stops = num_pickups + num_deliveries
 
             driver_payout = (
@@ -442,7 +450,7 @@ class BatchingEngine:
         batch = DeliveryBatch.objects.create(
             batch_type=batch_type,
             status='CREATED',
-            route_optimization=route,
+            route_optimization=route_dict,
             user_paid_total=user_paid_total,
             driver_payout=driver_payout,
             company_profit=company_profit,
@@ -452,15 +460,19 @@ class BatchingEngine:
             offer_attempt=0,
         )
 
+        if route_dict:
+            from domain.services.mapbox_routing_service import MapboxRoutingService
+            MapboxRoutingService._emit_event('success', batch.id, route_dict)
+
         from domain.services.batch_dispatch_service import BatchDispatchService
 
         from django.db import transaction
         transaction.on_commit(lambda: BatchDispatchService.dispatch_batch(str(batch.id)))
 
         delivery_seq_map = {}
-        if route:
+        if route_dict:
             seq = 1
-            for stop in route:
+            for stop in route_dict.get('stop_sequence', []):
                 if stop.get('type') == 'delivery' and stop.get('order_id'):
                     delivery_seq_map[stop['order_id']] = seq
                     seq += 1
@@ -538,17 +550,11 @@ class BatchingEngine:
         return batch
 
     @staticmethod
-    def _optimize_route(orders, config):
-        """Optimize delivery route"""
-        distance_weight = config.get('distance_weight', 0.6)
-        time_weight = config.get('time_weight', 0.4)
+    def _optimize_route(orders, config, batch_id=None):
+        """Optimize delivery route using Mapbox Routing API"""
+        from domain.services.mapbox_routing_service import MapboxRoutingService
 
-        from domain.services.route_optimizer import RouteOptimizer
-        return RouteOptimizer.optimize(
-            orders,
-            distance_weight=distance_weight,
-            time_weight=time_weight
-        )
+        return MapboxRoutingService.get_route_for_batch(orders, batch_id=batch_id)
 
     @staticmethod
     def _calculate_pricing(orders):

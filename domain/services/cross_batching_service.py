@@ -265,6 +265,23 @@ class CrossBatchingService:
 
     @staticmethod
     def _optimize_route(orders):
+        from domain.services.mapbox_routing_service import MapboxRoutingService
+
+        route = MapboxRoutingService.get_route_for_batch(orders)
+
+        if route:
+            route_dict = route.to_dict()
+            return {
+                'sequence': route_dict.get('stop_sequence', []),
+                'total_distance_km': route_dict.get('total_distance_km', 0),
+                'estimated_time_min': route_dict.get('total_duration_min', 0),
+                'score': 1.0,
+                'distance_weight_contribution': 0.5,
+                'time_weight_contribution': 0.5,
+                'route_object': route
+            }
+
+        logger.warning("Mapbox routing failed, falling back to custom optimizer")
         restaurant_locs = {}
         for order in orders:
             rid = order.restaurant_id
@@ -435,11 +452,13 @@ class CrossBatchDriverMatcher:
         from django.db.models import Count, Q, F
 
         route = batch.route_optimization
-        if not route or len(route) == 0:
+        stop_sequence = route.get('stop_sequence', []) if isinstance(route, dict) else route
+
+        if not stop_sequence or len(stop_sequence) == 0:
             logger.warning(f"Batch {batch.id} has no route optimization")
             return None
 
-        first_stop = route[0]
+        first_stop = stop_sequence[0]
         if first_stop.get('type') != 'pickup' or not first_stop.get('restaurant_id'):
             logger.warning(f"Batch {batch.id} route has invalid first stop")
             return None

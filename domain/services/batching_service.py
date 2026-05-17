@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 SINGLE_BATCH_LOCK_TTL = 15
 
+
 class BatchingService:
     """
     Service responsible for grouping separate orders into Delivery Batches
@@ -59,6 +60,27 @@ class BatchingService:
 
             Order.objects.bulk_update(orders, ['batch'])
 
+            BatchingService._emit_batch_created_event(batch, orders)
+
             return batch
 
         return None
+
+    @staticmethod
+    def _emit_batch_created_event(batch, orders):
+        """Emit domain event when batch is created."""
+        try:
+            from domain.events.bus import EventBus
+            from domain.events.types import BatchCreated
+
+            EventBus.publish(BatchCreated(
+                aggregate_id=str(batch.id),
+                payload={
+                    'batch_type': batch.batch_type,
+                    'order_count': len(orders),
+                    'order_ids': [str(o.id) for o in orders],
+                    'restaurant_id': str(batch.restaurant_id)
+                }
+            ))
+        except Exception as e:
+            logger.warning(f"Failed to emit BatchCreated event: {e}")

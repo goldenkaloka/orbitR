@@ -225,6 +225,7 @@ class PricingService:
     @classmethod
     def apply_batch_fees(cls, batch):
         from apps.orders.models import Order
+        from django.db import transaction
 
         orders = list(batch.orders.select_related('restaurant').all())
         if not orders:
@@ -233,20 +234,25 @@ class PricingService:
         batch_type = batch.batch_type
         fee_result = cls.calculate_batch_fee(orders, batch_type)
 
-        batch.original_total_fee = fee_result['original_total']
-        batch.discounted_total_fee = fee_result['discounted_total']
-        batch.save()
-
         discount_applied = batch_type == 'CROSS_RESTAURANT'
         fee_map = {fee_info['order_id']: fee_info for fee_info in fee_result['per_order_fees']}
 
-        for order in orders:
-            fee_info = fee_map.get(str(order.id))
-            if fee_info:
-                order.original_delivery_fee = fee_info['original_fee']
-                order.delivery_fee = fee_info['discounted_fee']
-                order.discount_applied = discount_applied
-                order.total_amount = order.items_subtotal + order.delivery_fee + order.service_fee
-                order.save()
+        with transaction.atomic():
+            batch.original_total_fee = fee_result['original_total']
+            batch.discounted_total_fee = fee_result['discounted_total']
+            batch.save()
+
+            for order in orders:
+                fee_info = fee_map.get(str(order.id))
+                if fee_info:
+                    order.original_delivery_fee = fee_info['original_fee']
+                    order.delivery_fee = fee_info['discounted_fee']
+                    order.discount_applied = discount_applied
+                    order.total_amount = order.items_subtotal + order.delivery_fee + order.service_fee
+
+            Order.objects.bulk_update(
+                orders,
+                ['original_delivery_fee', 'delivery_fee', 'discount_applied', 'total_amount']
+            )
 
         return fee_result

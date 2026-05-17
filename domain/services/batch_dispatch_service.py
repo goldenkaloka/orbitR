@@ -100,10 +100,15 @@ class BatchDispatchService:
             driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
             driver.save()
 
+            orders_to_update = []
             for order in batch.orders.select_related('restaurant').all():
                 order.status = 'OFFERED'
                 order.driver = driver
-                order.save()
+                orders_to_update.append(order)
+
+            if orders_to_update:
+                from apps.orders.models import Order
+                Order.objects.bulk_update(orders_to_update, ['status', 'driver'])
 
             cache.set(
                 f"{OFFER_CACHE_PREFIX}{batch.id}",
@@ -134,16 +139,16 @@ class BatchDispatchService:
     @staticmethod
     def _schedule_retry(batch_id, attempt):
         """Schedule retry after short delay"""
-        from django.utils import timezone
-        from datetime import timedelta
+        from domain.services.dispatch_tasks import retry_batch_dispatch_task
 
         batch = DeliveryBatch.objects.get(id=batch_id)
         batch.offer_attempt = attempt
         batch.status = 'CREATED'
         batch.save()
 
-        retry_at = timezone.now() + timedelta(seconds=30)
-        logger.info(f"Scheduling retry for batch {batch_id} at {retry_at}")
+        delay = {1: 30, 2: 60, 3: 120, 4: 300, 5: 600}.get(attempt, 30)
+        retry_batch_dispatch_task.apply_async(args=[str(batch_id), attempt], countdown=delay)
+        logger.info(f"Scheduled retry {attempt} for batch {batch_id} in {delay}s")
 
     @staticmethod
     def accept_batch(batch_id, driver_id, actor):
@@ -162,13 +167,18 @@ class BatchDispatchService:
             batch.status = 'ASSIGNED'
             batch.save()
 
-            for order in batch.orders.all():
+            orders = list(batch.orders.all())
+            for order in orders:
                 order.status = 'ASSIGNED'
-                order.save()
-                DeliveryAssignment.objects.update_or_create(
-                    order=order,
-                    defaults={'driver_id': driver_id, 'batch': batch}
-                )
+
+            from apps.orders.models import Order
+            Order.objects.bulk_update(orders, ['status'])
+
+            assignments = [
+                DeliveryAssignment(order_id=order.id, driver_id=driver_id, batch=batch)
+                for order in orders
+            ]
+            DeliveryAssignment.objects.bulk_create(assignments, ignore_conflicts=True)
 
             cache.delete(f"{OFFER_CACHE_PREFIX}{batch_id}")
 
@@ -197,12 +207,15 @@ class BatchDispatchService:
             batch.driver = None
             batch.status = 'CREATED'
 
-            order_count = batch.orders.count()
-            
-            for order in batch.orders.all():
+            orders = list(batch.orders.all())
+            order_count = len(orders)
+
+            for order in orders:
                 order.status = 'READY'
                 order.driver = None
-                order.save()
+
+            from apps.orders.models import Order
+            Order.objects.bulk_update(orders, ['status', 'driver'])
 
             if batch.driver:
                 batch.driver.current_active_orders = max(0, batch.driver.current_active_orders - order_count)
@@ -278,10 +291,13 @@ class BatchOfferExpiryHandler:
             
             batch.save()
 
-            for order in batch.orders.all():
+            orders = list(batch.orders.all())
+            for order in orders:
                 order.status = 'READY'
                 order.driver = None
-                order.save()
+
+            from apps.orders.models import Order
+            Order.objects.bulk_update(orders, ['status', 'driver'])
 
             EventBus.publish(BatchExpired(
                 aggregate_id=str(batch.id),

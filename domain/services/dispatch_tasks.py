@@ -178,3 +178,35 @@ def daily_earnings_reset_task():
     from apps.delivery.models import Driver
     Driver.objects.update(today_earnings=0)
     logger.info("Daily earnings reset complete.")
+
+
+BATCH_DISPATCH_RETRY_DELAYS = {1: 30, 2: 60, 3: 120, 4: 300, 5: 600}
+
+
+@shared_task(name='domain.services.dispatch_tasks.retry_batch_dispatch_task')
+def retry_batch_dispatch_task(batch_id, attempt=1):
+    """
+    Retry batch dispatch with exponential backoff.
+    """
+    from domain.services.batch_dispatch_service import BatchDispatchService
+
+    if attempt > 5:
+        logger.error(f"Batch {batch_id} exceeded max retry attempts (5)")
+        return
+
+    try:
+        batch = BatchDispatchService.dispatch_batch(str(batch_id))
+        if not batch:
+            delay = BATCH_DISPATCH_RETRY_DELAYS.get(attempt, 60)
+            if cache.add(f"batch_retry_scheduled:{batch_id}:{attempt}", "1", delay + 120):
+                retry_batch_dispatch_task.apply_async(
+                    args=[batch_id, attempt + 1],
+                    countdown=delay,
+                )
+    except Exception as e:
+        logger.error(f"Batch dispatch retry failed for {batch_id}: {str(e)}")
+        delay = BATCH_DISPATCH_RETRY_DELAYS.get(attempt, 60)
+        retry_batch_dispatch_task.apply_async(
+            args=[batch_id, attempt + 1],
+            countdown=delay,
+        )
