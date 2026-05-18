@@ -211,6 +211,9 @@ class RidersPoolConsumer(AsyncWebsocketConsumer):
     async def new_order_ping(self, event):
         await self.send(text_data=json.dumps(event))
 
+    async def order_removed_from_pool(self, event):
+        await self.send(text_data=json.dumps(event))
+
 class OrderPoolConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         user = self.scope.get('user')

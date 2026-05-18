@@ -86,6 +86,7 @@ class AssignDriverService:
             DeliveryAssignment.objects.update_or_create(order=order, defaults={'driver': driver})
             
             transaction.on_commit(lambda: EventBus.publish(DriverAssigned(aggregate_id=order.id, payload={'driver_id': str(driver.id), 'actor_id': str(actor.id)})))
+            transaction.on_commit(lambda: broadcast_order_status(str(order.id), 'ASSIGNED'))
             return order
 
 class AssignBatchService:

@@ -46,6 +46,16 @@ def broadcast_order_status(order_id, status, message="Status updated"):
                 'restaurant_name': order.restaurant.name,
                 'delivery_fee': float(order.delivery_fee)
             })
+        
+        # 6. Notify ALL Riders to refresh available jobs when order is claimed/accepted/assigned
+        # This ensures the ping disappears for all other riders
+        if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and order.driver:
+            async_to_sync(channel_layer.group_send)('riders', {
+                'type': 'order_removed_from_pool',
+                'order_id': str(order_id),
+                'status': status,
+                'action': 'refresh_available_jobs'
+            })
             
     except Order.DoesNotExist:
         pass
