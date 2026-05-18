@@ -301,14 +301,23 @@
     }
 
     function start() {
-        const textArea = document.querySelector('#id_boundary');
-        const mapContainer = document.querySelector('#id_boundary-div-map') ||
-                           document.querySelector('#id_boundary_map') ||
-                           document.querySelector('#id_boundary_map_container');
+        var mapContainer = document.querySelector('[id$="boundary_map"]') ||
+                           document.querySelector('[id$="boundary-div"]') ||
+                           document.querySelector('.leaflet-container');
+        var textArea = document.querySelector('#id_boundary');
 
         if (textArea && mapContainer) {
             initDeckEditor(mapContainer, textArea);
+        } else {
+            if (!textArea) console.error('Zone editor: textarea#id_boundary not found');
+            if (!mapContainer) console.error('Zone editor: map container not found. Check Leaflet is loaded.');
         }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', function () { setTimeout(start, 1500); });
+    } else {
+        setTimeout(start, 1500);
     }
 
     loadDependencies(start);

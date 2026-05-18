@@ -129,6 +129,9 @@ LEAFLET_CONFIG = {
     'MAP_HEIGHT': '600px',
     'MAP_WIDTH': '100%',
     'RESET_VIEW': False,
+    'NO_GLOBALS': False,
+    'DEFAULT_ZOOM_ANIMATE': True,
+    'LOAD_SPELLING': False,
 }
 
 # ---------------------------------------------------------------------------
@@ -424,6 +427,28 @@ UNFOLD = {
                         "icon": "error",
                         "link": reverse_lazy("admin:payments_failedpayout_changelist"),
                         "badge_variant": "danger",
+                    },
+                ],
+            },
+            {
+                "title": _("Pricing"),
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": _("Pricing Policies"),
+                        "icon": "policy",
+                        "link": reverse_lazy("admin:pricing_pricingpolicy_changelist"),
+                    },
+                    {
+                        "title": _("Zone Pricing Tiers"),
+                        "icon": "price_change",
+                        "link": reverse_lazy("admin:pricing_zonepricingtier_changelist"),
+                    },
+                    {
+                        "title": _("Delivery Fee Logs"),
+                        "icon": "receipt",
+                        "link": reverse_lazy("admin:pricing_deliveryfeelog_changelist"),
                     },
                 ],
             },

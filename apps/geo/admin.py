@@ -26,6 +26,7 @@ class OperationalZoneAdmin(LeafletGeoAdminMixin, ModelAdmin):
     settings_overrides = {
         'DEFAULT_CENTER': (-6.7924, 39.2026),
         'DEFAULT_ZOOM': 14,
+        'DEFAULT_ZOOM_ANIMATE': True,
     }
 
     def h3_cell_count(self, obj):
