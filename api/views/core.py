@@ -1,3 +1,6 @@
+import logging
+logger = logging.getLogger(__name__)
+
 from apps.orders.models import Dispute
 from django.db import models
 from rest_framework import viewsets, status
