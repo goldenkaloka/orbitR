@@ -110,3 +110,53 @@ class BatchViewSet(viewsets.ViewSet):
             return neighbor_cells if neighbor_cells else [h3_index]
         except Exception:
             return [h3_index] if h3_index else []
+
+    @action(detail=True, methods=['get'], url_path='metadata')
+    def batch_metadata(self, request, pk=None):
+        """Get batch-level summary with progress"""
+        try:
+            batch = DeliveryBatch.objects.get(id=pk)
+            orders = batch.orders.select_related('restaurant', 'customer').all()
+            
+            delivered = orders.filter(status='DELIVERED').count()
+            total = orders.count()
+            
+            return Response({
+                'id': str(batch.id),
+                'status': batch.status,
+                'batch_type': batch.batch_type,
+                'total_orders': total,
+                'delivered_count': delivered,
+                'remaining_count': total - delivered,
+                'driver_payout': float(batch.driver_payout) if batch.driver_payout else None,
+                'route_distance_km': float(batch.route_distance_km) if batch.route_distance_km else None,
+                'route_optimization': batch.route_optimization,
+                'restaurants': [
+                    {
+                        'id': str(o.restaurant.id),
+                        'name': o.restaurant.name,
+                        'latitude': o.restaurant.geo_location.y if o.restaurant and o.restaurant.geo_location else None,
+                        'longitude': o.restaurant.geo_location.x if o.restaurant and o.restaurant.geo_location else None,
+                    }
+                    for o in orders.select_related('restaurant').order_by('route_sequence')
+                    if o.restaurant
+                ],
+                'orders_summary': [
+                    {
+                        'id': str(o.id),
+                        'route_sequence': o.route_sequence,
+                        'status': o.status,
+                        'customer_name': o.customer.username,
+                        'customer_phone': o.customer.phone,
+                        'delivery_address': o.delivery_address,
+                        'delivery_latitude': o.delivery_location.y if o.delivery_location else None,
+                        'delivery_longitude': o.delivery_location.x if o.delivery_location else None,
+                        'restaurant_name': o.restaurant.name if o.restaurant else 'Marketplace',
+                        'restaurant_latitude': o.restaurant.geo_location.y if o.restaurant and o.restaurant.geo_location else None,
+                        'restaurant_longitude': o.restaurant.geo_location.x if o.restaurant and o.restaurant.geo_location else None,
+                    }
+                    for o in orders.order_by('route_sequence')
+                ],
+            })
+        except DeliveryBatch.DoesNotExist:
+            return Response({'error': 'Batch not found'}, status=404)

@@ -108,6 +108,7 @@ class OrderSerializer(serializers.ModelSerializer):
     batch = serializers.SerializerMethodField()
     original_delivery_fee = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()
+    route_sequence = serializers.ReadOnlyField()
     
     class Meta:
         model = Order
@@ -118,7 +119,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch'
+            'batch', 'route_sequence'
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
