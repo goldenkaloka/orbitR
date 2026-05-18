@@ -1,7 +1,7 @@
 /**
  * deck_h3_editor.js
  * Premium H3-based zone editor using deck.gl
- * Features: Auto-geolocation, Dark Mode aesthetics, Interactive Painting
+ * Features: Auto-geolocation, Unfold Teal aesthetics, Interactive Brush Painting, Loading Existing Boundaries
  */
 
 (function () {
@@ -48,6 +48,40 @@
     }
 
     function initDeckEditor(mapContainer, textArea) {
+        // Parse existing saved boundaries from Django field on startup
+        if (textArea.value) {
+            try {
+                const geojson = JSON.parse(textArea.value);
+                if (geojson) {
+                    let polygons = [];
+                    if (geojson.type === 'MultiPolygon') {
+                        polygons = geojson.coordinates;
+                    } else if (geojson.type === 'Polygon') {
+                        polygons = [geojson.coordinates];
+                    }
+                    
+                    polygons.forEach(polygonCoords => {
+                        // GeoJSON coords: [ [ [lng, lat], ... ] ]
+                        // H3 expects coordinates as [ [lat, lng], ... ]
+                        const exterior = polygonCoords[0].map(pt => [pt[1], pt[0]]);
+                        
+                        let cells = [];
+                        // Check H3 version API
+                        if (typeof h3.polygonToCells === 'function') {
+                            cells = h3.polygonToCells(exterior, RESOLUTION);
+                        } else if (typeof h3.polyfill === 'function') {
+                            cells = h3.polyfill(exterior, RESOLUTION);
+                        }
+                        
+                        cells.forEach(cell => selectedCells.add(cell));
+                    });
+                    console.log(`Loaded ${selectedCells.size} existing hexagons from saved boundaries.`);
+                }
+            } catch (err) {
+                console.error("Error parsing existing boundary GeoJSON:", err);
+            }
+        }
+
         // Create a wrapper for the new premium experience
         const wrapper = document.createElement('div');
         wrapper.className = 'premium-map-wrapper';
@@ -76,24 +110,24 @@
             gap: '10px'
         });
 
-        const mainBtn = createControlBtn('🎨 Paint Zones: OFF', '#fff', '#1a1a1a');
+        const mainBtn = createControlBtn('🎨 Paint Brush: OFF', '#fff', '#1a1a1a');
         mainBtn.onclick = () => {
             if (!deckInstance) {
                 console.error('Map not initialized yet');
                 return;
             }
             isEditing = !isEditing;
-            mainBtn.innerText = `🎨 Paint Zones: ${isEditing ? 'ON' : 'OFF'}`;
-            mainBtn.style.background = isEditing ? '#4285f4' : '#1a1a1a';
+            mainBtn.innerText = `🎨 Paint Brush: ${isEditing ? 'ON' : 'OFF'}`;
+            mainBtn.style.background = isEditing ? '#14b8a6' : '#1a1a1a'; // Orbitr Teal
             mainBtn.style.color = '#fff';
             if (mapInstance) {
                 mapInstance.dragPan.enable();
-                if (isEditing) mapInstance.dragPan.disable();
+                if (isEditing) mapInstance.dragPan.disable(); // Disable map dragging so brush drag works
             }
             updateLayers();
         };
 
-        const locateBtn = createControlBtn('📍 Locate Me', '#fff', '#1a1a1a');
+        const locateBtn = createControlBtn('📍 Center on Me', '#fff', '#1a1a1a');
         locateBtn.onclick = () => {
             if (!deckInstance) {
                 console.error('Map not initialized yet');
@@ -130,7 +164,7 @@
         mapContainer.style.display = 'none';
         mapContainer.parentNode.insertBefore(wrapper, mapContainer);
 
-        // Initialize MapLibre with a premium Dark Style
+        // Initialize MapLibre with Voyager light map
         var maplibreGlobal = window.maplibregl || window.maplibre;
         if (!maplibreGlobal) {
             console.error('MapLibre GL not loaded');
@@ -145,12 +179,19 @@
             pitch: 0
         });
 
+        // Set map center if there are pre-existing cells
+        if (selectedCells.size > 0) {
+            const firstCell = Array.from(selectedCells)[0];
+            const cellCenter = h3.cell_to_latlng(firstCell);
+            mapInstance.setCenter([cellCenter[1], cellCenter[0]]);
+        }
+
         deckInstance = new deck.DeckGL({
             container: mapContainerDiv,
             maplibregl: maplibreGlobal,
             initialViewState: {
-                longitude: DEFAULT_CENTER[0],
-                latitude: DEFAULT_CENTER[1],
+                longitude: selectedCells.size > 0 ? h3.cell_to_latlng(Array.from(selectedCells)[0])[1] : DEFAULT_CENTER[0],
+                latitude: selectedCells.size > 0 ? h3.cell_to_latlng(Array.from(selectedCells)[0])[0] : DEFAULT_CENTER[1],
                 zoom: 13,
                 pitch: 0,
                 bearing: 0
@@ -213,77 +254,109 @@
         }
 
         function getVisibleHexagons() {
-                if (!mapInstance) return [];
-                const bounds = mapInstance.getBounds();
-                if (!bounds) return [];
-                
-                const ne = bounds.getNorthEast();
-                const sw = bounds.getSouthWest();
-                
-                const centerLat = (ne.lat + sw.lat) / 2;
-                const centerLng = (ne.lng + sw.lng) / 2;
-                
-                const cells = [];
-                const latStep = 0.01;
-                const lngStep = 0.01;
-                
-                for (let lat = sw.lat; lat <= ne.lat; lat += latStep) {
-                    for (let lng = sw.lng; lng <= ne.lng; lng += lngStep) {
-                        const cell = h3.latLngToCell(lat, lng, RESOLUTION);
-                        if (cell && !cells.includes(cell)) {
-                            cells.push(cell);
-                        }
+            if (!mapInstance) return [];
+            const bounds = mapInstance.getBounds();
+            if (!bounds) return [];
+            
+            const ne = bounds.getNorthEast();
+            const sw = bounds.getSouthWest();
+            
+            const zoom = mapInstance.getZoom();
+            if (zoom < 11) return []; // Don't compute cells if zoomed out too far for performance
+            
+            const cells = [];
+            // Step size adapts based on zoom to ensure perfect viewport capture without freezing
+            const latStep = zoom >= 14 ? 0.003 : 0.006;
+            const lngStep = zoom >= 14 ? 0.003 : 0.006;
+            
+            for (let lat = sw.lat; lat <= ne.lat; lat += latStep) {
+                for (let lng = sw.lng; lng <= ne.lng; lng += lngStep) {
+                    let cell = null;
+                    if (typeof h3.latLngToCell === 'function') {
+                        cell = h3.latLngToCell(lat, lng, RESOLUTION);
+                    } else if (typeof h3.geoToH3 === 'function') {
+                        cell = h3.geoToH3(lat, lng, RESOLUTION);
+                    }
+                    if (cell && !cells.includes(cell)) {
+                        cells.push(cell);
                     }
                 }
-                return cells;
             }
+            return cells;
+        }
 
-            function updateLayers() {
-                if (!deckInstance) return;
-                
-                const availableHexes = getVisibleHexagons();
-                const availableData = availableHexes.map(hex => ({hex, isSelected: selectedCells.has(hex)}));
-                const selectedData = Array.from(selectedCells).map(hex => ({hex}));
-                
-                const layers = [
-                    new deck.H3HexagonLayer({
-                        id: 'available-layer',
-                        data: availableData,
-                        getH3Hexagon: d => d.hex,
-                        getFillColor: d => d.isSelected ? [66, 133, 244, 180] : [200, 200, 200, 60],
-                        getLineColor: d => d.isSelected ? [255, 255, 255, 255] : [150, 150, 150, 120],
-                        lineWidthMinPixels: 2,
-                        pickable: true,
-                        extruded: false,
-                        filled: true
-                    })
-                ];
+        function updateLayers() {
+            if (!deckInstance) return;
+            
+            const visibleHexes = getVisibleHexagons();
+            // Union visible viewport hexagons and all selected hexagons so selected ones never disappear!
+            const allHexes = new Set([...visibleHexes, ...selectedCells]);
+            
+            const data = Array.from(allHexes).map(hex => ({
+                hex, 
+                isSelected: selectedCells.has(hex)
+            }));
+            
+            const layers = [
+                new deck.H3HexagonLayer({
+                    id: 'hexagon-layer',
+                    data: data,
+                    getH3Hexagon: d => d.hex,
+                    // Vibrant Teal matching Unfold primary branding [20, 184, 166]
+                    getFillColor: d => d.isSelected ? [20, 184, 166, 180] : [200, 200, 200, 60],
+                    getLineColor: d => d.isSelected ? [255, 255, 255, 255] : [150, 150, 150, 120],
+                    lineWidthMinPixels: 2,
+                    pickable: true,
+                    extruded: false,
+                    filled: true
+                })
+            ];
 
-                deckInstance.setProps({
-                    layers,
-                    onClick: (info) => {
-                        if (!isEditing) return;
-                        
+            deckInstance.setProps({
+                layers,
+                onClick: (info) => {
+                    // Precise clicking allows toggling hexagons
+                    let hex = null;
+                    if (info.layer && info.layer.id === 'hexagon-layer') {
+                        hex = info.object.hex;
+                    } else if (info.coordinate) {
+                        const latLngToCell = h3.latLngToCell || h3.geoToH3;
+                        hex = latLngToCell(info.coordinate[1], info.coordinate[0], RESOLUTION);
+                    }
+
+                    if (hex) {
+                        if (selectedCells.has(hex)) {
+                            selectedCells.delete(hex);
+                        } else {
+                            selectedCells.add(hex);
+                        }
+                        updateLayers();
+                        syncToDjango();
+                    }
+                },
+                onHover: (info) => {
+                    // Paint brush mode: paint hexagons continuously while holding down the primary mouse button (left-click)
+                    if (!isEditing) return;
+                    
+                    const mouseEvent = info.srcEvent;
+                    if (mouseEvent && mouseEvent.buttons === 1) { // Left mouse button held down
                         let hex = null;
-                        if (info.layer && info.layer.id === 'available-layer') {
+                        if (info.layer && info.layer.id === 'hexagon-layer') {
                             hex = info.object.hex;
                         } else if (info.coordinate) {
-                            hex = h3.latLngToCell(info.coordinate[1], info.coordinate[0], RESOLUTION);
+                            const latLngToCell = h3.latLngToCell || h3.geoToH3;
+                            hex = latLngToCell(info.coordinate[1], info.coordinate[0], RESOLUTION);
                         }
 
-                        if (hex) {
-                            console.log('Clicked cell:', hex);
-                            if (selectedCells.has(hex)) {
-                                selectedCells.delete(hex);
-                            } else {
-                                selectedCells.add(hex);
-                            }
+                        if (hex && !selectedCells.has(hex)) {
+                            selectedCells.add(hex);
                             updateLayers();
                             syncToDjango();
                         }
                     }
-                });
-            }
+                }
+            });
+        }
 
         function syncToDjango() {
             if (selectedCells.size === 0) {
@@ -299,9 +372,16 @@
             textArea.dispatchEvent(new Event('change', { bubbles: true }));
         }
 
-        // Try auto-locate on start
-        setTimeout(autoLocate, 1000);
+        // Try auto-locate on start if no cells exist
+        if (selectedCells.size === 0) {
+            setTimeout(autoLocate, 1000);
+        }
         updateLayers();
+        
+        // Connect event listener to update hexagons when viewport pans/zooms
+        mapInstance.on('moveend', () => {
+            updateLayers();
+        });
     }
 
     function start() {

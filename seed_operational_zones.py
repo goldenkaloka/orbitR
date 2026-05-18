@@ -4,14 +4,15 @@ import django
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
+import h3
 from apps.core.geo_utils import ZONE_RESOLUTION
-from django.contrib.gis.geos import Point, MultiPolygon, Polygon
-from apps.geo.models import OperationalZone
+from django.contrib.gis.geos import MultiPolygon, Polygon
+from apps.geo.models import OperationalZone, ZoneH3Index
 
 ZONES_DATA = [
     {
         "name": "UDSM & Mlimani",
-        "description": "University of Dar es Salaam main campus, hostels, Hall 1-7, and Mlimani City shopping mall area.",
+        "description": "University of Dar es Salaam main campus, hostels, Hall 1-7, Savei, and the Mlimani City shopping mall hub.",
         "points": [
             (-6.7704, 39.2192),  # Hostels Zone
             (-6.7725, 39.2197),  # Mlimani City Shopping Mall
@@ -68,51 +69,107 @@ ZONES_DATA = [
     }
 ]
 
-
 def seed_operational_zones():
-    # Clear existing highly redundant zones to make room for normalized ones
     print("Clearing old operational zones...")
     OperationalZone.objects.all().delete()
 
-    created = 0
+    # Step 1: Assign core points and generate candidate H3 cell sets for each zone
+    # We expand around each core point by k=4 rings (~770m radius)
+    candidate_cells = {}
+    point_to_zone = {}
 
     for zone_data in ZONES_DATA:
-        # Create a single MultiPolygon from the union of buffers around each point in the zone
-        boundary_poly = None
+        zone_name = zone_data["name"]
+        candidate_cells[zone_name] = set()
+        
         for lat, lng in zone_data["points"]:
-            p = Point(lng, lat)
-            # Buffer of 0.007 degrees is roughly 770 meters radius, giving excellent regional coverage
-            p_buf = p.buffer(0.007)
-            if boundary_poly is None:
-                boundary_poly = p_buf
-            else:
-                boundary_poly = boundary_poly.union(p_buf)
+            point_to_zone[(lat, lng)] = zone_name
+            # Get H3 cell for this point
+            core_cell = h3.latlng_to_cell(lat, lng, ZONE_RESOLUTION)
+            # Expand by 4 rings to cover the neighborhood
+            neighbors = h3.grid_disk(core_cell, 4)
+            candidate_cells[zone_name].update(neighbors)
 
-        # Convert the union result into a MultiPolygon
-        if boundary_poly.geom_type == 'Polygon':
-            boundary = MultiPolygon(boundary_poly)
-        elif boundary_poly.geom_type == 'MultiPolygon':
-            boundary = boundary_poly
+    # Step 2: Build union of all candidate cells and perform Voronoi assignment
+    # This guarantees that each candidate H3 cell is assigned to EXACTLY one zone
+    all_unique_cells = set()
+    for cells in candidate_cells.values():
+        all_unique_cells.update(cells)
+
+    final_zone_cells = {zone_data["name"]: set() for zone_data in ZONES_DATA}
+
+    for cell in all_unique_cells:
+        cell_lat, cell_lng = h3.cell_to_latlng(cell)
+        
+        # Find the closest core point to this cell
+        closest_point = None
+        min_dist = float('inf')
+        
+        for pt in point_to_zone.keys():
+            # Great-circle distance
+            dist = h3.great_circle_distance((cell_lat, cell_lng), pt)
+            if dist < min_dist:
+                min_dist = dist
+                closest_point = pt
+        
+        # Assign exclusively to the zone of the closest core point
+        assigned_zone = point_to_zone[closest_point]
+        final_zone_cells[assigned_zone].add(cell)
+
+    # Step 3: Create OperationalZones and save clean, disjoint MultiPolygons
+    for zone_data in ZONES_DATA:
+        name = zone_data["name"]
+        description = zone_data["description"]
+        cells = list(final_zone_cells[name])
+
+        if not cells:
+            print(f"Warning: Zone '{name}' has 0 assigned cells. Skipping.")
+            continue
+
+        # Convert H3 cells back to list of GEOS Polygon shapes
+        polys = []
+        for cell in cells:
+            boundary_coords = h3.cell_to_boundary(cell)
+            exterior = [(lng, lat) for lat, lng in boundary_coords]
+            # Close the ring
+            if exterior[0] != exterior[-1]:
+                exterior.append(exterior[0])
+            polys.append(Polygon(exterior))
+
+        # Take spatial union of all hexagons to create a single contiguous / MultiPolygon boundary
+        union_poly = polys[0]
+        for p in polys[1:]:
+            union_poly = union_poly.union(p)
+
+        if union_poly.geom_type == 'Polygon':
+            boundary = MultiPolygon(union_poly)
+        elif union_poly.geom_type == 'MultiPolygon':
+            boundary = union_poly
         else:
-            boundary = MultiPolygon(boundary_poly.convex_hull)
+            boundary = MultiPolygon(union_poly.convex_hull)
 
+        # Create zone
         zone = OperationalZone.objects.create(
-            name=zone_data["name"],
-            description=zone_data["description"],
+            name=name,
+            description=description,
             boundary=boundary,
             is_active=True
         )
-        created += 1
-        
-        # Trigger H3 hexagons indexing for this zone
-        print(f"Indexing hexagons for {zone.name}...")
-        zone.refresh_h3_indexes()
 
-    print(
-        f"OperationalZone normalization seed complete. Created {created} optimum zones. "
-        f"Resolution={ZONE_RESOLUTION}"
-    )
+        # Bulk create exclusive ZoneH3Index records
+        index_objects = [
+            ZoneH3Index(zone=zone, h3_index=cell)
+            for cell in cells
+        ]
+        ZoneH3Index.objects.bulk_create(index_objects)
 
+        # Set count in metadata
+        zone.metadata['h3_count'] = len(cells)
+        zone.save()
+
+        print(f"Created zone '{zone.name}' with {len(cells)} exclusive hexagons.")
+
+    print("OperationalZone Voronoi normalization seed complete!")
 
 if __name__ == "__main__":
     seed_operational_zones()
