@@ -440,16 +440,18 @@ class BatchingEngine:
                 (Decimal(str(total_stops)) * per_stop_rate)
             )
         else:
-            driver_payout = min_guarantee
+            total_delivery_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in locked_orders)
+            driver_payout = max(min_guarantee, total_delivery_fees * Decimal('0.90'))
 
-        total_delivery_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in locked_orders)
         total_service_fees = sum(Decimal(str(o.service_fee or 0)) for o in locked_orders)
         user_paid_total = pricing_result['original_total'] + total_service_fees
 
-        original_driver_payout = driver_payout
         if driver_payout > user_paid_total:
-            logger.warning(f"Driver payout capped for batch: {original_driver_payout} -> {user_paid_total} (user_paid_total)")
+            logger.warning(f"Driver payout capped for batch: {driver_payout} -> {user_paid_total}")
             driver_payout = user_paid_total
+
+        if driver_payout < Decimal('0'):
+            driver_payout = Decimal('0')
 
         company_profit = user_paid_total - driver_payout
 
@@ -510,7 +512,7 @@ class BatchingEngine:
     @staticmethod
     @transaction.atomic
     def _create_single_order_batch(order):
-        """Create a single-order batch with percentage-based driver payout"""
+        """Create a single-order batch with distance-based driver payout"""
         from apps.orders.models import Order, DeliveryBatch
         from domain.services.pricing_service import PricingService
         from domain.services.mapbox_routing_service import MapboxRoutingService
@@ -525,9 +527,10 @@ class BatchingEngine:
             return None
 
         policy = PricingService.get_active_policy()
-        driver_share = Decimal('0.90')
-        if policy and policy.single_order_driver_share:
-            driver_share = policy.single_order_driver_share
+        min_guarantee = policy.driver_min_guarantee if policy and policy.driver_min_guarantee else Decimal('200')
+        per_km_rate = policy.driver_per_km_rate if policy and policy.driver_per_km_rate else Decimal('50')
+        per_stop_rate = policy.driver_per_stop_rate if policy and policy.driver_per_stop_rate else Decimal('30')
+        driver_share = policy.single_order_driver_share if policy and policy.single_order_driver_share else Decimal('0.90')
 
         delivery_fee = Decimal(str(locked_order.delivery_fee or 0))
         service_fee = Decimal(str(locked_order.service_fee or 0))
@@ -548,8 +551,19 @@ class BatchingEngine:
 
         driver_payout = delivery_fee * driver_share
 
+        if route_distance > 0 and per_km_rate > 0 and per_stop_rate > 0:
+            calculated_payout = (
+                min_guarantee +
+                (route_distance * per_km_rate) +
+                (Decimal('2') * per_stop_rate)
+            )
+            driver_payout = max(driver_payout, calculated_payout)
+
         if driver_payout > user_paid_total:
             driver_payout = user_paid_total
+
+        if driver_payout < Decimal('0'):
+            driver_payout = Decimal('0')
 
         company_profit = user_paid_total - driver_payout
 
@@ -587,18 +601,23 @@ class BatchingEngine:
 
     @staticmethod
     def _calculate_pricing(orders):
-        """Calculate pricing for batch - user pays full fee, no discount shown"""
-        from domain.services.pricing_service import PricingService
-
+        """
+        Calculate pricing for batch - uses stored fees from orders when available.
+        Only recalculates if fees are missing (backwards compatibility).
+        Skips audit logs for batch recalculation to avoid duplicate logs.
+        """
         original_total = Decimal('0')
         per_order = {}
 
         for order in orders:
-            fee, _, _ = PricingService.calculate_delivery_fee(
-                order.restaurant,
-                order.delivery_location,
-                order=order
-            )
+            fee = order.delivery_fee or Decimal('0')
+            if fee == Decimal('0') and order.restaurant and order.delivery_location:
+                fee, _, _ = PricingService.calculate_delivery_fee(
+                    order.restaurant,
+                    order.delivery_location,
+                    order=order,
+                    skip_log=True
+                )
             original_total += fee
             per_order[str(order.id)] = {
                 'original': fee,

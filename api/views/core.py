@@ -346,8 +346,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         ).prefetch_related('items', 'items__food').filter(
             status='READY', 
             is_paid=True, 
-            driver__isnull=True
+            driver__isnull=True,
+            batch__isnull=False
         ).order_by('-created_at')[offset:offset+limit]
+        
+        logger.info(f"Available jobs: {orders.count()} orders found")
+        for o in orders:
+            logger.info(f"  Order {o.id}: batch={o.batch_id}, h3_index={o.h3_index}, restaurant={o.restaurant_id}")
         
         return Response(OrderSerializer(orders, many=True).data)
 

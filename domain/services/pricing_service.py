@@ -54,12 +54,12 @@ class PricingService:
         return Decimal('1.00')
 
     @classmethod
-    def calculate_delivery_fee(cls, restaurant, delivery_location, order=None, pool=None):
+    def calculate_delivery_fee(cls, restaurant, delivery_location, order=None, pool=None, skip_log=False):
         """
         Calculates fully dynamic delivery fee.
         Returns (final_fee, service_fee, log_instance).
+        Set skip_log=True to skip database log creation (for batch recalculation).
         """
-        # 1. Guard against missing or invalid inputs
         if not delivery_location or not restaurant or not restaurant.geo_location:
             return Decimal('1000.00'), Decimal('300.00'), None
 
@@ -68,26 +68,22 @@ class PricingService:
             return Decimal('1000.00'), Decimal('300.00'), None
 
         try:
-            # 2. H3 Indexing
             delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
             restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
             
             if not delivery_h3 or not restaurant_h3:
                 return Decimal('1000.00'), Decimal('300.00'), None
 
-            # 3. Calculate exact distance (crow-flies)
             r_lat, r_lng = h3.cell_to_latlng(restaurant_h3)
             d_lat, d_lng = h3.cell_to_latlng(delivery_h3)
             distance_km = float(h3.great_circle_distance((r_lat, r_lng), (d_lat, d_lng)))
 
-            # 4. Get pricing policy
             policy = cls.get_active_policy()
             service_fee = policy.service_fee if policy else Decimal('300.00')
             
             if not policy:
                 return Decimal('1000.00'), service_fee, None
 
-            # 5. Regional adjustments via OperationalZone
             from apps.geo.models import ZoneH3Index
             op_zone = None
             zone_index = ZoneH3Index.objects.filter(h3_index=delivery_h3).select_related('zone').first()
@@ -105,16 +101,13 @@ class PricingService:
                 except ZonePricingTier.DoesNotExist:
                     pass
 
-            # 6. Distance tier multiplier (replaces flat fee overrides)
             tiers = cls.get_distance_tiers(policy)
             distance_tier_multiplier = cls.get_distance_tier_multiplier(tiers, distance_km)
 
-            # 7. Fuel economic adjustment
             fuel_adjustment = Decimal('0.00')
             if policy.fuel_price_reference and policy.fuel_price_reference > 3000:
                 fuel_adjustment = (policy.fuel_price_reference - 3000) / 100
 
-            # 8. Base calculation
             base_fee = base_override if base_override else policy.base_fee
             variable_fee = (
                 Decimal(str(distance_km))
@@ -136,22 +129,22 @@ class PricingService:
             if fuel_adjustment > 0:
                 adjustments['fuel_economic_surge'] = str(fuel_adjustment.quantize(Decimal('0.01')))
 
-            # 9. Round to nearest 100 TSh
             final_rounded = (final_fee / 100).quantize(Decimal('1'), rounding='ROUND_HALF_UP') * 100
 
-            # 10. Audit log
-            log = DeliveryFeeLog.objects.create(
-                order=order,
-                pool=pool,
-                restaurant=restaurant,
-                distance_km=distance_km,
-                estimated_road_distance_km=distance_km,
-                base_fee_used=base_fee,
-                per_km_rate_used=policy.per_km_rate,
-                final_fee=final_rounded,
-                adjustments=adjustments,
-                policy_name=policy.name
-            )
+            log = None
+            if not skip_log:
+                log = DeliveryFeeLog.objects.create(
+                    order=order,
+                    pool=pool,
+                    restaurant=restaurant,
+                    distance_km=distance_km,
+                    estimated_road_distance_km=distance_km,
+                    base_fee_used=base_fee,
+                    per_km_rate_used=policy.per_km_rate,
+                    final_fee=final_rounded,
+                    adjustments=adjustments,
+                    policy_name=policy.name
+                )
 
             return final_rounded, service_fee, log
 
