@@ -106,6 +106,8 @@ class OrderSerializer(serializers.ModelSerializer):
     customer_phone = serializers.ReadOnlyField(source='customer.phone')
     
     batch = serializers.SerializerMethodField()
+    original_delivery_fee = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
