@@ -86,6 +86,10 @@
             mainBtn.innerText = `🎨 Paint Zones: ${isEditing ? 'ON' : 'OFF'}`;
             mainBtn.style.background = isEditing ? '#4285f4' : '#1a1a1a';
             mainBtn.style.color = '#fff';
+            if (mapInstance) {
+                mapInstance.dragPan.enable();
+                if (isEditing) mapInstance.dragPan.disable();
+            }
             updateLayers();
         };
 
