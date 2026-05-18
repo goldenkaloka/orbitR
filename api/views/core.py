@@ -597,10 +597,6 @@ class DisputeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-import logging
-logger = logging.getLogger(__name__)
-
-from apps.orders.models import Dispute
         if user.role == 'customer':
             return Dispute.objects.filter(raised_by=user)
         elif user.role == 'admin':
