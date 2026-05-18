@@ -120,9 +120,23 @@
             mainBtn.innerText = `🎨 Paint Brush: ${isEditing ? 'ON' : 'OFF'}`;
             mainBtn.style.background = isEditing ? '#14b8a6' : '#1a1a1a'; // Orbitr Teal
             mainBtn.style.color = '#fff';
+            
+            // Disable dragPan on deck.gl's controller during paint mode!
+            deckInstance.setProps({
+                controller: {
+                    dragPan: !isEditing,
+                    dragRotate: false,
+                    doubleClickZoom: true,
+                    scrollZoom: true
+                }
+            });
+            
             if (mapInstance) {
-                mapInstance.dragPan.enable();
-                if (isEditing) mapInstance.dragPan.disable(); // Disable map dragging so brush drag works
+                if (isEditing) {
+                    mapInstance.dragPan.disable(); // Disable map dragging so brush drag works
+                } else {
+                    mapInstance.dragPan.enable();
+                }
             }
             updateLayers();
         };
@@ -196,7 +210,12 @@
                 pitch: 0,
                 bearing: 0
             },
-            controller: true,
+            controller: {
+                dragPan: true,
+                dragRotate: false,
+                doubleClickZoom: true,
+                scrollZoom: true
+            },
             onViewStateChange: ({viewState}) => {
                 if (mapInstance) {
                     mapInstance.jumpTo({
