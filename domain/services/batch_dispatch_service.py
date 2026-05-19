@@ -239,6 +239,14 @@ class BatchDispatchService:
 
             order_count = batch.orders.count()
 
+            if driver.current_active_orders + order_count > driver.max_active_orders:
+                logger.warning(
+                    f"[Dispatch] Driver {driver.id} would exceed capacity "
+                    f"({driver.current_active_orders} + {order_count} > {driver.max_active_orders}). "
+                    f"Aborting offer. Batch {batch.id} will be retried."
+                )
+                return False
+
             new_batch_status = BatchFSM.transition(batch, 'OFFER')
             batch.driver = driver
             batch.status = new_batch_status
@@ -306,18 +314,21 @@ class BatchDispatchService:
 
     @staticmethod
     def accept_batch(batch_id: str, driver_id: str, actor):
-        """Driver accepts a batch offer."""
-        from apps.delivery.models import DeliveryAssignment
-        from apps.orders.models import DeliveryBatch, Order
+        """Driver accepts a batch offer. Re-dispatches any other pending offers to this driver."""
+        from apps.delivery.models import Driver
+        from apps.events.utils import broadcast_order_status
 
         with transaction.atomic():
-            # Fix #9: renamed DeliveryBatch_locked to _lock_batch
             batch = _lock_batch(batch_id)
 
             if batch.status != 'OFFERED':
                 raise ValueError(f"Batch is not in OFFERED status: {batch.status}")
             if str(batch.driver_id) != str(driver_id):
                 raise ValueError("This batch was not offered to you")
+
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+
+            order_count = batch.orders.count()
 
             batch.status = BatchFSM.transition(batch, 'ACCEPT')
             batch.save(update_fields=['status'])
@@ -326,6 +337,9 @@ class BatchDispatchService:
             for order in orders:
                 order.status = 'ASSIGNED'
             Order.objects.bulk_update(orders, ['status'])
+
+            driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
+            driver.save(update_fields=['status'])
 
             assignments = [
                 DeliveryAssignment(order_id=o.id, driver_id=driver_id, batch=batch)
@@ -341,7 +355,25 @@ class BatchDispatchService:
             ))
 
             logger.info(f"[Dispatch] Driver {driver_id} accepted batch {batch_id}")
-            return batch
+
+        def _reassign_other_batches():
+            from domain.services.dispatch_tasks import dispatch_batch_task
+            other_offers = DeliveryBatch.objects.filter(
+                driver_id=driver_id,
+                status='OFFERED'
+            ).exclude(id=batch_id)
+
+            for other_batch in other_offers:
+                logger.info(
+                    f"[Dispatch] Re-dispatching batch {other_batch.id} to another driver "
+                    f"(driver {driver_id} already accepted {batch_id})"
+                )
+                DriverFreeService.release(str(other_batch.id), event='DECLINE', reason='Driver accepted another batch')
+                dispatch_batch_task.delay(str(other_batch.id))
+
+            transaction.on_commit(_reassign_other_batches)
+
+        return batch
 
     @staticmethod
     def decline_batch(batch_id: str, driver_id: str, actor):

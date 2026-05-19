@@ -453,6 +453,14 @@ def on_temp_driver_registered(event):
 
             order_count = batch.orders.count()
 
+            if driver.current_active_orders + order_count > driver.max_active_orders:
+                logger.warning(
+                    f"[TempDriver] Driver {driver_id} would exceed capacity "
+                    f"({driver.current_active_orders} + {order_count} > {driver.max_active_orders}). "
+                    f"Skipping batch {batch.id}"
+                )
+                return
+
             batch.driver = driver
             batch.status = 'ASSIGNED'
             batch.save()

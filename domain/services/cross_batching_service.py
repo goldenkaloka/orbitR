@@ -541,6 +541,7 @@ class CrossBatchDriverMatcher:
             def find_best_driver(zone_cells, zone_penalty=0, filter_q=Q()):
                 drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                     status='AVAILABLE',
+                    current_active_orders__lt=models.F('max_active_orders'),
                     h3_index__in=zone_cells,
                     location__dwithin=(restaurant_point, D(km=max_radius_km))
                 ).filter(filter_q).annotate(

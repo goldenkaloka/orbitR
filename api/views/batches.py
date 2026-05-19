@@ -40,12 +40,25 @@ class BatchViewSet(viewsets.ViewSet):
         """Driver accepts a batch offer"""
         if request.user.role != 'driver':
             return Response({'error': 'Only drivers can accept batches'}, status=403)
-        
+
         try:
             from apps.delivery.models import Driver
             driver = Driver.objects.get(user=request.user)
+
+            pending_offers = DeliveryBatch.objects.filter(driver_id=driver.id, status='OFFERED')
+            if pending_offers.count() > 1:
+                return Response(
+                    {'error': f'Driver has {pending_offers.count()} pending batch offers. Accept or decline those first.'},
+                    status=400
+                )
+            if pending_offers.exists() and str(pending_offers.first().id) != pk:
+                return Response(
+                    {'error': 'Driver already has a pending batch offer. Accept or decline it before accepting another.'},
+                    status=400
+                )
+
             batch = DeliveryBatch.objects.get(id=pk)
-            
+
             result = BatchDispatchService.accept_batch(str(batch.id), str(driver.id), request.user)
             
             orders = batch.orders.all()
