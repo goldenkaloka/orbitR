@@ -1,0 +1,63 @@
+# Django Settings
+DEBUG=False
+SECRET_KEY=e1kt)i9-kb&br#5#2vz3csw1+d8kfpz(knre%d#k*v(l&1_ii!
+ALLOWED_HOSTS=api.mwanachuoshop.com,178.105.46.108,localhost,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://api.mwanachuoshop.com,http://localhost:8000
+SECURE_SSL_REDIRECT=True
+
+# Cookie security — set to False when serving over plain HTTP (no HTTPS/SSL)
+SESSION_COOKIE_SECURE=True
+CSRF_COOKIE_SECURE=True
+
+# CORS
+CORS_ALLOWED_ORIGINS=https://mwanachuoshop.com
+
+# Airpay
+AIRPAY_MERCHANT_ID=247234
+AIRPAY_USERNAME=9416308
+AIRPAY_PASSWORD=VPz2eXjJ
+AIRPAY_SECRET_KEY=DXfBQn277z2Emtjt
+AIRPAY_CLIENT_ID=d0e53f
+AIRPAY_CLIENT_SECRET=2da4b10b2a93a4fb99144f821bc38aa4
+AIRPAY_MERCHANT_DOMAIN=www.grow.airpay.tz
+
+
+# Database
+POSTGRES_DB=mwanachuo_db
+POSTGRES_USER=mwanachuo_user
+POSTGRES_PASSWORD=Gold@002
+
+# MinIO
+MINIO_ROOT_USER=minioadmin
+MINIO_ROOT_PASSWORD=Gold@002
+MINIO_STORAGE_BUCKET_NAME=media
+MINIO_ENDPOINT=http://localhost:9000
+MINIO_EXTERNAL_URL=https://api.mwanachuoshop.com
+# Notifications Configuration
+ONESIGNAL_APP_ID=b108e16e-0426-4b7f-bd78-20f04056bade
+ONESIGNAL_REST_API_KEY=os_v2_app_weeoc3qeezfx7plyedyeavv23yd256jdj22uhbesd2bmclz5b3fzyr7lw3sfncfxrqynpdrdhj7d7xwkutoz5hd77obusn6wkexefjy
+
+# Beem Africa (SMS)
+RAFIKI_API_KEY=sk_qUvgWy4fU1btBrmEnQM2ggYr5IZieRMU0YvOrhWbdo5KVKxB
+RAFIKI_SENDER_NAME=Orbit
+MOCK_SMS=False
+
+# Redis / Cache
+REDIS_PASSWORD=mwanachuo_redis_secure_pass
+REDIS_URL=redis://:mwanachuo_redis_secure_pass@redis:6379/1
+
+# Celery
+CELERY_BROKER_URL=redis://:mwanachuo_redis_secure_pass@redis:6379/0
+CELERY_RESULT_BACKEND=redis://:mwanachuo_redis_secure_pass@redis:6379/0
+CELERY_CONCURRENCY=2
+CELERY_PAYMENTS_CONCURRENCY=1
+CELERY_WORKER_PREFETCH_MULTIPLIER=1
+CELERY_WORKER_MAX_TASKS_PER_CHILD=200
+CELERY_RESULT_EXPIRES=3600
+
+# Performance / Observability
+PERF_SLOW_REQUEST_MS=700
+PERF_REQUEST_LOG_LEVEL=WARNING
+PERF_CELERY_LOG_LEVEL=INFO
+
+MOCK_PAYMENTS=True
