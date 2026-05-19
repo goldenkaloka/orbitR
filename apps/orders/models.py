@@ -191,6 +191,7 @@ class DeliveryBatch(models.Model):
         ('PICKED', 'Rider Picked Up'),
         ('COMPLETED', 'All Delivered'),
         ('EXPIRED', 'Expired (No Driver)'),
+        ('WAITING_TEMP_DRIVER', 'Waiting for Temp Driver'),
         ('CANCELLED', 'Cancelled'),
     )
 
@@ -224,6 +225,7 @@ class DeliveryBatch(models.Model):
 
     offer_attempt = models.PositiveIntegerField(default=0, help_text="Number of times batch has been offered to drivers")
     offer_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch was last offered")
+    waiting_since = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch entered WAITING_TEMP_DRIVER status")
     
     zone_ids = models.JSONField(null=True, blank=True, help_text="List of zone IDs this batch spans")
     is_inter_zone = models.BooleanField(default=False, help_text="True if batch spans multiple zones")

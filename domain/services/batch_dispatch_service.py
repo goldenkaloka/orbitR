@@ -16,49 +16,80 @@ OFFER_CACHE_PREFIX = "batch_offer_"
 EXPIRED_BATCH_NOTIFY_COOLDOWN = 1800
 
 
+WAITING_BATCH_TIMEOUT_MINUTES = 15
+
+
 def handle_expired_batch(batch_id):
-    """Handle batch that has expired after max attempts - mark orders for manual assignment."""
+    """Handle batch that has expired after max attempts - put in waiting for temp driver status."""
     from apps.orders.models import DeliveryBatch, Order
     from infrastructure.notifications.service import NotificationService
 
     try:
-        batch = DeliveryBatch.objects.select_related().get(id=batch_id)
+        batch = DeliveryBatch.objects.prefetch_related('orders__restaurant').select_related('batch').get(id=batch_id)
 
         if batch.status != 'EXPIRED':
             return
 
         order_count = batch.orders.count()
 
-        orders = list(batch.orders.all())
-        for order in orders:
-            order.status = 'PENDING_MANUAL_ASSIGNMENT'
-            order.batch = None
+        batch.status = 'WAITING_TEMP_DRIVER'
+        batch.waiting_since = timezone.now()
+        batch.save(update_fields=['status', 'waiting_since'])
 
-        Order.objects.bulk_update(orders, ['status', 'batch'])
+        restaurants_in_batch = set()
+        for order in batch.orders.all():
+            if order.restaurant_id:
+                restaurants_in_batch.add(order.restaurant_id)
 
-        logger.warning(f"Batch {batch_id} expired - {order_count} orders marked for manual assignment")
+        logger.warning(f"Batch {batch_id} waiting for temp driver - {order_count} orders, {len(restaurants_in_batch)} restaurants")
 
-        admin_alert_key = f"expired_batch_admin_{batch_id}"
-        if not cache.get(admin_alert_key):
-            cache.set(admin_alert_key, True, timeout=EXPIRED_BATCH_NOTIFY_COOLDOWN)
+        for restaurant_id in restaurants_in_batch:
+            notify_restaurant_pending_batch(batch_id, restaurant_id, batch)
 
-            try:
-                from django.conf import settings
-                if hasattr(settings, 'ADMIN_NOTIFICATION_USER_ID'):
-                    NotificationService.send_push(
-                        user_id=str(settings.ADMIN_NOTIFICATION_USER_ID),
-                        title="Batch Expired - Manual Assignment Required",
-                        body=f"Batch {batch_id} with {order_count} orders has expired. Orders marked for manual assignment.",
-                        data={"batch_id": str(batch_id), "type": "batch_expired_manual_assign"}
-                    )
-            except Exception as e:
-                logger.error(f"Failed to send expired batch notification: {e}")
-
-        return orders
+        return list(batch.orders.all())
 
     except Exception as e:
         logger.error(f"Error handling expired batch {batch_id}: {e}")
         return None
+
+
+def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
+    """Notify a restaurant that they have a batch waiting for a temp driver."""
+    from apps.restaurants.models import Restaurant
+    from infrastructure.notifications.service import NotificationService
+
+    try:
+        if batch is None:
+            batch = DeliveryBatch.objects.prefetch_related('orders').get(id=batch_id)
+
+        restaurant = Restaurant.objects.get(id=restaurant_id)
+        if not restaurant.owner:
+            return
+
+        order_count = batch.orders.filter(restaurant_id=restaurant_id).count()
+        if order_count == 0:
+            return
+
+        cache_key = f"batch_notify_restaurant_{batch_id}_{restaurant_id}"
+        if cache.get(cache_key):
+            return
+
+        cache.set(cache_key, True, timeout=1800)
+
+        NotificationService.send_push(
+            user_id=str(restaurant.owner.id),
+            title="Need Driver! 🚗",
+            body=f"You have {order_count} order(s) waiting for delivery. Register a temp driver to deliver them!",
+            data={
+                "batch_id": str(batch_id),
+                "restaurant_id": str(restaurant_id),
+                "type": "batch_needs_driver"
+            }
+        )
+        logger.info(f"Notified restaurant {restaurant_id} about batch {batch_id}")
+
+    except Exception as e:
+        logger.error(f"Failed to notify restaurant {restaurant_id} about batch {batch_id}: {e}")
 
 
 def get_available_driver_count():

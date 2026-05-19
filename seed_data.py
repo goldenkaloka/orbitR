@@ -23,9 +23,9 @@ def seed():
     restaurant_image_path = "media/restaurants/seed.png"
     food_image_path = "media/products/seed.png"
 
-    # Realistic coordinates for Dar es Salaam
-    base_lat = -6.7924
-    base_lng = 39.2026
+    # Realistic coordinates for Dar es Salaam (centered inside operational zones)
+    base_lat = -6.7650
+    base_lng = 39.2150
 
     for i in range(5):
         # Slightly vary the coordinates for each restaurant

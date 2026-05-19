@@ -22,12 +22,38 @@ class PricingService:
 
     @classmethod
     def get_active_policy(cls):
-        """Fetches active policy from cache or DB."""
+        """Fetches active policy from cache or DB. Creates default if none exists."""
         policy = cache.get(cls.CACHE_KEY_ACTIVE_POLICY)
         if not policy:
             policy = PricingPolicy.objects.filter(is_active=True).first()
+            if not policy:
+                policy = cls._ensure_default_policy()
             if policy:
                 cache.set(cls.CACHE_KEY_ACTIVE_POLICY, policy, cls.CACHE_TTL)
+        return policy
+
+    @classmethod
+    def _ensure_default_policy(cls):
+        """Ensure a default pricing policy exists and is active."""
+        from decimal import Decimal
+        policy = PricingPolicy.objects.filter(name='Default Policy').first()
+        if policy:
+            if not policy.is_active:
+                policy.is_active = True
+                policy.save(update_fields=['is_active'])
+            return policy
+
+        policy = PricingPolicy.objects.create(
+            name='Default Policy',
+            is_active=True,
+            base_fee=Decimal('1000.00'),
+            per_km_rate=Decimal('500.00'),
+            service_fee=Decimal('300.00'),
+            driver_min_guarantee=Decimal('200.00'),
+            driver_per_km_rate=Decimal('50.00'),
+            driver_per_stop_rate=Decimal('30.00'),
+            single_order_driver_share=Decimal('0.90')
+        )
         return policy
 
     @classmethod

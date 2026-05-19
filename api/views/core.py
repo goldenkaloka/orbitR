@@ -13,7 +13,7 @@ from django.contrib.postgres.search import TrigramSimilarity
 from apps.users.models import User
 from apps.restaurants.models import Restaurant
 from apps.products.models import Food
-from apps.orders.models import Order
+from apps.orders.models import Order, DeliveryBatch
 from apps.delivery.models import Driver
 from apps.wallets.models import Wallet
 from apps.core.models import Notification
@@ -29,6 +29,8 @@ from api.serializers.core import (
 from api.serializers.marketplace import MarketplaceProductSerializer
 
 from django.core.cache import cache
+from django.utils import timezone
+from django.conf import settings
 from domain.services.order_services import (
     ConfirmOrderService, 
     StartPreparingService,
@@ -175,7 +177,23 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             restaurant = Restaurant.objects.select_related('owner').prefetch_related('foods').get(owner=request.user)
             data = RestaurantSerializer(restaurant).data
-            cache.set(cache_key, data, 3600) # Cache for 1 hour
+
+            timeout_minutes = getattr(settings, 'WAITING_BATCH_TIMEOUT_MINUTES', 15)
+            threshold = timezone.now() - timezone.timedelta(minutes=timeout_minutes)
+
+            pending_count = DeliveryBatch.objects.filter(
+                status='WAITING_TEMP_DRIVER',
+                waiting_since__gt=threshold,
+                orders__restaurant_id=restaurant.id
+            ).values('id').distinct().count()
+
+            data['pending_batches_banner'] = {
+                'has_pending': pending_count > 0,
+                'count': pending_count,
+                'message': f'{pending_count} batch(es) waiting for driver' if pending_count > 0 else None
+            }
+
+            cache.set(cache_key, data, 3600)
             return Response(data)
         except Restaurant.DoesNotExist:
             return Response({}, status=200)
@@ -235,6 +253,50 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             })
         except (ValueError, TypeError):
             return Response({'error': 'Invalid lat or lng'}, status=400)
+
+    @action(detail=False, methods=['GET'], url_path='pending-batches')
+    def pending_batches(self, request):
+        """
+        Get batches waiting for temp driver that contain orders from this restaurant.
+        Used by restaurant owner to see batches needing a driver.
+        """
+        from django.utils import timezone
+        from django.conf import settings
+        from datetime import timedelta
+
+        try:
+            restaurant = Restaurant.objects.get(owner=request.user)
+        except Restaurant.DoesNotExist:
+            return Response({'error': 'Restaurant not found'}, status=404)
+
+        timeout_minutes = getattr(settings, 'WAITING_BATCH_TIMEOUT_MINUTES', 15)
+        threshold = timezone.now() - timedelta(minutes=timeout_minutes)
+
+        batches = DeliveryBatch.objects.filter(
+            status='WAITING_TEMP_DRIVER',
+            waiting_since__gt=threshold
+        ).prefetch_related('orders')
+
+        restaurant_batches = []
+        for batch in batches:
+            restaurant_orders = batch.orders.filter(restaurant_id=restaurant.id)
+            if restaurant_orders.exists():
+                restaurant_batches.append({
+                    'batch_id': str(batch.id),
+                    'status': batch.status,
+                    'waiting_since': batch.waiting_since.isoformat() if batch.waiting_since else None,
+                    'timeout_at': (batch.waiting_since + timedelta(minutes=timeout_minutes)).isoformat() if batch.waiting_since else None,
+                    'order_count': batch.orders.count(),
+                    'restaurant_order_count': restaurant_orders.count(),
+                    'total_value': float(sum(o.total_amount for o in batch.orders.all())),
+                    'has_temp_driver_pending': True
+                })
+
+        return Response({
+            'batches': restaurant_batches,
+            'count': len(restaurant_batches),
+            'has_pending': len(restaurant_batches) > 0
+        })
 
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()

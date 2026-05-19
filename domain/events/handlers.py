@@ -401,6 +401,120 @@ def on_batch_expired(event):
     logger.info(f"Batch {event.aggregate_id} offer expired, reason: {event.payload.get('reason')}")
 
 
+def on_temp_driver_registered(event):
+    """
+    When a temporary driver is registered, check for waiting batches
+    from the same restaurant and try to assign the driver.
+    Uses database-level locking to handle race conditions.
+    """
+    from django.db import transaction, models
+    from django.db.models import Q, Count
+    from apps.delivery.models import Driver
+    from apps.orders.models import DeliveryBatch
+    from domain.fsm.driver_fsm import DriverFSM
+
+    driver_id = event.payload.get('driver_id')
+    restaurant_id = event.payload.get('assigned_by')
+
+    if not driver_id or not restaurant_id:
+        logger.warning(f"TempDriverRegistered event missing driver_id or assigned_by: {event.payload}")
+        return
+
+    logger.info(f"Checking for waiting batches for restaurant {restaurant_id} after temp driver {driver_id} registered")
+
+    with transaction.atomic():
+        batch = DeliveryBatch.objects.select_for_update(skip_locked=True).filter(
+            status='WAITING_TEMP_DRIVER',
+            batch_type='SINGLE_RESTAURANT'
+        ).filter(
+            orders__restaurant_id=restaurant_id
+        ).annotate(
+            order_count=Count('orders')
+        ).order_by('waiting_since').first()
+
+        if not batch:
+            logger.info(f"No waiting batches found for restaurant {restaurant_id}")
+            return
+
+        if batch.driver_id:
+            logger.info(f"Batch {batch.id} already has a driver assigned, skipping")
+            return
+
+        try:
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+
+            if driver.status not in ['OFFLINE', 'AVAILABLE']:
+                logger.warning(f"Driver {driver_id} is in status {driver.status}, cannot assign to batch")
+                return
+
+            if driver.driver_type != 'temporary' or str(driver.assigned_by_id) != str(restaurant_id):
+                logger.warning(f"Driver {driver_id} not assigned to restaurant {restaurant_id}")
+                return
+
+            order_count = batch.orders.count()
+
+            batch.driver = driver
+            batch.status = 'ASSIGNED'
+            batch.save()
+
+            if driver.status == 'OFFLINE':
+                driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
+            driver.current_active_orders += order_count
+            driver.save()
+
+            for order in batch.orders.all():
+                order.status = 'ASSIGNED'
+                order.driver = driver
+
+            from apps.orders.models import Order
+            Order.objects.bulk_update(list(batch.orders.all()), ['status', 'driver'])
+
+            notify_other_restaurants_in_batch(batch.id, batch, restaurant_id)
+
+            logger.info(f"Successfully assigned temp driver {driver_id} to batch {batch.id}")
+
+            from domain.events.types import BatchAccepted
+            EventBus.publish(BatchAccepted(
+                aggregate_id=str(batch.id),
+                payload={'driver_id': str(driver.id), 'restaurant_id': str(restaurant_id)}
+            ))
+
+        except Driver.DoesNotExist:
+            logger.error(f"Driver {driver_id} not found")
+        except Exception as e:
+            logger.error(f"Error assigning temp driver to batch: {str(e)}")
+
+
+def notify_other_restaurants_in_batch(batch_id, batch, assigned_restaurant_id):
+    """Notify other restaurants in the batch that their orders are being delivered."""
+    from apps.restaurants.models import Restaurant
+
+    try:
+        restaurant_ids = set()
+        for order in batch.orders.all():
+            if order.restaurant_id:
+                restaurant_ids.add(order.restaurant_id)
+
+        restaurant_ids.discard(assigned_restaurant_id)
+
+        for rest_id in restaurant_ids:
+            try:
+                restaurant = Restaurant.objects.get(id=rest_id)
+                if restaurant.owner:
+                    from infrastructure.notifications.service import NotificationService
+                    NotificationService.send_push(
+                        user_id=str(restaurant.owner.id),
+                        title="Orders Being Delivered! 🚗",
+                        body=f"Your orders in batch {batch_id[:8]}... are now being delivered by a driver.",
+                        data={"batch_id": str(batch_id), "type": "batch_delivering"}
+                    )
+            except Exception as e:
+                logger.error(f"Failed to notify restaurant {rest_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error notifying other restaurants: {e}")
+
+
 def on_dispatch_failed(event):
     order_id = event.payload.get('order_id')
     attempt_retry = event.payload.get('attempt_retry', True)
@@ -456,6 +570,10 @@ def register_all_handlers():
     EventBus.subscribe(BatchAccepted, on_batch_accepted)
     EventBus.subscribe(BatchDeclined, on_batch_declined)
     EventBus.subscribe(BatchExpired, on_batch_expired)
+
+    # Temp Driver Events
+    from domain.events.types import TempDriverRegistered
+    EventBus.subscribe(TempDriverRegistered, on_temp_driver_registered)
 
     # Other Domain Events
     from domain.events.types import PaymentCollected, AuthOTPRequested, AuthUserVerified, AuthUserRegistered
