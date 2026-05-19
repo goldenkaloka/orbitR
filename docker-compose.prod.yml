@@ -18,6 +18,8 @@ services:
       resources:
         limits:
           memory: 1G
+    volumes:
+      - staticfiles_cache:/app/staticfiles
     environment:
       - DEBUG=False
       - ALLOWED_HOSTS=*,api.mwanachuoshop.com,178.105.46.108,localhost,127.0.0.1
@@ -65,3 +67,4 @@ volumes:
   certbot-etc:
   certbot-var:
   certbot-webroot:
+  staticfiles_cache:

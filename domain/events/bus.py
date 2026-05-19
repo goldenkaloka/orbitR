@@ -1,4 +1,6 @@
 from collections import defaultdict
+from django.db import transaction
+
 
 class EventBus:
     _handlers = defaultdict(list)
@@ -11,19 +13,21 @@ class EventBus:
     @classmethod
     def publish(cls, event):
         from apps.events.models import EventLog
-        from django.db import transaction
-        
-        # 1. Log the event immediately (within current transaction)
+        from domain.events.tasks import dispatch_event_task
+
         event_log = EventLog.objects.create(
             aggregate_type=event.aggregate_type,
             aggregate_id=event.aggregate_id,
             event_type=event.event_type,
             payload=event.payload
         )
-        
-        # 2. Dispatch using Celery task ONLY after transaction commits
-        from domain.events.tasks import dispatch_event_task
-        transaction.on_commit(lambda: dispatch_event_task.delay(str(event_log.id)))
+
+        task_id = str(event_log.id)
+
+        if transaction.get_connection().in_atomic_block:
+            transaction.on_commit(lambda: dispatch_event_task.delay(task_id))
+        else:
+            dispatch_event_task.delay(task_id)
 
     @classmethod
     def _dispatch(cls, event):
