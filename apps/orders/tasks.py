@@ -1,30 +1,66 @@
 from celery import shared_task
 from django.utils import timezone
+from django.db import transaction
 from datetime import timedelta
 from apps.orders.models import Order
+from domain.fsm.order_fsm import OrderFSM
+from domain.events.bus import EventBus
+from domain.events.types import OrderCancelled
 import logging
 
 logger = logging.getLogger(__name__)
 
+
 @shared_task
 def cleanup_unpaid_orders():
     """
-    Deletes orders that have been stuck in PENDING_PAYMENT for more than 30 minutes.
-    This prevents 'Ghost Orders' from cluttering the database.
+    Cancels orders stuck in PENDING_PAYMENT for more than 30 minutes.
+    Notifies the customer and publishes OrderCancelled event for downstream handlers.
     """
     threshold = timezone.now() - timedelta(minutes=30)
-    abandoned_orders = Order.objects.filter(
-        status='PENDING_PAYMENT',
-        is_paid=False,
-        created_at__lt=threshold
-    )
 
-    count = abandoned_orders.count()
-    if count > 0:
-        logger.info(f"Cleaning up {count} abandoned PENDING_PAYMENT orders.")
-        abandoned_orders.delete()
+    with transaction.atomic():
+        abandoned = list(
+            Order.objects.select_for_update(skip_locked=True)
+            .filter(status='PENDING_PAYMENT', created_at__lt=threshold)
+        )
 
-    return f"Cleaned up {count} orders."
+        if not abandoned:
+            return f"Cleaned up 0 orders."
+
+        logger.info(f"[UnpaidCleanup] Cancelling {len(abandoned)} abandoned PENDING_PAYMENT orders")
+        cancelled_orders = []
+        for order in abandoned:
+            try:
+                order.status = OrderFSM.transition(order.status, 'CANCELLED')
+                order.status_changed_at = timezone.now()
+                order.save(update_fields=['status', 'status_changed_at', 'updated_at'])
+                cancelled_orders.append(order)
+            except Exception as e:
+                logger.error(f"[UnpaidCleanup] Failed to cancel order {order.id}: {e}")
+
+    for order in cancelled_orders:
+        try:
+            transaction.on_commit(lambda o=order: EventBus.publish(OrderCancelled(
+                aggregate_id=o.id,
+                payload={'actor_id': 'system', 'reason': 'payment_timeout_30min', 'order_id': str(o.id)}
+            )))
+        except Exception as e:
+            logger.error(f"[UnpaidCleanup] Failed to publish event for order {order.id}: {e}")
+
+    for order in cancelled_orders:
+        try:
+            from infrastructure.notifications.service import NotificationService
+            NotificationService.send_push(
+                user_id=str(order.customer.id),
+                title="Order Expired — Payment Not Received",
+                body=f"Your order #{str(order.id)[:8]} has expired because payment was not completed within 30 minutes.",
+                data={"order_id": str(order.id), "type": "order_expired_unpaid"}
+            )
+        except Exception as e:
+            logger.error(f"[UnpaidCleanup] Failed to notify customer for order {order.id}: {e}")
+
+    return f"Cancelled {len(cancelled_orders)} unpaid orders."
 
 
 @shared_task

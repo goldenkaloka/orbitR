@@ -49,8 +49,8 @@ class Order(models.Model):
     discount_applied = models.BooleanField(default=False, db_index=True)
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
+    status_changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     def save(self, *args, **kwargs):
         if self.delivery_location:
@@ -58,6 +58,12 @@ class Order(models.Model):
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
 
+        original_status = getattr(self, '_original_status', None)
+        if original_status is not None and self.status != original_status:
+            from django.utils import timezone
+            self.status_changed_at = timezone.now()
+
+        self._original_status = self.status
         super().save(*args, **kwargs)
 
     class Meta:
@@ -135,6 +141,13 @@ class OrderPool(models.Model):
             new_h3 = latlng_to_h3(self.delivery_location.y, self.delivery_location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
+
+        original_status = getattr(self, '_original_status', None)
+        if original_status is not None and self.status != original_status:
+            from django.utils import timezone
+            self.status_changed_at = timezone.now()
+
+        self._original_status = self.status
         super().save(*args, **kwargs)
 
     class Meta:

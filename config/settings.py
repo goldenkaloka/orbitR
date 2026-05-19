@@ -560,7 +560,22 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'domain.services.dispatch_tasks.expire_stale_pools_task',
         'schedule': crontab(minute='*/15'),
     },
+    'expire-stale-preparing-orders-every-5-mins': {
+        'task': 'domain.services.dispatch_tasks.expire_stale_preparing_orders_task',
+        'schedule': crontab(minute='*/5'),
+    },
+    'cleanup-unpaid-orders-every-10-mins': {
+        'task': 'apps.orders.tasks.cleanup_unpaid_orders',
+        'schedule': crontab(minute='*/10'),
+    },
+    'check-waiting-batches-timeout-every-5-mins': {
+        'task': 'apps.orders.tasks.check_waiting_batches_timeout',
+        'schedule': crontab(minute='*/5'),
+    },
 }
+
+PREPARING_ORDER_TIMEOUT_MINUTES = config('PREPARING_ORDER_TIMEOUT_MINUTES', default=45, cast=int)
+CONFIRMED_TO_PREPARING_GRACE_MINUTES = config('CONFIRMED_TO_PREPARING_GRACE_MINUTES', default=20, cast=int)
 
 CHANNEL_LAYERS = {
     "default": {

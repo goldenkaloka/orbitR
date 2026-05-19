@@ -253,13 +253,126 @@ def retry_batch_dispatch_task(batch_id, attempt=1):
     dispatch_batch_task.apply_async(args=[str(batch_id), attempt])
 
 
+@shared_task(name='domain.services.dispatch_tasks.expire_stale_preparing_orders_task')
+def expire_stale_preparing_orders_task():
+    """
+    Two-stage expiry for orders that the restaurant hasn't started preparing:
+
+    Stage 1 (CONFIRMED → PREPARING):
+        Orders in CONFIRMED for longer than CONFIRMED_TO_PREPARING_GRACE_MINUTES
+        get auto-transitioned to PREPARING. Restaurant is notified via push + SMS.
+
+    Stage 2 (PREPARING → CANCELLED):
+        Orders in PREPARING for longer than PREPARING_ORDER_TIMEOUT_MINUTES
+        get auto-cancelled and refunded. Customer is notified.
+
+    This ensures orders don't get "stuck" at the restaurant indefinitely.
+    """
+    from django.conf import settings
+    from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
+    from infrastructure.notifications.service import NotificationService
+    from domain.services.order_services import CancelOrderService
+
+    confirmed_grace = getattr(settings, 'CONFIRMED_TO_PREPARING_GRACE_MINUTES', 20)
+    preparing_timeout = getattr(settings, 'PREPARING_ORDER_TIMEOUT_MINUTES', 45)
+
+    system_user, _ = User.objects.get_or_create(
+        username='system_dispatcher',
+        defaults={'role': 'admin', 'is_staff': True},
+    )
+
+    now = timezone.now()
+    confirmed_cutoff = now - timedelta(minutes=confirmed_grace)
+    preparing_cutoff = now - timedelta(minutes=preparing_timeout)
+
+    with transaction.atomic():
+        stale_confirmed = list(
+            Order.objects.select_for_update(skip_locked=True)
+            .filter(status='CONFIRMED', status_changed_at__lt=confirmed_cutoff)
+        )
+
+        if stale_confirmed:
+            logger.info(f"[PrepExpiry] Auto-transitioning {len(stale_confirmed)} CONFIRMED orders to PREPARING")
+            for order in stale_confirmed:
+                try:
+                    new_state = OrderFSM.transition(order.status, 'PREPARING')
+                    order.status = new_state
+                    order.status_changed_at = timezone.now()
+                    order.save(update_fields=['status', 'status_changed_at', 'updated_at'])
+                except InvalidStateTransitionError as e:
+                    logger.error(f"[PrepExpiry] FSM error transitioning order {order.id}: {e}")
+
+    for order in stale_confirmed:
+        try:
+            NotificationService.send_push(
+                user_id=str(order.restaurant.owner.id),
+                title="Order Overdue — Starting Preparation",
+                body=(
+                    f"Order #{str(order.id)[:8]} has been in CONFIRMED for "
+                    f"over {confirmed_grace} min. It has been auto-marked as PREPARING. "
+                    f"Please start cooking immediately."
+                ),
+                data={"order_id": str(order.id), "type": "order_overdue"}
+            )
+            NotificationService.send_sms(
+                order.restaurant.owner.phone,
+                f"Habari {order.restaurant.owner.username or 'Vendor'}, oda #{str(order.id)[:8]} haijaanza kupikwa tangu {confirmed_grace} dakika. Umeagizwa kuanza sasa."
+            )
+        except Exception as e:
+            logger.error(f"[PrepExpiry] Failed to notify restaurant for order {order.id}: {e}")
+
+    with transaction.atomic():
+        stale_preparing = list(
+            Order.objects.select_for_update(skip_locked=True)
+            .filter(status='PREPARING', status_changed_at__lt=preparing_cutoff)
+        )
+
+        if not stale_preparing:
+            return
+
+        logger.info(f"[PrepExpiry] Auto-cancelling {len(stale_preparing)} stale PREPARING orders")
+
+        cancelled_ids = []
+        for order in stale_preparing:
+            try:
+                CancelOrderService.execute(
+                    order_id=str(order.id),
+                    actor=system_user,
+                    reason=f'Restaurant exceeded PREPARING timeout of {preparing_timeout} minutes without marking READY'
+                )
+                cancelled_ids.append(str(order.id))
+            except Exception as e:
+                logger.error(f"[PrepExpiry] Failed to cancel order {order.id}: {e}")
+
+    for order_id in cancelled_ids:
+        try:
+            order = Order.objects.select_related('customer').get(id=order_id)
+            NotificationService.send_push(
+                user_id=str(order.customer.id),
+                title="Order Cancelled — Restaurant Delay",
+                body=(
+                    f"Your order #{str(order.id)[:8]} was cancelled because the restaurant "
+                    f"did not start preparation within {preparing_timeout} minutes. "
+                    f"A full refund is being processed."
+                ),
+                data={"order_id": str(order.id), "type": "order_cancelled_timeout"}
+            )
+            NotificationService.send_sms(
+                order.customer.phone,
+                f"Habari! Oda yako #{str(order.id)[:8]} imefutwa kwa sababu restranti hakupika ndani ya {preparing_timeout} dakika. Uttapokea ufufuzi wa malipo yako bila kupita muda mrefu."
+            )
+        except Exception as e:
+            logger.error(f"[PrepExpiry] Failed to notify customer for order {order_id}: {e}")
+
+    logger.info(f"[PrepExpiry] Completed. Cancelled {len(cancelled_ids)} orders.")
+
+
 @shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
 def retry_dispatch_task(order_id: str, attempt: int = 1):
     """
     Retry dispatch for an order after initial failure.
     Uses exponential backoff based on attempt number.
     """
-    from domain.services.order_services import DispatchService
 
     max_attempts = 3
     retry_delays = {1: 120, 2: 300, 3: 900}

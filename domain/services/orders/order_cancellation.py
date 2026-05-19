@@ -20,11 +20,10 @@ class CancelOrderService:
             if actor.role == 'customer' and order.customer == actor:
                 if order.status not in ['CREATED', 'CONFIRMED']:
                     raise PermissionError("Cannot cancel after preparation started.")
-            elif actor.role == 'vendor' and order.restaurant.owner == actor:
-                pass 
-            elif actor.role == 'admin':
-                pass
-            else:
+            elif actor.role == 'vendor':
+                if order.restaurant.owner != actor:
+                    raise PermissionError("No permission to cancel this order.")
+            elif actor.role != 'admin':
                 raise PermissionError("No permission to cancel.")
             
             new_state = OrderFSM.transition(order.status, 'CANCELLED')
