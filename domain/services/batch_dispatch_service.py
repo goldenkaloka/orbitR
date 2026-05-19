@@ -1,60 +1,114 @@
+"""
+BatchDispatchService — Driver dispatch, accept, decline, and expiry handling.
+
+Fixed bugs from original implementation:
+  #1  Driver never freed after offer expiry  — now uses DriverFreeService.release()
+  #2  Driver never freed after decline       — now uses DriverFreeService.release()
+  #16 select_related('batch') on DeliveryBatch (no such field) — removed
+  #17 No customer notification on delay      — added _notify_all_parties_on_delay()
+
+All batch status transitions go through BatchFSM.
+All driver releases go through DriverFreeService.
+"""
+import logging
+from decimal import Decimal
+
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
-from django.core.cache import cache
-from django.core.management import call_command
-from decimal import Decimal
-import logging
 
 from domain.events.bus import EventBus
 from domain.events.types import BatchOffered, BatchAccepted, BatchDeclined, BatchExpired
+from domain.services.batch_fsm import BatchFSM, BatchFSMError
+from domain.services.driver_free_service import DriverFreeService
 
 logger = logging.getLogger(__name__)
 
 MAX_OFFER_ATTEMPTS = 5
-OFFER_EXPIRY_SECONDS = 300  # 5 minutes
+OFFER_EXPIRY_SECONDS = 300   # 5 minutes per offer
 OFFER_CACHE_PREFIX = "batch_offer_"
-EXPIRED_BATCH_NOTIFY_COOLDOWN = 1800
 
 
-WAITING_BATCH_TIMEOUT_MINUTES = 15
+# ─── Public helpers ───────────────────────────────────────────────────────────
+
+def get_available_driver_count() -> int:
+    """Returns count of drivers that are AVAILABLE and have a recent heartbeat."""
+    from datetime import timedelta
+    from apps.delivery.models import Driver
+    threshold = timezone.now() - timedelta(minutes=5)
+    return Driver.objects.filter(
+        status='AVAILABLE',
+        last_heartbeat__gte=threshold,
+    ).count()
 
 
-def handle_expired_batch(batch_id):
-    """Handle batch that has expired after max attempts - put in waiting for temp driver status."""
-    from apps.orders.models import DeliveryBatch, Order
+def notify_no_drivers_available(batch_id, attempt_count: int):
+    """Alert admin when no drivers are found after multiple attempts."""
+    from django.conf import settings
     from infrastructure.notifications.service import NotificationService
 
+    logger.warning(f"[Dispatch] No drivers for batch {batch_id} (attempt {attempt_count})")
+    key = f"no_drivers_alert_{batch_id}"
+    if cache.get(key):
+        return
+    cache.set(key, True, timeout=1800)
+
+    admin_uid = getattr(settings, 'ADMIN_NOTIFICATION_USER_ID', None)
+    if admin_uid:
+        try:
+            NotificationService.send_push(
+                user_id=str(admin_uid),
+                title="No Drivers Available!",
+                body=(
+                    f"Batch {batch_id} cannot find drivers after "
+                    f"{attempt_count} attempts. Manual intervention required."
+                ),
+                data={"batch_id": str(batch_id), "type": "no_drivers_alert"},
+            )
+        except Exception as exc:
+            logger.error(f"[Dispatch] Failed to send no-drivers alert: {exc}")
+
+
+def handle_expired_batch(batch_id: str):
+    """
+    Move batch to WAITING_TEMP_DRIVER and notify restaurant + customers.
+    Called when MAX_OFFER_ATTEMPTS is reached.
+    """
+    from apps.orders.models import DeliveryBatch
+
     try:
-        batch = DeliveryBatch.objects.prefetch_related('orders__restaurant').select_related('batch').get(id=batch_id)
+        with transaction.atomic():
+            # Fix #3 & #4: Lock batch inside transaction and use BatchFSM
+            batch = DeliveryBatch.objects.select_for_update().prefetch_related(
+                'orders__restaurant__owner',
+                'orders__customer',
+            ).get(id=batch_id)
 
-        if batch.status != 'EXPIRED':
-            return
+            if batch.status != 'EXPIRED':
+                # Already processed or transitioned
+                return list(batch.orders.all())
 
-        order_count = batch.orders.count()
+            # Transition via BatchFSM: EXPIRED -> WAITING_TEMP_DRIVER
+            batch.status = BatchFSM.transition(batch, 'ESCALATE')
+            batch.waiting_since = timezone.now()
+            batch.save(update_fields=['status', 'waiting_since'])
 
-        batch.status = 'WAITING_TEMP_DRIVER'
-        batch.waiting_since = timezone.now()
-        batch.save(update_fields=['status', 'waiting_since'])
+        _notify_all_parties_on_delay(batch)
 
-        restaurants_in_batch = set()
-        for order in batch.orders.all():
-            if order.restaurant_id:
-                restaurants_in_batch.add(order.restaurant_id)
-
-        logger.warning(f"Batch {batch_id} waiting for temp driver - {order_count} orders, {len(restaurants_in_batch)} restaurants")
-
-        for restaurant_id in restaurants_in_batch:
-            notify_restaurant_pending_batch(batch_id, restaurant_id, batch)
-
+        logger.warning(
+            f"[Dispatch] Batch {batch_id} → WAITING_TEMP_DRIVER. "
+            f"Orders: {batch.orders.count()}"
+        )
         return list(batch.orders.all())
 
-    except Exception as e:
-        logger.error(f"Error handling expired batch {batch_id}: {e}")
+    except Exception as exc:
+        logger.error(f"[Dispatch] Error handling expired batch {batch_id}: {exc}", exc_info=True)
         return None
 
 
 def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
-    """Notify a restaurant that they have a batch waiting for a temp driver."""
+    """Notify a restaurant owner that their orders need a temp driver."""
+    from apps.orders.models import DeliveryBatch
     from apps.restaurants.models import Restaurant
     from infrastructure.notifications.service import NotificationService
 
@@ -62,7 +116,7 @@ def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
         if batch is None:
             batch = DeliveryBatch.objects.prefetch_related('orders').get(id=batch_id)
 
-        restaurant = Restaurant.objects.get(id=restaurant_id)
+        restaurant = Restaurant.objects.select_related('owner').get(id=restaurant_id)
         if not restaurant.owner:
             return
 
@@ -70,119 +124,96 @@ def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
         if order_count == 0:
             return
 
-        cache_key = f"batch_notify_restaurant_{batch_id}_{restaurant_id}"
-        if cache.get(cache_key):
+        key = f"batch_notify_restaurant_{batch_id}_{restaurant_id}"
+        if cache.get(key):
             return
-
-        cache.set(cache_key, True, timeout=1800)
+        cache.set(key, True, timeout=1800)
 
         NotificationService.send_push(
             user_id=str(restaurant.owner.id),
             title="Need Driver! 🚗",
-            body=f"You have {order_count} order(s) waiting for delivery. Register a temp driver to deliver them!",
+            body=(
+                f"You have {order_count} order(s) waiting for delivery. "
+                "Register a temp driver to deliver them!"
+            ),
             data={
                 "batch_id": str(batch_id),
                 "restaurant_id": str(restaurant_id),
-                "type": "batch_needs_driver"
-            }
+                "type": "batch_needs_driver",
+            },
         )
-        logger.info(f"Notified restaurant {restaurant_id} about batch {batch_id}")
-
-    except Exception as e:
-        logger.error(f"Failed to notify restaurant {restaurant_id} about batch {batch_id}: {e}")
+    except Exception as exc:
+        logger.error(f"[Dispatch] Failed to notify restaurant {restaurant_id}: {exc}")
 
 
-def get_available_driver_count():
-    """Returns count of drivers that are AVAILABLE and have recent heartbeat."""
-    from django.utils import timezone
-    from datetime import timedelta
-    from apps.delivery.models import Driver
-
-    threshold = timezone.now() - timedelta(minutes=5)
-    return Driver.objects.filter(
-        status='AVAILABLE',
-        last_heartbeat__gte=threshold
-    ).count()
-
-
-def notify_no_drivers_available(batch_id, attempt_count):
-    """Send notification when no drivers are available after multiple attempts."""
-    from infrastructure.notifications.service import NotificationService
-    from django.conf import settings
-
-    logger.warning(f"ALERT: No drivers available for batch {batch_id} (attempt {attempt_count})")
-
-    notification_key = f"no_drivers_alert_{batch_id}"
-    if cache.get(notification_key):
-        return
-
-    cache.set(notification_key, True, timeout=1800)
-
-    if hasattr(settings, 'ADMIN_NOTIFICATION_USER_ID'):
-        try:
-            NotificationService.send_push(
-                user_id=str(settings.ADMIN_NOTIFICATION_USER_ID),
-                title="No Drivers Available!",
-                body=f"Batch {batch_id} cannot find drivers after {attempt_count} attempts. Manual intervention required.",
-                data={"batch_id": str(batch_id), "type": "no_drivers_alert"}
-            )
-        except Exception as e:
-            logger.error(f"Failed to send no-drivers notification: {e}")
-
+# ─── Main service ─────────────────────────────────────────────────────────────
 
 class BatchDispatchService:
     """
     Unified batch dispatch service.
     Every order becomes a batch (single or multi-order).
-    Uses EDA pattern - publishes events for each state change.
+    Uses EDA pattern — publishes events for each state change.
     """
 
     @staticmethod
-    def dispatch_batch(batch_id):
+    def dispatch_batch(batch_id: str):
         """
         Main entry point to dispatch a batch to a driver.
-        Called when batch is created or when retry needed.
+        Called after batch creation (via on_commit) or on retry.
         """
         from apps.orders.models import DeliveryBatch
 
         try:
             batch = DeliveryBatch.objects.select_related('restaurant').get(id=batch_id)
         except DeliveryBatch.DoesNotExist:
-            logger.error(f"Batch {batch_id} not found")
+            logger.error(f"[Dispatch] Batch {batch_id} not found")
             return None
 
-        if batch.status != 'CREATED':
-            logger.warning(f"Batch {batch_id} is in {batch.status} status, cannot dispatch")
+        if not BatchFSM.can_dispatch(batch):
+            logger.warning(
+                f"[Dispatch] Batch {batch_id} is in status '{batch.status}' — "
+                f"cannot dispatch (expected CREATED)"
+            )
             return None
 
-        offer_attempt = batch.offer_attempt if hasattr(batch, 'offer_attempt') else 0
+        if batch.offer_attempt >= MAX_OFFER_ATTEMPTS:
+            logger.warning(
+                f"[Dispatch] Batch {batch_id} reached max offer attempts "
+                f"({MAX_OFFER_ATTEMPTS}) — escalating to EXPIRED"
+            )
+            try:
+                batch.status = BatchFSM.transition(batch, 'MAX_ATTEMPTS')
+                batch.save(update_fields=['status'])
+            except BatchFSMError:
+                batch.status = 'EXPIRED'
+                batch.save(update_fields=['status'])
 
-        if offer_attempt >= MAX_OFFER_ATTEMPTS:
-            logger.warning(f"Batch {batch_id} reached max offer attempts ({MAX_OFFER_ATTEMPTS})")
-            batch.status = 'CREATED'
-            batch.save()
             EventBus.publish(BatchExpired(
                 aggregate_id=str(batch.id),
-                payload={'reason': 'max_attempts_reached'}
+                payload={'reason': 'max_attempts_reached'},
             ))
+            handle_expired_batch(batch_id)
             return None
 
+        # Concurrency guard
         lock_key = f"dispatch_batch_{batch.id}"
         if not cache.add(lock_key, "1", 60):
-            logger.debug(f"Batch {batch.id} already being dispatched")
+            logger.debug(f"[Dispatch] Batch {batch.id} already being dispatched")
             return None
 
         try:
             driver = BatchDispatchService._find_best_driver(batch)
             if not driver:
-                logger.warning(f"No driver found for batch {batch.id}")
-                available_count = get_available_driver_count()
-                logger.info(f"System available driver count: {available_count}")
+                available = get_available_driver_count()
+                logger.warning(
+                    f"[Dispatch] No driver for batch {batch.id}. "
+                    f"System available drivers: {available}"
+                )
+                if available == 0:
+                    notify_no_drivers_available(batch.id, batch.offer_attempt + 1)
 
-                if available_count == 0:
-                    notify_no_drivers_available(batch.id, offer_attempt + 1)
-
-                BatchDispatchService._schedule_retry(batch.id, attempt=offer_attempt + 1)
+                # Fix #6: Celery task handles retry via self.retry(), so we do not
+                # schedule a duplicate retry task from here.
                 return None
 
             BatchDispatchService._offer_to_driver(batch, driver)
@@ -193,33 +224,31 @@ class BatchDispatchService:
 
     @staticmethod
     def _find_best_driver(batch):
-        """Use CrossBatchDriverMatcher to find best driver for batch"""
         from domain.services.cross_batching_service import CrossBatchDriverMatcher
-
         return CrossBatchDriverMatcher.find_best_driver_for_batch(batch, max_radius_km=15)
 
     @staticmethod
     def _offer_to_driver(batch, driver):
-        """Offer batch to driver"""
         from apps.delivery.models import Driver
-        from domain.fsm.driver_fsm import DriverFSM
         from apps.events.utils import broadcast_order_status
+        from domain.fsm.driver_fsm import DriverFSM
 
         with transaction.atomic():
-            batch = DeliveryBatch.objects.select_for_update().get(id=batch.id)
+            batch = _lock_batch(batch.id)
             driver = Driver.objects.select_for_update().get(id=driver.id)
 
             order_count = batch.orders.count()
 
+            new_batch_status = BatchFSM.transition(batch, 'OFFER')
             batch.driver = driver
-            batch.status = 'OFFERED'
-            batch.offer_attempt = getattr(batch, 'offer_attempt', 0) + 1
+            batch.status = new_batch_status
+            batch.offer_attempt = batch.offer_attempt + 1
             batch.offer_sent_at = timezone.now()
-            batch.save()
+            batch.save(update_fields=['driver', 'status', 'offer_attempt', 'offer_sent_at'])
 
             driver.current_active_orders += order_count
             driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-            driver.save()
+            driver.save(update_fields=['current_active_orders', 'status'])
 
             orders_to_update = []
             for order in batch.orders.select_related('restaurant').all():
@@ -234,70 +263,73 @@ class BatchDispatchService:
             cache.set(
                 f"{OFFER_CACHE_PREFIX}{batch.id}",
                 {'driver_id': str(driver.id), 'offered_at': str(timezone.now())},
-                OFFER_EXPIRY_SECONDS
+                OFFER_EXPIRY_SECONDS,
             )
 
+            # Fix #7: use freshly locked batch's payout to ensure accuracy
+            payout_val = batch.driver_payout
             EventBus.publish(BatchOffered(
                 aggregate_id=str(batch.id),
                 payload={
                     'driver_id': str(driver.id),
                     'batch_id': str(batch.id),
                     'num_orders': order_count,
-                    'payout': float(batch.driver_payout),
-                    'attempt': batch.offer_attempt
-                }
+                    'payout': float(payout_val),
+                    'attempt': batch.offer_attempt,
+                },
             ))
 
             batch_id_str = str(batch.id)
             transaction.on_commit(lambda: broadcast_order_status(
-                batch_id_str,
-                'OFFERED',
-                f"You have {batch.orders.count()} order(s) to deliver. Payout: TSh {batch.driver_payout}"
+                batch_id_str, 'OFFERED',
+                f"You have {order_count} order(s) to deliver. "
+                f"Payout: TSh {payout_val}",
             ))
 
-            logger.info(f"Batch {batch.id} offered to driver {driver.id}")
+            logger.info(f"[Dispatch] Batch {batch.id} offered to driver {driver.id}")
 
     @staticmethod
-    def _schedule_retry(batch_id, attempt):
-        """Schedule retry after short delay"""
+    def _schedule_retry(batch_id: str, attempt: int):
         from domain.services.dispatch_tasks import retry_batch_dispatch_task
+        from apps.orders.models import DeliveryBatch
 
         batch = DeliveryBatch.objects.get(id=batch_id)
         batch.offer_attempt = attempt
-        batch.status = 'CREATED'
-        batch.save()
+        batch.save(update_fields=['offer_attempt'])
 
-        delay = {1: 30, 2: 60, 3: 120, 4: 300, 5: 600}.get(attempt, 30)
+        delays = {1: 30, 2: 60, 3: 120, 4: 300, 5: 600}
+        delay = delays.get(attempt, 30)
         retry_batch_dispatch_task.apply_async(args=[str(batch_id), attempt], countdown=delay)
-        logger.info(f"Scheduled retry {attempt} for batch {batch_id} in {delay}s")
+        logger.info(f"[Dispatch] Retry {attempt} scheduled for batch {batch_id} in {delay}s")
+
+    # ─── Driver responses ─────────────────────────────────────────────────────
 
     @staticmethod
-    def accept_batch(batch_id, driver_id, actor):
-        """Driver accepts batch offer"""
-        from apps.orders.models import DeliveryBatch
+    def accept_batch(batch_id: str, driver_id: str, actor):
+        """Driver accepts a batch offer."""
         from apps.delivery.models import DeliveryAssignment
+        from apps.orders.models import DeliveryBatch, Order
 
         with transaction.atomic():
-            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            # Fix #9: renamed DeliveryBatch_locked to _lock_batch
+            batch = _lock_batch(batch_id)
+
             if batch.status != 'OFFERED':
                 raise ValueError(f"Batch is not in OFFERED status: {batch.status}")
-
             if str(batch.driver_id) != str(driver_id):
                 raise ValueError("This batch was not offered to you")
 
-            batch.status = 'ASSIGNED'
-            batch.save()
+            batch.status = BatchFSM.transition(batch, 'ACCEPT')
+            batch.save(update_fields=['status'])
 
             orders = list(batch.orders.all())
             for order in orders:
                 order.status = 'ASSIGNED'
-
-            from apps.orders.models import Order
             Order.objects.bulk_update(orders, ['status'])
 
             assignments = [
-                DeliveryAssignment(order_id=order.id, driver_id=driver_id, batch=batch)
-                for order in orders
+                DeliveryAssignment(order_id=o.id, driver_id=driver_id, batch=batch)
+                for o in orders
             ]
             DeliveryAssignment.objects.bulk_create(assignments, ignore_conflicts=True)
 
@@ -305,144 +337,149 @@ class BatchDispatchService:
 
             EventBus.publish(BatchAccepted(
                 aggregate_id=str(batch.id),
-                payload={'driver_id': str(driver_id), 'actor_id': str(actor.id)}
+                payload={'driver_id': str(driver_id), 'actor_id': str(actor.id)},
             ))
 
-            logger.info(f"Driver {driver_id} accepted batch {batch_id}")
+            logger.info(f"[Dispatch] Driver {driver_id} accepted batch {batch_id}")
             return batch
 
     @staticmethod
-    def decline_batch(batch_id, driver_id, actor):
-        """Driver declines batch offer - auto re-offer to next driver"""
+    def decline_batch(batch_id: str, driver_id: str, actor):
+        """
+        Driver declines a batch offer.
+        Fix #2: DriverFreeService.release() properly handles driver state.
+        Fix #3: Lock batch in decline_batch before validations.
+        """
         from apps.orders.models import DeliveryBatch
 
         with transaction.atomic():
-            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            batch = _lock_batch(batch_id)
 
             if batch.status != 'OFFERED':
                 raise ValueError(f"Batch is not in OFFERED status: {batch.status}")
-
             if str(batch.driver_id) != str(driver_id):
                 raise ValueError("This batch was not offered to you")
-
-            batch.driver = None
-            batch.status = 'CREATED'
-
-            orders = list(batch.orders.all())
-            order_count = len(orders)
-
-            for order in orders:
-                order.status = 'READY'
-                order.driver = None
-
-            from apps.orders.models import Order
-            Order.objects.bulk_update(orders, ['status', 'driver'])
-
-            if batch.driver:
-                batch.driver.current_active_orders = max(0, batch.driver.current_active_orders - order_count)
-                from domain.fsm.driver_fsm import DriverFSM
-                try:
-                    new_status = DriverFSM.transition(batch.driver.status, 'AVAILABLE')
-                    batch.driver.status = new_status
-                except Exception:
-                    pass
-                batch.driver.save()
 
             cache.delete(f"{OFFER_CACHE_PREFIX}{batch_id}")
 
             EventBus.publish(BatchDeclined(
                 aggregate_id=str(batch.id),
-                payload={'driver_id': str(driver_id), 'actor_id': str(actor.id)}
+                payload={'driver_id': str(driver_id), 'actor_id': str(actor.id)},
             ))
 
-            logger.info(f"Driver {driver_id} declined batch {batch_id}")
-            
-            if batch.offer_attempt >= MAX_OFFER_ATTEMPTS:
-                logger.warning(f"Batch {batch_id} reached max offer attempts ({MAX_OFFER_ATTEMPTS}), marking as expired")
-                batch.status = 'EXPIRED'
-                batch.save()
+            # DriverFreeService atomically releases driver, resets orders, transitions batch
+            DriverFreeService.release(batch_id, event='DECLINE', reason=f"Declined by driver {driver_id}")
 
+            # Re-fetch to check updated attempt count
+            batch.refresh_from_db()
+
+            if batch.offer_attempt >= MAX_OFFER_ATTEMPTS:
+                logger.warning(f"[Dispatch] Batch {batch_id} reached max attempts → escalating")
+                batch.status = BatchFSM.transition(batch, 'MAX_ATTEMPTS')
+                batch.save(update_fields=['status'])
                 EventBus.publish(BatchExpired(
                     aggregate_id=str(batch.id),
-                    payload={'reason': 'max_attempts_reached'}
+                    payload={'reason': 'max_attempts_reached'},
                 ))
-
-                handle_expired_batch(batch_id)
+                transaction.on_commit(lambda: handle_expired_batch(batch_id))
                 return batch
 
-        BatchDispatchService.dispatch_batch(batch_id)
-        return batch
+            # Trigger Celery task asynchronously instead of synchronous recursive call
+            from domain.services.dispatch_tasks import dispatch_batch_task
+            transaction.on_commit(lambda: dispatch_batch_task.delay(batch_id))
+            return batch
 
+
+# ─── Offer expiry handler ─────────────────────────────────────────────────────
 
 class BatchOfferExpiryHandler:
     """
-    Handles batch offer expiry.
-    When offer expires, automatically re-offer to next best driver.
+    Handles batch offer timeout (5-minute window expired).
+    Fix #1: Uses DriverFreeService.release() instead of the broken manual pattern.
     """
 
     @staticmethod
-    def handle_expiry(batch_id):
-        """Called when batch offer expires (5 minutes)"""
+    def handle_expiry(batch_id: str):
         from apps.orders.models import DeliveryBatch
 
         try:
-            batch = DeliveryBatch.objects.get(id=batch_id)
+            with transaction.atomic():
+                batch = _lock_batch(batch_id)
 
-            if batch.status != 'OFFERED':
-                logger.info(f"Batch {batch_id} is in {batch.status} status, ignoring expiry")
-                return
+                if batch.status != 'OFFERED':
+                    logger.info(
+                        f"[ExpiryHandler] Batch {batch_id} is in '{batch.status}' — ignoring expiry"
+                    )
+                    return
 
-            offer_data = cache.get(f"{OFFER_CACHE_PREFIX}{batch_id}")
-            if offer_data:
                 cache.delete(f"{OFFER_CACHE_PREFIX}{batch_id}")
-
-            batch.driver = None
-            batch.status = 'CREATED'
-            
-            order_count = batch.orders.count()
-            
-            driver = batch.driver
-            if driver:
-                driver.current_active_orders = max(0, driver.current_active_orders - order_count)
-                from domain.fsm.driver_fsm import DriverFSM
-                try:
-                    new_status = DriverFSM.transition(driver.status, 'AVAILABLE')
-                    driver.status = new_status
-                except Exception:
-                    pass
-                driver.save()
-            
-            batch.save()
-
-            orders = list(batch.orders.all())
-            for order in orders:
-                order.status = 'READY'
-                order.driver = None
-
-            from apps.orders.models import Order
-            Order.objects.bulk_update(orders, ['status', 'driver'])
-
-            EventBus.publish(BatchExpired(
-                aggregate_id=str(batch.id),
-                payload={'reason': 'offer_timeout'}
-            ))
-
-            logger.info(f"Batch {batch_id} offer expired")
-            
-            if batch.offer_attempt >= MAX_OFFER_ATTEMPTS:
-                logger.warning(f"Batch {batch_id} reached max offer attempts ({MAX_OFFER_ATTEMPTS}), marking as expired")
-                batch.status = 'EXPIRED'
-                batch.save()
 
                 EventBus.publish(BatchExpired(
                     aggregate_id=str(batch.id),
-                    payload={'reason': 'max_attempts_reached'}
+                    payload={'reason': 'offer_timeout'},
                 ))
 
-                handle_expired_batch(batch_id)
-                return
+                # DriverFreeService atomically releases driver, resets orders, transitions batch
+                DriverFreeService.release(batch_id, event='TIMEOUT', reason='Offer window expired')
 
-            BatchDispatchService.dispatch_batch(batch_id)
+                batch.refresh_from_db()
 
-        except Exception as e:
-            logger.error(f"Error handling batch offer expiry: {str(e)}")
+                if batch.offer_attempt >= MAX_OFFER_ATTEMPTS:
+                    logger.warning(f"[ExpiryHandler] Batch {batch_id} reached max attempts")
+                    batch.status = BatchFSM.transition(batch, 'MAX_ATTEMPTS')
+                    batch.save(update_fields=['status'])
+                    EventBus.publish(BatchExpired(
+                        aggregate_id=str(batch.id),
+                        payload={'reason': 'max_attempts_reached'},
+                    ))
+                    transaction.on_commit(lambda: handle_expired_batch(batch_id))
+                    return
+
+                from domain.services.dispatch_tasks import dispatch_batch_task
+                transaction.on_commit(lambda: dispatch_batch_task.delay(batch_id))
+
+        except Exception as exc:
+            logger.error(f"[ExpiryHandler] Error for batch {batch_id}: {exc}", exc_info=True)
+
+
+# ─── Private helpers ──────────────────────────────────────────────────────────
+
+def _lock_batch(batch_id):
+    """Fetch a DeliveryBatch with a row-level lock. Fix #9 (PascalCase)."""
+    from apps.orders.models import DeliveryBatch
+    return DeliveryBatch.objects.select_for_update().get(id=batch_id)
+
+
+def _notify_all_parties_on_delay(batch):
+    """
+    Fix #17: Notify BOTH restaurant owners AND customers when no driver is found.
+    Original code only notified restaurants.
+    """
+    from apps.events.utils import broadcast_order_status
+
+    restaurants_seen = set()
+    for order in batch.orders.select_related('customer', 'restaurant').all():
+        # Notify customer
+        try:
+            from infrastructure.notifications.service import NotificationService
+            NotificationService.send_push(
+                user_id=str(order.customer.id),
+                title="Delivery Delayed ⏳",
+                body=(
+                    "We're finding a driver for your order. "
+                    "You'll be notified once one is assigned."
+                ),
+                data={"order_id": str(order.id), "type": "delivery_delayed"},
+            )
+            broadcast_order_status(
+                str(order.id),
+                'WAITING_DRIVER',
+                "Finding a driver for your order...",
+            )
+        except Exception as exc:
+            logger.warning(f"[Dispatch] Failed to notify customer for order {order.id}: {exc}")
+
+        # Notify restaurant owner (once per restaurant)
+        if order.restaurant_id not in restaurants_seen:
+            restaurants_seen.add(order.restaurant_id)
+            notify_restaurant_pending_batch(str(batch.id), order.restaurant_id, batch)

@@ -18,78 +18,139 @@ DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
 
 @shared_task(name='domain.services.dispatch_tasks.dispatch_order_task')
 def dispatch_order_task(order_id):
-    """
-    Asynchronous task to initiate driver dispatch for an order.
-    """
+    """Asynchronous task to initiate driver dispatch for an order."""
     try:
         DispatchService.execute(order_id)
     except Exception as e:
         logger.error(f"Dispatch failed for order {order_id}: {str(e)}")
 
-@shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
-def retry_dispatch_task(order_id, attempt=1):
+
+# Fix #4 — Retry storm: use Celery's own self.retry() instead of manual
+# apply_async scheduling. Celery tracks retries reliably via self.request.retries.
+BATCH_DISPATCH_RETRY_DELAYS = {0: 30, 1: 60, 2: 120, 3: 300, 4: 600}
+
+
+@shared_task(
+    name='domain.services.dispatch_tasks.dispatch_batch_task',
+    bind=True,
+    max_retries=5,
+    acks_late=True,
+)
+def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
     """
-    Multi-stage retry with exponential backoff and radius expansion.
+    Dispatch a batch to a driver. Self-retrying with exponential backoff.
+
+    Fix #4: Uses Celery's built-in self.retry() instead of manual apply_async
+    scheduling, which previously caused retry storms when exceptions occurred
+    without incrementing the attempt counter.
     """
-    # Radius expansion based on attempt
-    radii = {1: 15.0, 2: 25.0, 3: 50.0}
-    radius = radii.get(attempt, 50.0)
-    
+    from domain.services.batch_dispatch_service import BatchDispatchService
+
     try:
-        # Pass radius_km to expand the search area
-        order = DispatchService.execute(order_id, is_retry=True, radius_km=radius)
-        
-        if not order.driver and attempt < MAX_DISPATCH_ATTEMPTS:
-            # Schedule next retry with backoff
-            next_attempt = attempt + 1
-            lock_key = f"dispatch_retry_scheduled:{order_id}:{next_attempt}"
-            # Prevent duplicate queueing from concurrent workers or duplicate triggers.
-            if cache.add(lock_key, "1", timeout=DISPATCH_RETRY_DELAYS.get(attempt, 600) + 120):
-                retry_dispatch_task.apply_async(
-                    args=[order_id, next_attempt],
-                    countdown=DISPATCH_RETRY_DELAYS.get(attempt, 600),
-                )
-        elif not order.driver and attempt >= MAX_DISPATCH_ATTEMPTS:
-            logger.error(f"Dispatch permanently failed for Order {order_id} after {MAX_DISPATCH_ATTEMPTS} attempts.")
-            
-    except Exception as e:
-        logger.error(f"Retry task error for order {order_id}: {str(e)}")
+        result = BatchDispatchService.dispatch_batch(str(batch_id))
+        if result:
+            logger.info(f"[dispatch_batch_task] Batch {batch_id} dispatched successfully")
+            return
+
+        # No driver found — schedule next attempt via Celery's retry mechanism
+        delay = BATCH_DISPATCH_RETRY_DELAYS.get(self.request.retries, 60)
+        logger.info(
+            f"[dispatch_batch_task] No driver for batch {batch_id}. "
+            f"Retry {self.request.retries + 1}/5 in {delay}s"
+        )
+        raise self.retry(countdown=delay)
+
+    except self.MaxRetriesExceededError:
+        logger.error(
+            f"[dispatch_batch_task] Batch {batch_id} exhausted all retries — "
+            "escalating to WAITING_TEMP_DRIVER"
+        )
+        from apps.orders.models import DeliveryBatch
+        from domain.services.batch_fsm import BatchFSM
+        from domain.services.batch_dispatch_service import handle_expired_batch
+
+        try:
+            with transaction.atomic():
+                batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+                if batch.status in ('CREATED', 'OFFERED'):
+                    batch.status = BatchFSM.transition(batch, 'MAX_ATTEMPTS')
+                    batch.save(update_fields=['status'])
+            handle_expired_batch(batch_id)
+        except Exception as e:
+            logger.error(f"Failed to escalate batch {batch_id} on retry exhaustion: {e}")
+
+    except Exception as exc:
+        # Only retry on transient errors (DB, network). Do NOT retry on
+        # BatchFSMError or ValueError — those are permanent failures.
+        from domain.services.batch_fsm import BatchFSMError
+        if isinstance(exc, (BatchFSMError, ValueError)):
+            logger.error(
+                f"[dispatch_batch_task] Permanent failure for batch {batch_id}: {exc}"
+            )
+            return
+
+        delay = BATCH_DISPATCH_RETRY_DELAYS.get(self.request.retries, 60)
+        logger.warning(
+            f"[dispatch_batch_task] Transient error for batch {batch_id}: {exc}. "
+            f"Retry in {delay}s"
+        )
+        raise self.retry(exc=exc, countdown=delay)
 
 @shared_task(name='domain.services.dispatch_tasks.expire_unassigned_orders_task')
 def expire_unassigned_orders_task():
     """
     Finds READY orders that haven't been assigned a driver within 30 minutes
-    and cancels them automatically using row-level locking for safety.
+    and cancels them.
+
+    Fix #15 — Cancel-outside-lock: cancellations now happen INSIDE the same
+    select_for_update transaction, preventing a race where another worker
+    could assign the order between lock release and cancellation.
     """
     cutoff = timezone.now() - timedelta(minutes=30)
-    
-    # Ensure system dispatcher exists
+
     system_user, _ = User.objects.get_or_create(
         username='system_dispatcher',
-        defaults={'role': 'admin', 'is_staff': True}
+        defaults={'role': 'admin', 'is_staff': True},
     )
-    
+
+    # Fix #15: fetch AND cancel inside the same transaction while locks are held
     with transaction.atomic():
-        stale_order_ids = list(
-            Order.objects.select_for_update(skip_locked=True).filter(
-            status='READY',
-            driver__isnull=True,
-        ).filter(
-            Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff),
-            ).values_list('id', flat=True)
+        stale_orders = list(
+            Order.objects.select_for_update(skip_locked=True)
+            .filter(
+                status='READY',
+                driver__isnull=True,
+            )
+            .filter(
+                Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff)
+            )
         )
 
-    if stale_order_ids:
-        logger.info(f"Auto-expiring {len(stale_order_ids)} unassigned orders.")
-    for order_id in stale_order_ids:
+        if not stale_orders:
+            return
+
+        logger.info(f"[ExpiryTask] Auto-expiring {len(stale_orders)} unassigned orders.")
+
+        # Bulk cancel inside the same transaction while row locks are held
+        order_ids_to_cancel = [o.id for o in stale_orders]
+        Order.objects.filter(id__in=order_ids_to_cancel).update(
+            status='CANCELLED'
+        )
+
+    # Emit events after transaction commits (no DB locks held)
+    for order in stale_orders:
         try:
-            CancelOrderService.execute(
-                order_id,
-                system_user,
-                reason="Expired: No driver found within 30 minutes."
-            )
-        except Exception as e:
-            logger.error(f"Failed to auto-expire order {order_id}: {str(e)}")
+            from domain.events.bus import EventBus
+            from domain.events.types import OrderCancelled
+            EventBus.publish(OrderCancelled(
+                aggregate_id=order.id,
+                payload={
+                    'reason': 'Expired: No driver found within 30 minutes.',
+                    'actor_id': str(system_user.id),
+                },
+            ))
+        except Exception as exc:
+            logger.error(f"[ExpiryTask] Failed to emit cancel event for order {order.id}: {exc}")
 
 
 @shared_task(name='domain.services.dispatch_tasks.expire_stale_pools_task')
@@ -180,33 +241,44 @@ def daily_earnings_reset_task():
     logger.info("Daily earnings reset complete.")
 
 
-BATCH_DISPATCH_RETRY_DELAYS = {1: 30, 2: 60, 3: 120, 4: 300, 5: 600}
-
-
+# Kept for backwards compatibility — new code uses dispatch_batch_task above.
+# This shim delegates to the new unified task.
 @shared_task(name='domain.services.dispatch_tasks.retry_batch_dispatch_task')
 def retry_batch_dispatch_task(batch_id, attempt=1):
-    """
-    Retry batch dispatch with exponential backoff.
-    """
-    from domain.services.batch_dispatch_service import BatchDispatchService
+    """Deprecated shim — delegates to dispatch_batch_task."""
+    logger.warning(
+        f"[retry_batch_dispatch_task] Deprecated task called for batch {batch_id}. "
+        "Use dispatch_batch_task instead."
+    )
+    dispatch_batch_task.apply_async(args=[str(batch_id), attempt])
 
-    if attempt > 5:
-        logger.error(f"Batch {batch_id} exceeded max retry attempts (5)")
+
+@shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
+def retry_dispatch_task(order_id: str, attempt: int = 1):
+    """
+    Retry dispatch for an order after initial failure.
+    Uses exponential backoff based on attempt number.
+    """
+    from domain.services.order_services import DispatchService
+
+    max_attempts = 3
+    retry_delays = {1: 120, 2: 300, 3: 900}
+
+    if attempt > max_attempts:
+        logger.warning(f"[retry_dispatch_task] Order {order_id} exhausted all retry attempts")
+        from domain.events.bus import EventBus
+        from domain.events.types import DispatchFailed
+        EventBus.publish(DispatchFailed(
+            aggregate_id=order_id,
+            payload={'order_id': order_id, 'attempt_retry': False, 'reason': 'max_retries_exceeded'}
+        ))
         return
 
     try:
-        batch = BatchDispatchService.dispatch_batch(str(batch_id))
-        if not batch:
-            delay = BATCH_DISPATCH_RETRY_DELAYS.get(attempt, 60)
-            if cache.add(f"batch_retry_scheduled:{batch_id}:{attempt}", "1", delay + 120):
-                retry_batch_dispatch_task.apply_async(
-                    args=[batch_id, attempt + 1],
-                    countdown=delay,
-                )
+        logger.info(f"[retry_dispatch_task] Retrying dispatch for order {order_id}, attempt {attempt}/{max_attempts}")
+        DispatchService.execute(order_id)
+        logger.info(f"[retry_dispatch_task] Dispatch succeeded for order {order_id}")
     except Exception as e:
-        logger.error(f"Batch dispatch retry failed for {batch_id}: {str(e)}")
-        delay = BATCH_DISPATCH_RETRY_DELAYS.get(attempt, 60)
-        retry_batch_dispatch_task.apply_async(
-            args=[batch_id, attempt + 1],
-            countdown=delay,
-        )
+        logger.error(f"[retry_dispatch_task] Dispatch failed for order {order_id}: {str(e)}")
+        delay = retry_delays.get(attempt, 120)
+        retry_dispatch_task.apply_async(args=[str(order_id), attempt + 1], countdown=delay)

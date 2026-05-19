@@ -2,29 +2,23 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.core.cache import cache
 from apps.orders.models import Order
-from apps.restaurants.models import Restaurant
-from apps.products.models import Food
 
+
+# Fix #3 — removed duplicate @receiver registration.
+# The original file registered invalidate_order_stats TWICE with identical
+# decorators, causing double cache invalidation on every Order save/delete.
 @receiver([post_save, post_delete], sender=Order)
 def invalidate_order_stats(sender, instance, **kwargs):
-    """Invalidate stats cache when orders are updated."""
-    # Invalidate for vendor
-    if instance.restaurant:
-        cache.delete(f"user_stats_{instance.restaurant.owner.id}_vendor")
-    # Invalidate for driver
-    if instance.driver:
-        cache.delete(f"user_stats_{instance.driver.user.id}_driver")
-    # Invalidate for admin
+    """Invalidate stats cache when orders are created, updated, or deleted."""
+    if instance.restaurant_id:
+        try:
+            cache.delete(f"user_stats_{instance.restaurant.owner_id}_vendor")
+        except Exception:
+            pass
+    if instance.driver_id:
+        try:
+            cache.delete(f"user_stats_{instance.driver.user_id}_driver")
+        except Exception:
+            pass
     cache.delete_pattern("user_stats_*_admin")
 
-@receiver([post_save, post_delete], sender=Order)
-def invalidate_order_stats(sender, instance, **kwargs):
-    """Invalidate stats cache when orders are updated."""
-    # Invalidate for vendor
-    if instance.restaurant:
-        cache.delete(f"user_stats_{instance.restaurant.owner.id}_vendor")
-    # Invalidate for driver
-    if instance.driver:
-        cache.delete(f"user_stats_{instance.driver.user.id}_driver")
-    # Invalidate for admin
-    cache.delete_pattern("user_stats_*_admin")

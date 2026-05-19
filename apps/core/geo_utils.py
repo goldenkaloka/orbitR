@@ -152,25 +152,40 @@ def get_zone_from_h3(h3_index):
         return None
 
 
+# Fix #18 — cache TTL for zone H3 lookups.
+# These are called 4-6 times per batching cycle. A short TTL (60s)
+# dramatically reduces ZoneH3Index table scans with no meaningful staleness risk.
+_ZONE_CACHE_TTL = 60
+
+
 def get_zone_ids_from_h3(h3_index, radius=1):
     """
     Get a list of zone IDs that cover the given H3 index and its neighbors.
-    Returns list of zone IDs.
+    Returns list of zone IDs. Results are cached for 60 seconds.
     """
     if not h3_index:
         return []
     try:
+        from django.core.cache import cache
+        cache_key = f"zone_ids_h3:{h3_index}:r{radius}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         neighbor_cells = get_neighbors(h3_index, radius)
         if not neighbor_cells:
             neighbor_cells = [h3_index]
-        
+
         from apps.geo.models import ZoneH3Index
-        zone_ids = ZoneH3Index.objects.filter(
-            h3_index__in=neighbor_cells,
-            zone__is_active=True
-        ).values_list('zone_id', flat=True).distinct()
-        
-        return list(zone_ids)
+        zone_ids = list(
+            ZoneH3Index.objects.filter(
+                h3_index__in=neighbor_cells,
+                zone__is_active=True,
+            ).values_list('zone_id', flat=True).distinct()
+        )
+
+        cache.set(cache_key, zone_ids, _ZONE_CACHE_TTL)
+        return zone_ids
     except Exception as e:
         logger.error(f"Failed to get zone IDs from H3 index {h3_index}: {str(e)}")
         return []
@@ -179,53 +194,85 @@ def get_zone_ids_from_h3(h3_index, radius=1):
 def get_neighboring_zone_ids(h3_index, max_distance_km=30):
     """
     Get zone IDs of neighboring zones within a maximum distance.
-    Used for inter-zone batching - finds zones that can share batches.
-    
+    Used for inter-zone batching — finds zones that can share batches.
+
+    Fix #12 — dwithin unit mismatch:
+    The original code passed `max_distance_km * 1000` as raw metres, but
+    GeoDjango's dwithin on a geometry (non-geography) field expects DEGREES.
+    Using D(km=...) from django.contrib.gis.measure lets Django handle the
+    unit conversion correctly regardless of whether the field is geometry or
+    geography.
+
     Returns dict with 'same_zone' and 'neighbor_zones' lists.
     """
     if not h3_index:
         return {'same_zone': [], 'neighbor_zones': []}
-    
+
     try:
-        from apps.geo.models import OperationalZone, ZoneH3Index
-        
+        from django.contrib.gis.geos import Point
+        from django.contrib.gis.measure import D
+        from apps.geo.models import OperationalZone
+        from django.core.cache import cache
+
+        cache_key = f"neighbor_zones:{h3_index}:d{max_distance_km}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         current_zone = get_zone_from_h3(h3_index)
         if not current_zone:
-            return {'same_zone': [], 'neighbor_zones': []}
-        
-        current_zone_ids = [current_zone.id]
-        
+            result = {'same_zone': [], 'neighbor_zones': []}
+            cache.set(cache_key, result, _ZONE_CACHE_TTL)
+            return result
+
         lat, lng = h3.cell_to_latlng(h3_index)
-        
+        point = Point(lng, lat, srid=4326)
+
+        # Fix #12: D(km=...) handles unit conversion correctly for both
+        # geometry (degrees) and geography (metres) field types.
         nearby_zones = OperationalZone.objects.filter(
             is_active=True,
-            boundary__dwithin=(lng, lat, max_distance_km * 1000)
+            boundary__dwithin=(point, D(km=max_distance_km)),
         ).exclude(id=current_zone.id)
-        
-        neighbor_zone_ids = list(nearby_zones.values_list('id', flat=True))
-        
-        return {
-            'same_zone': current_zone_ids,
-            'neighbor_zones': neighbor_zone_ids
+
+        result = {
+            'same_zone': [current_zone.id],
+            'neighbor_zones': list(nearby_zones.values_list('id', flat=True)),
         }
+        cache.set(cache_key, result, _ZONE_CACHE_TTL)
+        return result
+
     except Exception as e:
         logger.error(f"Failed to get neighboring zones: {str(e)}")
         return {'same_zone': [], 'neighbor_zones': []}
 
 
-def get_zone_h3_cells(zone_ids):
+def get_zone_h3_cells(zone_ids) -> set:
     """
     Get all H3 cells belonging to the given zone IDs.
     Returns set of H3 index strings.
+
+    Fix #18 — cached for 60 seconds to avoid repeated ZoneH3Index table scans.
+    Each batching cycle previously called this 4-6 times with no caching.
     """
     if not zone_ids:
         return set()
     try:
+        from django.core.cache import cache
+        sorted_ids = tuple(sorted(str(z) for z in zone_ids))
+        cache_key = f"zone_h3_cells:{'_'.join(sorted_ids)}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         from apps.geo.models import ZoneH3Index
-        cells = ZoneH3Index.objects.filter(
-            zone_id__in=zone_ids
-        ).values_list('h3_index', flat=True).distinct()
-        return set(cells)
+        cells = set(
+            ZoneH3Index.objects.filter(
+                zone_id__in=zone_ids
+            ).values_list('h3_index', flat=True).distinct()
+        )
+        cache.set(cache_key, cells, _ZONE_CACHE_TTL)
+        return cells
     except Exception as e:
         logger.error(f"Failed to get zone H3 cells: {str(e)}")
         return set()

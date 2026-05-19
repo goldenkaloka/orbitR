@@ -1,3 +1,13 @@
+"""
+CrossBatchingService — DEPRECATED.
+
+CrossBatchingService.attempt_batching() is no longer called.
+All cross-restaurant batching is now handled by BatchPipeline
+(domain/services/batch_pipeline.py) in a unified single code path.
+
+CrossBatchDriverMatcher is STILL ACTIVE and used by BatchDispatchService
+for driver selection scoring. Do not remove it.
+"""
 from django.db import transaction
 from django.utils import timezone
 from django.core.cache import cache
@@ -27,6 +37,21 @@ DELIVERY_STOP_TIME = 2
 
 
 class CrossBatchingService:
+    """
+    DEPRECATED — replaced by BatchPipeline.
+
+    CrossBatchDriverMatcher below is still active.
+    """
+
+    @staticmethod
+    def attempt_batching(h3_index):
+        logger.warning(
+            "[CrossBatchingService] DEPRECATED — attempt_batching() called. "
+            "Use BatchPipeline.run(order) instead. h3_index=%s", h3_index
+        )
+        return None
+
+
 
     @staticmethod
     def attempt_batching(h3_index):

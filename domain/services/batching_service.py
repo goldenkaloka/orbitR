@@ -1,86 +1,33 @@
-from django.db import transaction
-from django.core.cache import cache
+"""
+DEPRECATED — BatchingService is no longer active.
+
+This file is kept only for migration safety. All batching logic has been
+consolidated into BatchPipeline (domain/services/batch_pipeline.py).
+
+Problems with this service that led to its deprecation:
+  - Created batches with no pricing, no routing, and no dispatch call.
+  - Orphan batches sat in CREATED status permanently.
+  - Competed with BatchingEngine creating double-batch race conditions.
+
+DO NOT add new callers. Use BatchPipeline.run(order) instead.
+"""
 import logging
-from apps.core.geo_utils import get_neighbors
 
 logger = logging.getLogger(__name__)
-
-SINGLE_BATCH_LOCK_TTL = 15
 
 
 class BatchingService:
     """
-    Service responsible for grouping separate orders into Delivery Batches
-    based on Restaurant and H3 proximity.
+    DEPRECATED. Redirects to BatchPipeline for backwards compatibility.
+    Will be removed in a future cleanup pass.
     """
 
     @staticmethod
     def attempt_batching(restaurant_id, h3_index):
-        lock_key = f"single_batch_lock:{restaurant_id}:{h3_index[:8]}"
-        lock_acquired = cache.add(lock_key, "1", SINGLE_BATCH_LOCK_TTL)
-
-        if not lock_acquired:
-            logger.debug(f"Another worker processing single batch for restaurant {restaurant_id}")
-            return None
-
-        try:
-            return BatchingService._process_batching(restaurant_id, h3_index)
-        finally:
-            cache.delete(lock_key)
-
-    @staticmethod
-    @transaction.atomic
-    def _process_batching(restaurant_id, h3_index):
-        from apps.orders.models import Order, DeliveryBatch
-
-        neighbor_cells = get_neighbors(h3_index, 1)
-
-        orders = list(Order.objects.select_for_update(
-            skip_locked=True
-        ).filter(
-            status='READY',
-            restaurant_id=restaurant_id,
-            h3_index__in=neighbor_cells,
-            batch__isnull=True
-        ))
-
-        count = len(orders)
-
-        if count > 1:
-            logger.info(f"Creating batch for {count} orders at Restaurant {restaurant_id} -> H3 Cell {h3_index}")
-
-            batch = DeliveryBatch.objects.create(
-                restaurant_id=restaurant_id,
-                batch_type='SINGLE_RESTAURANT',
-                status='CREATED'
-            )
-
-            for order in orders:
-                order.batch = batch
-
-            Order.objects.bulk_update(orders, ['batch'])
-
-            BatchingService._emit_batch_created_event(batch, orders)
-
-            return batch
-
+        logger.warning(
+            "[BatchingService] DEPRECATED — BatchingService.attempt_batching() called. "
+            "This service no longer creates batches. Use BatchPipeline.run(order) instead. "
+            f"restaurant_id={restaurant_id}, h3_index={h3_index}"
+        )
         return None
 
-    @staticmethod
-    def _emit_batch_created_event(batch, orders):
-        """Emit domain event when batch is created."""
-        try:
-            from domain.events.bus import EventBus
-            from domain.events.types import BatchCreated
-
-            EventBus.publish(BatchCreated(
-                aggregate_id=str(batch.id),
-                payload={
-                    'batch_type': batch.batch_type,
-                    'order_count': len(orders),
-                    'order_ids': [str(o.id) for o in orders],
-                    'restaurant_id': str(batch.restaurant_id)
-                }
-            ))
-        except Exception as e:
-            logger.warning(f"Failed to emit BatchCreated event: {e}")

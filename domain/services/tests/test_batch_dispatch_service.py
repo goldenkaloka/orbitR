@@ -197,7 +197,7 @@ class BatchDispatchServiceTests(TestCase):
             BatchDispatchService.dispatch_batch(str(batch.id))
 
             batch.refresh_from_db()
-            self.assertEqual(batch.status, 'EXPIRED')
+            self.assertEqual(batch.status, 'WAITING_TEMP_DRIVER')
 
     def test_schedule_retry_schedules_task(self):
         """Test that _schedule_retry schedules a retry task"""
@@ -243,7 +243,7 @@ class BatchDispatchServiceTests(TestCase):
 
             self.assertIsNone(result)
             batch.refresh_from_db()
-            self.assertEqual(batch.status, 'CREATED')
+            self.assertEqual(batch.status, 'WAITING_TEMP_DRIVER')
 
 
 class BatchDispatchServiceDriverTests(TestCase):
