@@ -282,10 +282,12 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
-            'total_delivery_fee', 'service_fee', 'members', 'created_at', 'expires_at',
+            'total_delivery_fee', 'total_service_fee', 'members', 'created_at', 'expires_at',
             'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
-        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'initiator', 'expires_at']
+        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'total_service_fee', 'initiator', 'expires_at']
+
+    total_service_fee = serializers.ReadOnlyField(source='service_fee')
 
     final_order_id = serializers.SerializerMethodField()
 

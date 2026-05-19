@@ -491,7 +491,7 @@ RAFIKI_CONFIG = {
     'SENDER_NAME': os.getenv('RAFIKI_SENDER_NAME', ''),
     'BASE_URL': 'https://api.rafikisms.com',
 }
-MOCK_SMS = config('MOCK_SMS', default='True') == 'True'
+MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
 
 # OneSignal
 ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID', '')
