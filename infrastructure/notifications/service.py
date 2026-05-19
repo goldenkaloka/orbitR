@@ -39,6 +39,7 @@ class NotificationService:
 
             config = settings.RAFIKI_CONFIG
             api_key = config.get('API_KEY')
+            sender = config.get('SENDER_NAME')
 
             if not api_key:
                 logger.warning("RafikiSMS API key not found. Skipping SMS.")
@@ -50,6 +51,9 @@ class NotificationService:
                 "phone": clean_phone,
                 "message": message
             }
+            if sender:
+                payload["sender_id"] = sender
+                payload["sender"] = sender
 
             headers = {
                 "Content-Type": "application/json",
@@ -57,8 +61,17 @@ class NotificationService:
             }
 
             response = requests.post(url, json=payload, headers=headers, timeout=10)
+            logger.info(f"RafikiSMS API Response: status={response.status_code}, body={response.text}")
 
             if response.status_code in [200, 201]:
+                # Try to parse JSON and check success flag if present
+                try:
+                    res_json = response.json()
+                    if isinstance(res_json, dict) and res_json.get('success') is False:
+                        logger.error(f"❌ RafikiSMS API reported failure: {res_json}")
+                        return False
+                except Exception:
+                    pass
                 logger.info(f"✅ RafikiSMS sent successfully to {phone}")
                 return True
             else:

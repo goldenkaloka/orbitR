@@ -1,49 +1,34 @@
+import json
 import requests
-from decouple import config
 
-def test_africastalking_sms():
-    username = config('AFRICASTALKING_USERNAME', default='sandbox').strip()
-    api_key = config('AFRICASTALKING_API_KEY', default='').strip()
-    sender_id = config('AFRICASTALKING_SENDER_ID', default='').strip()
-    
-    # Must include + for Africa's Talking
-    phone = "+255616622485" 
-    message = "Test from Mwanachuo using Africa's Talking API!"
+# 1. Configuration (extracted from your .env)
+API_KEY = "sk_qUvgWy4fU1btBrmEnQM2ggYr5IZieRMU0YvOrhWbdo5KVKxB"
+SENDER_NAME = "Orbit"  # Approved sender ID on your account
+PHONE_NUMBER = "255616622485"  # Ensure international format without '+'
 
-    if username == 'sandbox':
-        url = "https://api.sandbox.africastalking.com/version1/messaging/bulk"
-    else:
-        url = "https://api.africastalking.com/version1/messaging/bulk"
+# 2. Setup Payload & Headers
+url = "https://api.rafikisms.com/v1/vendor/send-sms"
+payload = {
+    "phone": PHONE_NUMBER,
+    "message": "Hello from Orbit! This is a test SMS.",
+    "sender_id": SENDER_NAME,
+    "sender": SENDER_NAME
+}
+headers = {
+    "Content-Type": "application/json",
+    "X-API-Key": API_KEY
+}
 
-    payload = {
-        "username": username,
-        "phoneNumbers": [phone],
-        "message": message,
-    }
-    if sender_id:
-        payload["senderId"] = sender_id
-
-    headers = {
-        "apiKey": api_key,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    print(f"Testing Africa's Talking Auth with Username: {username}")
-    print(f"\nSending SMS to {url}...")
-    
+# 3. Dispatch Request
+print(f"Sending test SMS to {PHONE_NUMBER} via {url}...")
+try:
+    response = requests.post(url, json=payload, headers=headers, timeout=10)
+    print(f"\n[HTTP Status]: {response.status_code}")
+    print("[Response Body]:")
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=15)
-        print(f"\nStatus Code: {response.status_code}")
-        print(f"Response: {response.text}")
-        
-        if response.status_code in [200, 201]:
-            print("\n✅ SUCCESS! Africa's Talking API works!")
-        else:
-            print("\n❌ FAILED. Check credentials or balance.")
-            
-    except Exception as e:
-        print(f"\n🔥 ERROR: {str(e)}")
-
-if __name__ == "__main__":
-    test_africastalking_sms()
+        # Format JSON print if applicable
+        print(json.dumps(response.json(), indent=2))
+    except ValueError:
+        print(response.text)
+except Exception as e:
+    print(f"Network error occurred: {e}")
