@@ -114,6 +114,11 @@ class Migration(migrations.Migration):
             name='route_sequence',
             field=models.PositiveIntegerField(blank=True, db_index=True, null=True),
         ),
+        migrations.AddField(
+            model_name='order',
+            name='status_changed_at',
+            field=models.DateTimeField(auto_now_add=True, db_index=True),
+        ),
         migrations.AlterField(
             model_name='deliverybatch',
             name='restaurant',
