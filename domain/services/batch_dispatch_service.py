@@ -13,6 +13,90 @@ logger = logging.getLogger(__name__)
 MAX_OFFER_ATTEMPTS = 5
 OFFER_EXPIRY_SECONDS = 300  # 5 minutes
 OFFER_CACHE_PREFIX = "batch_offer_"
+EXPIRED_BATCH_NOTIFY_COOLDOWN = 1800
+
+
+def handle_expired_batch(batch_id):
+    """Handle batch that has expired after max attempts - mark orders for manual assignment."""
+    from apps.orders.models import DeliveryBatch, Order
+    from infrastructure.notifications.service import NotificationService
+
+    try:
+        batch = DeliveryBatch.objects.select_related().get(id=batch_id)
+
+        if batch.status != 'EXPIRED':
+            return
+
+        order_count = batch.orders.count()
+
+        orders = list(batch.orders.all())
+        for order in orders:
+            order.status = 'PENDING_MANUAL_ASSIGNMENT'
+            order.batch = None
+
+        Order.objects.bulk_update(orders, ['status', 'batch'])
+
+        logger.warning(f"Batch {batch_id} expired - {order_count} orders marked for manual assignment")
+
+        admin_alert_key = f"expired_batch_admin_{batch_id}"
+        if not cache.get(admin_alert_key):
+            cache.set(admin_alert_key, True, timeout=EXPIRED_BATCH_NOTIFY_COOLDOWN)
+
+            try:
+                from django.conf import settings
+                if hasattr(settings, 'ADMIN_NOTIFICATION_USER_ID'):
+                    NotificationService.send_push(
+                        user_id=str(settings.ADMIN_NOTIFICATION_USER_ID),
+                        title="Batch Expired - Manual Assignment Required",
+                        body=f"Batch {batch_id} with {order_count} orders has expired. Orders marked for manual assignment.",
+                        data={"batch_id": str(batch_id), "type": "batch_expired_manual_assign"}
+                    )
+            except Exception as e:
+                logger.error(f"Failed to send expired batch notification: {e}")
+
+        return orders
+
+    except Exception as e:
+        logger.error(f"Error handling expired batch {batch_id}: {e}")
+        return None
+
+
+def get_available_driver_count():
+    """Returns count of drivers that are AVAILABLE and have recent heartbeat."""
+    from django.utils import timezone
+    from datetime import timedelta
+    from apps.delivery.models import Driver
+
+    threshold = timezone.now() - timedelta(minutes=5)
+    return Driver.objects.filter(
+        status='AVAILABLE',
+        last_heartbeat__gte=threshold
+    ).count()
+
+
+def notify_no_drivers_available(batch_id, attempt_count):
+    """Send notification when no drivers are available after multiple attempts."""
+    from infrastructure.notifications.service import NotificationService
+    from django.conf import settings
+
+    logger.warning(f"ALERT: No drivers available for batch {batch_id} (attempt {attempt_count})")
+
+    notification_key = f"no_drivers_alert_{batch_id}"
+    if cache.get(notification_key):
+        return
+
+    cache.set(notification_key, True, timeout=1800)
+
+    if hasattr(settings, 'ADMIN_NOTIFICATION_USER_ID'):
+        try:
+            NotificationService.send_push(
+                user_id=str(settings.ADMIN_NOTIFICATION_USER_ID),
+                title="No Drivers Available!",
+                body=f"Batch {batch_id} cannot find drivers after {attempt_count} attempts. Manual intervention required.",
+                data={"batch_id": str(batch_id), "type": "no_drivers_alert"}
+            )
+        except Exception as e:
+            logger.error(f"Failed to send no-drivers notification: {e}")
 
 
 class BatchDispatchService:
@@ -61,6 +145,12 @@ class BatchDispatchService:
             driver = BatchDispatchService._find_best_driver(batch)
             if not driver:
                 logger.warning(f"No driver found for batch {batch.id}")
+                available_count = get_available_driver_count()
+                logger.info(f"System available driver count: {available_count}")
+
+                if available_count == 0:
+                    notify_no_drivers_available(batch.id, offer_attempt + 1)
+
                 BatchDispatchService._schedule_retry(batch.id, attempt=offer_attempt + 1)
                 return None
 
@@ -240,11 +330,13 @@ class BatchDispatchService:
                 logger.warning(f"Batch {batch_id} reached max offer attempts ({MAX_OFFER_ATTEMPTS}), marking as expired")
                 batch.status = 'EXPIRED'
                 batch.save()
-                
+
                 EventBus.publish(BatchExpired(
                     aggregate_id=str(batch.id),
                     payload={'reason': 'max_attempts_reached'}
                 ))
+
+                handle_expired_batch(batch_id)
                 return batch
 
         BatchDispatchService.dispatch_batch(batch_id)
@@ -310,11 +402,13 @@ class BatchOfferExpiryHandler:
                 logger.warning(f"Batch {batch_id} reached max offer attempts ({MAX_OFFER_ATTEMPTS}), marking as expired")
                 batch.status = 'EXPIRED'
                 batch.save()
-                
+
                 EventBus.publish(BatchExpired(
                     aggregate_id=str(batch.id),
                     payload={'reason': 'max_attempts_reached'}
                 ))
+
+                handle_expired_batch(batch_id)
                 return
 
             BatchDispatchService.dispatch_batch(batch_id)

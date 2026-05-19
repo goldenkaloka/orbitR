@@ -60,18 +60,32 @@ class PricingService:
         Returns (final_fee, service_fee, log_instance).
         Set skip_log=True to skip database log creation (for batch recalculation).
         """
-        if not delivery_location or not restaurant or not restaurant.geo_location:
+        if not delivery_location:
+            logger.warning("PRICING FALLBACK: delivery_location is None")
+            return Decimal('1000.00'), Decimal('300.00'), None
+
+        if not restaurant:
+            logger.warning("PRICING FALLBACK: restaurant is None")
+            return Decimal('1000.00'), Decimal('300.00'), None
+
+        if not restaurant.geo_location:
+            logger.warning(f"PRICING FALLBACK: Restaurant {restaurant.id} has no geo_location")
             return Decimal('1000.00'), Decimal('300.00'), None
 
         if abs(restaurant.geo_location.x) < 0.0001 and abs(restaurant.geo_location.y) < 0.0001:
-            logger.warning(f"Restaurant {restaurant.id} has invalid Point(0,0) location.")
+            logger.warning(f"PRICING FALLBACK: Restaurant {restaurant.id} has invalid Point(0,0) location.")
             return Decimal('1000.00'), Decimal('300.00'), None
 
         try:
             delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
             restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
-            
-            if not delivery_h3 or not restaurant_h3:
+
+            if not delivery_h3:
+                logger.warning(f"PRICING FALLBACK: Failed to compute H3 for delivery location ({delivery_location.y}, {delivery_location.x})")
+                return Decimal('1000.00'), Decimal('300.00'), None
+
+            if not restaurant_h3:
+                logger.warning(f"PRICING FALLBACK: Failed to compute H3 for restaurant location ({restaurant.geo_location.y}, {restaurant.geo_location.x})")
                 return Decimal('1000.00'), Decimal('300.00'), None
 
             r_lat, r_lng = h3.cell_to_latlng(restaurant_h3)
@@ -80,8 +94,9 @@ class PricingService:
 
             policy = cls.get_active_policy()
             service_fee = policy.service_fee if policy else Decimal('300.00')
-            
+
             if not policy:
+                logger.warning("PRICING FALLBACK: No active PricingPolicy found in database")
                 return Decimal('1000.00'), service_fee, None
 
             from apps.geo.models import ZoneH3Index
@@ -149,7 +164,7 @@ class PricingService:
             return final_rounded, service_fee, log
 
         except Exception as e:
-            logger.error(f"Error calculating delivery fee: {str(e)}")
+            logger.error(f"PRICING FALLBACK: Exception during calculation: {str(e)}", exc_info=True)
             return Decimal('1000.00'), Decimal('300.00'), None
 
     @classmethod

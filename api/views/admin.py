@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, BasePermission
 
+from django.db import transaction
 from django.db.models import Sum, Count, Q
 from django.utils import timezone
 from django.core.cache import cache
@@ -291,3 +292,74 @@ class AdminViewSet(viewsets.GenericViewSet):
             return Response({'message': 'Restaurant deleted successfully'})
         except Restaurant.DoesNotExist:
             return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    @action(detail=False, methods=['GET'])
+    def pending_manual_assignment(self, request):
+        """
+        Get orders that need manual driver assignment.
+        """
+        orders = Order.objects.filter(status='PENDING_MANUAL_ASSIGNMENT').select_related('restaurant', 'customer')
+        return Response({
+            'count': orders.count(),
+            'orders': OrderSerializer(orders, many=True).data
+        })
+
+    @action(detail=False, methods=['POST'], url_path='manual-assign-driver')
+    def manual_assign_driver(self, request):
+        """
+        Manually assign a driver to an order.
+        Body: { order_id, driver_id }
+        """
+        order_id = request.data.get('order_id')
+        driver_id = request.data.get('driver_id')
+
+        if not order_id or not driver_id:
+            return Response({'error': 'order_id and driver_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            driver = Driver.objects.get(id=driver_id)
+        except Driver.DoesNotExist:
+            return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        from domain.fsm.driver_fsm import DriverFSM
+
+        if order.status not in ['PENDING_MANUAL_ASSIGNMENT', 'READY']:
+            return Response({
+                'error': f'Cannot assign driver to order in status {order.status}. Only PENDING_MANUAL_ASSIGNMENT or READY allowed.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if driver.status not in ['OFFLINE', 'AVAILABLE']:
+            return Response({
+                'error': f'Driver is in {driver.status} status. Driver must be OFFLINE or AVAILABLE.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            from django.db.models import F
+            from domain.fsm.driver_fsm import DriverFSM
+
+            order.driver = driver
+            order.status = 'ASSIGNED'
+            order.save()
+
+            new_status = driver.status
+            if driver.status == 'OFFLINE':
+                new_status = DriverFSM.transition(driver.status, 'AVAILABLE')
+
+            new_status = DriverFSM.transition(new_status, 'ASSIGNED')
+
+            Driver.objects.filter(id=driver.id).update(
+                status=new_status,
+                current_active_orders=F('current_active_orders') + 1
+            )
+            driver.refresh_from_db()
+
+        return Response({
+            'message': f'Driver {driver.user.username} assigned to order {order_id}',
+            'order': OrderSerializer(order).data,
+            'driver': DriverSerializer(driver).data
+        })

@@ -26,7 +26,13 @@ class SimpleProximityStrategy(LocationMatcher):
     Works with standard float latitude/longitude.
     """
     def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=10):
-        available_drivers = Driver.objects.filter(status='AVAILABLE')
+        from django.utils import timezone
+        from datetime import timedelta
+        threshold = timezone.now() - timedelta(minutes=5)
+        available_drivers = Driver.objects.filter(
+            status='AVAILABLE',
+            last_heartbeat__gte=threshold
+        )
         best_driver = None
         min_distance = float('inf')
 
@@ -63,15 +69,16 @@ class PostgisRadiusStrategy(LocationMatcher):
         """
         Primary strategy: Spatial query with weighted scoring and row-level locking.
         """
+        from django.utils import timezone
+        from datetime import timedelta
+        threshold = timezone.now() - timedelta(minutes=5)
         restaurant_point = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
 
-        # 1. Filter available drivers within PostGIS Radius
-        # We use select_for_update(skip_locked=True) to handle concurrency.
-        # We also handle affinity: Permanent drivers are global, Temp drivers are locked to one restaurant.
         with transaction.atomic():
             drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                 status='AVAILABLE',
-                location__dwithin=(restaurant_point, D(km=max_radius_km))
+                location__dwithin=(restaurant_point, D(km=max_radius_km)),
+                last_heartbeat__gte=threshold
             ).filter(
                 # Affinity Rule: If temp, must match restaurant. If permanent, any restaurant.
                 Q(driver_type='permanent') | Q(assigned_by_id=restaurant_id)

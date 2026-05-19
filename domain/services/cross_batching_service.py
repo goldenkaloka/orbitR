@@ -513,11 +513,7 @@ class CrossBatchDriverMatcher:
             return None
 
         with transaction.atomic():
-            driver_filter = Q(driver_type='permanent')
-            if batch.batch_type == 'SINGLE_RESTAURANT':
-                driver_filter = driver_filter | Q(assigned_by_id=first_restaurant_id)
-
-            def find_best_driver(zone_cells, zone_penalty=0, filter_q=driver_filter):
+            def find_best_driver(zone_cells, zone_penalty=0, filter_q=Q()):
                 drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                     status='AVAILABLE',
                     h3_index__in=zone_cells,
@@ -525,42 +521,61 @@ class CrossBatchDriverMatcher:
                 ).filter(filter_q).annotate(
                     distance_meters=Distance('location', restaurant_point)
                 )
-                
+
                 if not drivers.exists():
                     return None, None
-                
+
                 best = None
                 min_score = float('inf')
-                
+
                 for driver in drivers:
                     rating_penalty = 5.0 - float(driver.rating)
                     dist_km = driver.distance_meters.km if driver.distance_meters else max_radius_km
-                    
+
                     score = (
                         float(dist_km) * 0.4 +
                         rating_penalty * 0.4 +
                         zone_penalty * 0.2
                     )
-                    
+
                     if score < min_score:
                         min_score = score
                         best = driver
-                
+
                 return best, min_score
 
-            same_zone_driver, same_zone_score = find_best_driver(primary_h3_cells, zone_penalty=0)
-            
+            permanent_filter = Q(driver_type='permanent')
+            same_zone_driver, same_zone_score = find_best_driver(primary_h3_cells, zone_penalty=0, filter_q=permanent_filter)
+
             if same_zone_driver:
-                logger.info(f"Found same-zone driver for batch {batch.id}: score={same_zone_score:.2f}")
+                logger.info(f"Found permanent driver for batch {batch.id}: score={same_zone_score:.2f}")
                 return same_zone_driver
-            
+
             if neighbor_zone_ids:
                 neighbor_h3_cells = get_zone_h3_cells(neighbor_zone_ids)
                 if neighbor_h3_cells:
-                    neighbor_driver, neighbor_score = find_best_driver(neighbor_h3_cells, zone_penalty=2.0)
+                    neighbor_driver, neighbor_score = find_best_driver(neighbor_h3_cells, zone_penalty=2.0, filter_q=permanent_filter)
                     if neighbor_driver:
-                        logger.info(f"Found neighbor-zone driver for batch {batch.id}: score={neighbor_score:.2f}")
+                        logger.info(f"Found permanent driver in neighbor zone for batch {batch.id}: score={neighbor_score:.2f}")
                         return neighbor_driver
-            
-            logger.warning(f"No drivers available for batch {batch.id} in any zone")
+
+            all_restaurants = list(batch.orders.values_list('restaurant_id', flat=True).distinct())
+
+            logger.info(f"No permanent drivers found for batch {batch.id}, trying temporary drivers from {len(all_restaurants)} restaurants")
+            for restaurant_id in all_restaurants:
+                temp_filter = Q(driver_type='temporary', assigned_by_id=restaurant_id)
+                temp_driver, temp_score = find_best_driver(primary_h3_cells, zone_penalty=1.0, filter_q=temp_filter)
+                if temp_driver:
+                    logger.info(f"Found temporary driver for batch {batch.id} from restaurant {restaurant_id}: score={temp_score:.2f}")
+                    return temp_driver
+
+                if neighbor_zone_ids:
+                    neighbor_h3_cells = get_zone_h3_cells(neighbor_zone_ids)
+                    if neighbor_h3_cells:
+                        temp_driver, temp_score = find_best_driver(neighbor_h3_cells, zone_penalty=3.0, filter_q=temp_filter)
+                        if temp_driver:
+                            logger.info(f"Found temporary driver in neighbor zone for batch {batch.id} from restaurant {restaurant_id}: score={temp_score:.2f}")
+                            return temp_driver
+
+            logger.warning(f"No drivers available for batch {batch.id} in any zone (permanent or temporary)")
             return None

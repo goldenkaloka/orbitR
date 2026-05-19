@@ -56,7 +56,6 @@ class DriverViewSet(viewsets.ModelViewSet):
         if lat is None or lng is None:
             return Response({"error": "lat and lng are required"}, status=400)
 
-        # Validate numeric + finite + range to avoid 500s and bad geospatial writes
         try:
             lat_f = float(lat)
             lng_f = float(lng)
@@ -66,38 +65,34 @@ class DriverViewSet(viewsets.ModelViewSet):
             return Response({"error": "Invalid lat or lng"}, status=400)
         if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
             return Response({"error": "lat/lng out of range"}, status=400)
-        
+
         driver = request.user.driver_profile
-        
-        # 1. Throttling: 1 update per 10 seconds per driver
+
         cache_key = f"driver_loc_throttle_{driver.id}"
         if cache.get(cache_key):
             return Response({'status': 'throttled', 'message': 'Location updates too frequent'}, status=200)
-        
-        # 2. Status Check: Only active/busy drivers broadcast location
+
         if driver.status not in ['AVAILABLE', 'DELIVERING']:
              return Response({'status': 'ignored', 'message': 'Driver is offline or inactive'}, status=200)
 
         new_loc = Point(lng_f, lat_f, srid=4326)
-        
-        # 3. Distance Threshold: Only save if moved > 50 meters
+
         if driver.location:
-            # PostGIS geography.distance() returns meters
             dist = driver.location.distance(new_loc)
             if dist < 50:
-                # Still set cache to throttle even if we don't save to DB
+                driver.last_heartbeat = timezone.now()
+                driver.save(update_fields=['last_heartbeat'])
                 cache.set(cache_key, True, 10)
                 return Response({'status': 'skipped', 'message': 'Movement below threshold'}, status=200)
 
-        # 4. Persistence and Sync
         driver.location = new_loc
         driver.h3_index = latlng_to_h3(lat_f, lng_f, ZONE_RESOLUTION)
-        driver.save(update_fields=['location', 'h3_index', 'updated_at'])
+        driver.last_heartbeat = timezone.now()
+        driver.save(update_fields=['location', 'h3_index', 'last_heartbeat', 'updated_at'])
 
-        
+
         cache.set(cache_key, True, 10)
-        
-        # 5. Broadcast location to active order groups
+
         from apps.events.utils import broadcast_order_location
         active_orders = Order.objects.filter(driver=driver, status__in=['ASSIGNED', 'PICKED'])
         for order in active_orders:
@@ -105,19 +100,16 @@ class DriverViewSet(viewsets.ModelViewSet):
                 order_id=str(order.id),
                 lat=lat_f,
                 lng=lng_f,
-                heading=request.data.get('heading', 0.0) # Optional heading from app
+                heading=request.data.get('heading', 0.0)
             )
-        
-        # --- Arrival Notifications Logic ---
-        # Find active orders where the driver is now within 300m of the delivery location
+
         from django.contrib.gis.measure import D
         active_orders = Order.objects.filter(
-            driver=driver, 
+            driver=driver,
             status='PICKED',
             delivery_location__distance_lte=(new_loc, D(m=20))
         )
         for order in active_orders:
-            # Check cache to avoid duplicate notifications within 10 mins
             notif_cache_key = f"nearby_notif_{order.id}"
             if not cache.get(notif_cache_key):
                 NotificationService.send_push(
@@ -127,8 +119,15 @@ class DriverViewSet(viewsets.ModelViewSet):
                     data={"order_id": str(order.id), "type": "rider_nearby"}
                 )
                 cache.set(notif_cache_key, True, 600)
-        
+
         return Response({'status': 'location updated'})
+
+    @action(detail=False, methods=['POST'], url_path='heartbeat')
+    def heartbeat(self, request):
+        driver = request.user.driver_profile
+        driver.last_heartbeat = timezone.now()
+        driver.save(update_fields=['last_heartbeat'])
+        return Response({'status': 'ok', 'last_heartbeat': driver.last_heartbeat})
 
 class DeliveryProofViewSet(viewsets.ModelViewSet):
     queryset = DeliveryProof.objects.all()

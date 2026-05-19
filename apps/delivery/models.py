@@ -17,7 +17,8 @@ class Driver(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
-    status = models.CharField(max_length=50, default='OFFLINE', db_index=True) # Handled by Driver FSM
+    status = models.CharField(max_length=50, default='OFFLINE', db_index=True)
+    last_heartbeat = models.DateTimeField(null=True, blank=True, db_index=True)
     driver_type = models.CharField(max_length=20, choices=DRIVER_TYPE_CHOICES, default='permanent', db_index=True)
     assigned_by = models.ForeignKey(
         'restaurants.Restaurant', on_delete=models.SET_NULL,
