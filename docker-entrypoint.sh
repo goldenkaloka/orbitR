@@ -22,13 +22,21 @@ while True:
     except socket.error:
         time.sleep(0.1)
 END
-    echo "PostgreSQL is up - executing migrations"
+    echo "PostgreSQL is up"
 fi
 
-# Collect static files and rebuild the manifest
-# Necessary whenever package static files change (e.g. django-unfold upgrades)
-echo "Collecting static files..."
-python manage.py collectstatic --noinput --clear 2>&1
+# Celery workers do not serve static files; skip collectstatic to avoid races on staticfiles/
+case "$1" in
+  celery*) RUN_COLLECTSTATIC=0 ;;
+esac
+
+# Collect static files only for web server processes (not celery, not one-off manage.py commands)
+if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
+  if echo "$*" | grep -qE 'daphne|gunicorn|uvicorn|runserver'; then
+    echo "Collecting static files..."
+    python manage.py collectstatic --noinput 2>&1
+  fi
+fi
 
 # Run the provided command
 exec "$@"

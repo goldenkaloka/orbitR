@@ -32,6 +32,12 @@ class SafeCompressedManifestStaticFilesStorage(CompressedManifestStaticFilesStor
 
         try:
             yield from super()._compress_path(full_path)
+        except FileNotFoundError:
+            logger.warning(
+                "SafeCompressedManifestStaticFilesStorage: File disappeared during compression, skipping: %s",
+                full_path,
+            )
+            return
         except Exception as e:
             logger.error(f"SafeCompressedManifestStaticFilesStorage: Error compressing file {full_path}: {str(e)}")
             return
