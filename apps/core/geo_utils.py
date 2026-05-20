@@ -276,3 +276,27 @@ def get_zone_h3_cells(zone_ids) -> set:
     except Exception as e:
         logger.error(f"Failed to get zone H3 cells: {str(e)}")
         return set()
+
+
+def haversine_distance(p1, p2) -> float:
+    """
+    Calculate the great-circle distance between two points on the Earth
+    specified as GEOS Point objects (lng, lat).
+    Returns distance in meters.
+    """
+    if not p1 or not p2:
+        return 0.0
+    # Earth radius in meters
+    R = 6371000.0
+    
+    lng1, lat1 = math.radians(p1.x), math.radians(p1.y)
+    lng2, lat2 = math.radians(p2.x), math.radians(p2.y)
+    
+    dlng = lng2 - lng1
+    dlat = lat2 - lat1
+    
+    a = math.sin(dlat / 2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    
+    return R * c
+

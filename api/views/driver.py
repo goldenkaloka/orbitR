@@ -7,7 +7,7 @@ from api.serializers.core import DriverSerializer, DeliveryProofSerializer
 from apps.delivery.models import Driver, DeliveryProof
 
 from domain.fsm.driver_fsm import DriverFSM
-from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, haversine_distance
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.utils import timezone
@@ -78,7 +78,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         new_loc = Point(lng_f, lat_f, srid=4326)
 
         if driver.location:
-            dist = driver.location.distance(new_loc)
+            dist = haversine_distance(driver.location, new_loc)
             if dist < 50:
                 driver.last_heartbeat = timezone.now()
                 driver.save(update_fields=['last_heartbeat'])

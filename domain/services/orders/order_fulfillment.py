@@ -11,6 +11,8 @@ from domain.events.types import (
     OrderPreparing, FoodReady, OrderPicked, OrderDelivered
 )
 
+from apps.core.geo_utils import haversine_distance
+
 logger = logging.getLogger(__name__)
 
 # Operational Constants
@@ -80,7 +82,7 @@ class PickupOrderService:
                 if not driver.location or not order.restaurant.geo_location:
                     raise ValueError("Location data missing for geofence check")
                 
-                dist = driver.location.distance(order.restaurant.geo_location)
+                dist = haversine_distance(driver.location, order.restaurant.geo_location)
                 if dist > PICKUP_GEOFENCE_RADIUS_METERS:
                     raise ValueError(f"Too far from restaurant ({int(dist)}m away, {PICKUP_GEOFENCE_RADIUS_METERS}m limit)")
             
@@ -123,7 +125,7 @@ class DeliverOrderService:
                 if not driver.location or not order.delivery_location:
                     raise ValueError("Location data missing for geofence check")
                 
-                dist = driver.location.distance(order.delivery_location)
+                dist = haversine_distance(driver.location, order.delivery_location)
                 if dist > DELIVERY_GEOFENCE_RADIUS_METERS:
                     raise ValueError(f"Too far from delivery location ({int(dist)}m away, {DELIVERY_GEOFENCE_RADIUS_METERS}m limit)")
             
@@ -143,7 +145,10 @@ class DeliverOrderService:
                     driver_share = policy.single_order_driver_share
                 order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
 
-            driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+            active_orders_count = Order.objects.filter(driver=driver, status__in=['ASSIGNED', 'PICKED']).exclude(id=order.id).count()
+            if active_orders_count == 0:
+                driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+            
             driver.total_earnings += order_driver_payout
             driver.today_earnings += order_driver_payout
             driver.current_active_orders = max(0, driver.current_active_orders - 1)

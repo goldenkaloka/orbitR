@@ -544,6 +544,20 @@ class OrderViewSet(viewsets.ModelViewSet):
         except (InvalidStateTransitionError, ValueError) as e:
             return Response({"error": str(e)}, status=400)
 
+    @action(detail=True, methods=['POST'], url_path='rider-cancel')
+    def rider_cancel(self, request, pk=None):
+        reason = request.data.get('reason', 'Cancelled by driver')
+        from domain.services.order_services import CancelOrderService
+        try:
+            order = CancelOrderService.execute(pk, request.user, reason=reason)
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (InvalidStateTransitionError, ValueError) as e:
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
     @action(detail=True, methods=['POST'])
     def reject(self, request, pk=None):
         try:

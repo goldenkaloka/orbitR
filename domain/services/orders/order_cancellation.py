@@ -23,6 +23,11 @@ class CancelOrderService:
             elif actor.role == 'vendor':
                 if order.restaurant.owner != actor:
                     raise PermissionError("No permission to cancel this order.")
+            elif actor.role == 'driver':
+                if order.driver != actor.driver_profile:
+                    raise PermissionError("Not the assigned driver.")
+                if order.status not in ['ASSIGNED', 'PICKED']:
+                    raise PermissionError("Cannot cancel order in current status.")
             elif actor.role != 'admin':
                 raise PermissionError("No permission to cancel.")
             

@@ -92,6 +92,8 @@ class MapboxRoutingService:
                     'order_id': origin_info.get('order_id'),
                     'restaurant_id': origin_info.get('restaurant_id'),
                     'type': origin_info.get('type'),
+                    'lat': origin_info.get('lat'),
+                    'lng': origin_info.get('lng'),
                     'estimated_arrival_min': 0
                 })
             if destination_info:
@@ -99,6 +101,8 @@ class MapboxRoutingService:
                     'order_id': destination_info.get('order_id'),
                     'restaurant_id': destination_info.get('restaurant_id'),
                     'type': destination_info.get('type'),
+                    'lat': destination_info.get('lat'),
+                    'lng': destination_info.get('lng'),
                     'estimated_arrival_min': int(duration_min)
                 })
 
@@ -177,6 +181,8 @@ class MapboxRoutingService:
                     'order_id': coord.get('order_id'),
                     'restaurant_id': coord.get('restaurant_id'),
                     'type': coord.get('type'),
+                    'lat': coord.get('lat'),
+                    'lng': coord.get('lng'),
                     'waypoint_index': waypoint_index,
                     'estimated_arrival_min': int(cumulative_time)
                 })
