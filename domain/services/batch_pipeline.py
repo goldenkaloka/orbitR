@@ -38,8 +38,8 @@ MAX_CANDIDATES = 50         # max orders to fetch per batching cycle
 MAX_ORDERS_PER_BATCH = 5
 MAX_RESTAURANTS_PER_BATCH = 3
 MIN_ORDERS_FOR_BATCH = 2
-NEIGHBOR_RING_K = 2         # H3 rings to expand from delivery cell for clustering
-CLUSTER_RESOLUTION = 10     # fine resolution for delivery-proximity clustering
+NEIGHBOR_RING_K = 3         # H3 rings to expand from delivery cell for clustering
+CLUSTER_RESOLUTION = 9     # fine resolution for delivery-proximity clustering
 MAX_2OPT_ITERATIONS = 20    # hard cap — prevents unbounded loops inside transactions
 CROSS_BATCH_DISCOUNT = Decimal('0.15')
 
@@ -179,23 +179,40 @@ class BatchPipeline:
             return _dedup_by_pk(same_restaurant)[:MAX_ORDERS_PER_BATCH]
 
         # Strategy 2: Cross-restaurant — cluster by delivery proximity
-        cross_cluster = BatchPipeline._cluster_by_delivery_proximity(candidates)
+        cross_cluster = BatchPipeline._cluster_by_delivery_proximity(trigger_order, candidates)
         if cross_cluster and len(cross_cluster) >= MIN_ORDERS_FOR_BATCH:
-            unique_restaurants = {o.restaurant_id for o in cross_cluster}
-            if len(unique_restaurants) >= 2:
-                return cross_cluster
+            return cross_cluster
 
         return None
 
     @staticmethod
-    def _cluster_by_delivery_proximity(orders: list) -> list | None:
+    def _cluster_by_delivery_proximity(trigger_order, orders: list) -> list | None:
         """
-        Group orders by delivery H3 cell proximity at fine resolution.
-        Returns the largest valid cluster, or None.
+        Group orders by delivery H3 cell proximity at fine resolution,
+        anchored on the triggering order.
         """
-        cells: dict[str, list] = {}
+        if not trigger_order.delivery_location:
+            return None
+        trigger_cell = latlng_to_h3(
+            trigger_order.delivery_location.y,
+            trigger_order.delivery_location.x,
+            CLUSTER_RESOLUTION,
+        )
+        if not trigger_cell:
+            return None
+
+        neighbors = set(h3.grid_disk(trigger_cell, 1))
+
+        cluster_orders = []
+        cluster_seen = set()
+
+        # Ensure trigger_order is always included and listed first to avoid pruning
+        cluster_orders.append(trigger_order)
+        cluster_seen.add(trigger_order.id)
 
         for order in orders:
+            if order.id in cluster_seen:
+                continue
             if not order.delivery_location:
                 continue
             cell = latlng_to_h3(
@@ -203,39 +220,12 @@ class BatchPipeline:
                 order.delivery_location.x,
                 CLUSTER_RESOLUTION,
             )
-            if not cell:
-                continue
-            cells.setdefault(cell, []).append(order)
+            if cell in neighbors:
+                cluster_orders.append(order)
+                cluster_seen.add(order.id)
 
-        # Merge neighboring cells.
-        # Fix #5: use per-cluster seen_pks so each cluster is built
-        # independently. The old shared set caused later-processed cells
-        # to get artificially smaller clusters because their orders were
-        # already claimed by an earlier cluster key.
-        merged: dict[str, list] = {}
-
-        for cell in list(cells.keys()):
-            neighbors = h3.grid_disk(cell, 1)
-            cluster_key = f"{cell}_cluster"
-            cluster_seen: set = set()  # per-cluster — never shared
-            cluster_orders: list = []
-            for neighbor in neighbors:
-                for o in cells.get(neighbor, []):
-                    if o.id not in cluster_seen:
-                        cluster_orders.append(o)
-                        cluster_seen.add(o.id)
-            merged[cluster_key] = cluster_orders
-
-        if not merged:
-            return None
-
-        # Return the largest cluster that fits constraints
-        best = max(merged.values(), key=len, default=None)
-        if not best:
-            return None
-
-        # Apply restaurant cap
-        limited = _cap_by_restaurants(best, MAX_ORDERS_PER_BATCH, MAX_RESTAURANTS_PER_BATCH)
+        # Apply restaurant and order caps
+        limited = _cap_by_restaurants(cluster_orders, MAX_ORDERS_PER_BATCH, MAX_RESTAURANTS_PER_BATCH)
         return _dedup_by_pk(limited)
 
 
@@ -370,7 +360,7 @@ class BatchPipeline:
             discounted_total_fee=pricing['discounted_total'],
             driver_payout=driver_payout,
             company_profit=company_profit,
-            zone_ids=[zone_id],
+            zone_ids=[str(zone_id)],
             is_inter_zone=False,
             offer_attempt=0,
         )

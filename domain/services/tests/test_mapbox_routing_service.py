@@ -174,7 +174,7 @@ class MapboxRoutingServiceIntegrationTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.total_distance_km, 5.0)
         self.assertEqual(result.total_duration_min, 15)
-        self.assertEqual(len(result.stop_sequence), 2)
+        self.assertEqual(len(result.stops), 2)
 
     @patch('domain.services.mapbox_routing_service.requests.get')
     def test_get_optimized_route_returns_none_for_rate_limit(self, mock_get):
@@ -227,7 +227,7 @@ class MapboxRoutingServiceIntegrationTests(TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.total_distance_km, 10.0)
         self.assertEqual(result.total_duration_min, 30)
-        self.assertEqual(len(result.stop_sequence), 4)
+        self.assertEqual(len(result.stops), 4)
 
 
 class RouteValueObjectTests(TestCase):

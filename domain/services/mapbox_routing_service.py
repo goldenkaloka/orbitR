@@ -90,12 +90,14 @@ class MapboxRoutingService:
             if origin_info:
                 stop_sequence.append({
                     'order_id': origin_info.get('order_id'),
+                    'restaurant_id': origin_info.get('restaurant_id'),
                     'type': origin_info.get('type'),
                     'estimated_arrival_min': 0
                 })
             if destination_info:
                 stop_sequence.append({
                     'order_id': destination_info.get('order_id'),
+                    'restaurant_id': destination_info.get('restaurant_id'),
                     'type': destination_info.get('type'),
                     'estimated_arrival_min': int(duration_min)
                 })
@@ -173,6 +175,7 @@ class MapboxRoutingService:
 
                 stop_sequence.append({
                     'order_id': coord.get('order_id'),
+                    'restaurant_id': coord.get('restaurant_id'),
                     'type': coord.get('type'),
                     'waypoint_index': waypoint_index,
                     'estimated_arrival_min': int(cumulative_time)
@@ -211,6 +214,7 @@ class MapboxRoutingService:
                     'lng': float(order.restaurant.geo_location.x),
                     'lat': float(order.restaurant.geo_location.y),
                     'order_id': str(order.id),
+                    'restaurant_id': str(order.restaurant_id),
                     'type': 'pickup',
                     'name': order.restaurant.name
                 })
@@ -220,6 +224,7 @@ class MapboxRoutingService:
                     'lng': float(order.delivery_location.x),
                     'lat': float(order.delivery_location.y),
                     'order_id': str(order.id),
+                    'restaurant_id': str(order.restaurant_id),
                     'type': 'delivery',
                     'address': order.delivery_address
                 })

@@ -26,6 +26,13 @@ def parse_coordinate_dict(data, key='location'):
             pass
 
     if isinstance(loc_data, dict):
+        if 'coordinates' in loc_data:
+            coords = loc_data.get('coordinates')
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2:
+                try:
+                    return Point(float(coords[0]), float(coords[1]))
+                except (TypeError, ValueError):
+                    pass
         try:
             lat = float(loc_data.get('latitude') or loc_data.get('lat'))
             lng = float(loc_data.get('longitude') or loc_data.get('lng'))

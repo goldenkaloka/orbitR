@@ -3,15 +3,16 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 import uuid
 
 class UserManager(BaseUserManager):
-    def create_user(self, phone, username, password=None, **extra_fields):
+    def create_user(self, phone=None, username=None, password=None, **extra_fields):
         if not phone:
-            raise ValueError('The Phone number must be set')
+            import random
+            phone = f"+255{random.randint(100000000, 999999999)}"
         user = self.model(phone=phone, username=username, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, phone, username, password=None, **extra_fields):
+    def create_superuser(self, phone=None, username=None, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('role', 'admin')

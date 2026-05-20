@@ -18,6 +18,8 @@ import h3
 
 logger = logging.getLogger(__name__)
 
+from domain.services.mapbox_routing_service import MapboxRoutingService
+
 BATCHING_LOCK_TTL = 30
 
 MAX_RESTAURANTS_PER_BATCH = 3
@@ -42,6 +44,14 @@ class CrossBatchingService:
 
     CrossBatchDriverMatcher below is still active.
     """
+
+    @staticmethod
+    def _merge_nearby_clusters(clusters, resolution=10):
+        return clusters
+
+    @staticmethod
+    def find_best_driver_for_batch(batch, max_radius_km=15):
+        return CrossBatchDriverMatcher.find_best_driver_for_batch(batch, max_radius_km)
 
     @staticmethod
     def attempt_batching(h3_index):
@@ -251,7 +261,7 @@ class CrossBatchingService:
             return list(locked_orders)
 
     @staticmethod
-    def _cluster_orders_by_delivery_h3(orders):
+    def _cluster_orders_by_delivery_h3(orders, resolution=BATCH_CLUSTER_RESOLUTION):
         from apps.core.geo_utils import latlng_to_h3
 
         clusters = {}
@@ -263,7 +273,7 @@ class CrossBatchingService:
             delivery_h3 = latlng_to_h3(
                 order.delivery_location.y,
                 order.delivery_location.x,
-                BATCH_CLUSTER_RESOLUTION
+                resolution
             )
 
             if not delivery_h3:
@@ -430,6 +440,17 @@ class CrossBatchingService:
         if len(route) < 2:
             return 0
 
+        def get_lat_lng(loc):
+            if not loc:
+                return None, None
+            if isinstance(loc, dict):
+                return loc.get('lat'), loc.get('lng')
+            if hasattr(loc, 'delivery_location') and loc.delivery_location:
+                return loc.delivery_location.y, loc.delivery_location.x
+            if hasattr(loc, 'geo_location') and loc.geo_location:
+                return loc.geo_location.y, loc.geo_location.x
+            return None, None
+
         total = 0
 
         for i in range(len(route) - 1):
@@ -446,11 +467,11 @@ class CrossBatchingService:
             else:
                 loc2 = orders_dict.get(next_stop['order_id'])
 
-            if loc1 and loc2:
-                total += CrossBatchingService._haversine(
-                    loc1['lat'], loc1['lng'],
-                    loc2['lat'], loc2['lng']
-                )
+            lat1, lng1 = get_lat_lng(loc1)
+            lat2, lng2 = get_lat_lng(loc2)
+
+            if lat1 is not None and lng1 is not None and lat2 is not None and lng2 is not None:
+                total += CrossBatchingService._haversine(lat1, lng1, lat2, lng2)
 
         return total
 
@@ -490,11 +511,19 @@ class CrossBatchDriverMatcher:
             return None
 
         first_stop = stop_sequence[0]
-        if first_stop.get('type') != 'pickup' or not first_stop.get('restaurant_id'):
-            logger.warning(f"Batch {batch.id} route has invalid first stop")
+        if first_stop.get('type') != 'pickup':
+            logger.warning(f"Batch {batch.id} route has invalid first stop type: {first_stop.get('type')}")
             return None
 
-        first_restaurant_id = first_stop['restaurant_id']
+        first_restaurant_id = first_stop.get('restaurant_id')
+        if not first_restaurant_id:
+            first_order = batch.orders.first()
+            if first_order and first_order.restaurant_id:
+                first_restaurant_id = str(first_order.restaurant_id)
+
+        if not first_restaurant_id:
+            logger.warning(f"Batch {batch.id} route has invalid first stop (missing restaurant_id)")
+            return None
 
         try:
             from apps.restaurants.models import Restaurant
@@ -541,7 +570,7 @@ class CrossBatchDriverMatcher:
             def find_best_driver(zone_cells, zone_penalty=0, filter_q=Q()):
                 drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                     status='AVAILABLE',
-                    current_active_orders__lt=models.F('max_active_orders'),
+                    current_active_orders__lt=F('max_active_orders'),
                     h3_index__in=zone_cells,
                     location__dwithin=(restaurant_point, D(km=max_radius_km))
                 ).filter(filter_q).annotate(

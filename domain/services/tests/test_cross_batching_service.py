@@ -123,7 +123,7 @@ class CrossBatchingServiceClusteringTests(TestCase):
         user = User.objects.create_user(username='cluster_user', password='testpass')
         restaurant = Restaurant.objects.create(
             name="Cluster Restaurant",
-            user=user,
+            owner=user,
             geo_location=Point(39.2026, -6.7924),
             max_delivery_radius_km=10.0
         )
@@ -203,12 +203,12 @@ class CrossBatchingServiceAlgorithmTests(TestCase):
     def test_nearest_neighbor_route_returns_list(self):
         """Test that _nearest_neighbor_route returns a list"""
         pickups = [
-            {'lat': 39.2026, 'lng': -6.7924, 'restaurant_id': 1},
-            {'lat': 39.2050, 'lng': -6.7950, 'restaurant_id': 2}
+            {'lat': 39.2026, 'lng': -6.7924, 'restaurant_id': 1, 'name': 'R1'},
+            {'lat': 39.2050, 'lng': -6.7950, 'restaurant_id': 2, 'name': 'R2'}
         ]
         deliveries = [
-            {'lat': 39.2100, 'lng': -6.7924, 'order_id': '1'},
-            {'lat': 39.2120, 'lng': -6.7930, 'order_id': '2'}
+            {'lat': 39.2100, 'lng': -6.7924, 'order_id': '1', 'address': 'Addr1'},
+            {'lat': 39.2120, 'lng': -6.7930, 'order_id': '2', 'address': 'Addr2'}
         ]
 
         route = CrossBatchingService._nearest_neighbor_route(pickups, deliveries)

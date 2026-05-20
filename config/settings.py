@@ -260,7 +260,7 @@ STORAGES = {
         "BACKEND": "apps.core.storage.CustomS3Storage",
     },
     "staticfiles": {
-        "BACKEND": "apps.core.storage.SafeCompressedManifestStaticFilesStorage",
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage" if DEBUG else "apps.core.storage.SafeCompressedManifestStaticFilesStorage",
     },
 }
 
@@ -491,7 +491,10 @@ RAFIKI_CONFIG = {
     'SENDER_NAME': os.getenv('RAFIKI_SENDER_NAME', ''),
     'BASE_URL': 'https://api.rafikisms.com',
 }
+import sys
 MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
+if 'test' in sys.argv or 'test_coverage' in sys.argv:
+    MOCK_SMS = True
 
 # OneSignal
 ONESIGNAL_APP_ID = os.getenv('ONESIGNAL_APP_ID', '')

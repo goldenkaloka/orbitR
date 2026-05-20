@@ -65,14 +65,27 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
 
         # 4. Setup OperationalZone covering the delivery area
         from django.contrib.gis.geos import Polygon, MultiPolygon
-        from apps.geo.models import OperationalZone
+        from apps.geo.models import OperationalZone, ZoneH3Index
+        import h3
         poly = Polygon((
             (39.19, -6.80), (39.23, -6.80), (39.23, -6.78),
             (39.19, -6.78), (39.19, -6.80)
         ))
         self.op_zone = OperationalZone.objects.create(
             name="Test Zone",
-            boundary=MultiPolygon(poly)
+            boundary=MultiPolygon(poly),
+            is_active=True
+        )
+        from apps.core.geo_utils import ZONE_RESOLUTION
+        ZoneH3Index.objects.create(
+            zone=self.op_zone,
+            h3_index=h3.latlng_to_cell(-6.7930, 39.2100, ZONE_RESOLUTION),
+            resolution=ZONE_RESOLUTION
+        )
+        ZoneH3Index.objects.create(
+            zone=self.op_zone,
+            h3_index=h3.latlng_to_cell(-6.7924, 39.2083, ZONE_RESOLUTION),
+            resolution=ZONE_RESOLUTION
         )
 
         # 5. Setup PricingPolicy
@@ -87,7 +100,7 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         # Authenticate as customer
         self.client.force_authenticate(user=self.customer)
 
-    @patch('domain.services.payment_services.AirpayGateway')
+    @patch('infrastructure.payment_gateways.factory.AirpayGateway')
     def test_full_order_to_disbursement_flow(self, mock_sdk_class):
 
         """

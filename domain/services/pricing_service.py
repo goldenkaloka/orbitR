@@ -73,10 +73,17 @@ class PricingService:
         """
         Find the matching distance tier multiplier for a given distance.
         Falls back to 1.0 if no tiers are configured.
+        If the distance exceeds the highest tier, use the highest tier's multiplier.
         """
-        for tier in tiers:
+        tiers_list = list(tiers)
+        if not tiers_list:
+            return Decimal('1.00')
+        for tier in tiers_list:
             if tier.min_km <= distance_km < tier.max_km:
                 return tier.multiplier
+        highest_tier = tiers_list[-1]
+        if distance_km >= highest_tier.max_km:
+            return highest_tier.multiplier
         return Decimal('1.00')
 
     @classmethod
@@ -203,11 +210,15 @@ class PricingService:
         per_order_fees = []
 
         for order in orders:
-            fee, service_fee, log = cls.calculate_delivery_fee(
-                order.restaurant,
-                order.delivery_location,
-                order=order
-            )
+            # Use already calculated delivery fee on the order if available to prevent double/mismatched calculations
+            if getattr(order, 'delivery_fee', None) is not None:
+                fee = order.delivery_fee
+            else:
+                fee, service_fee, log = cls.calculate_delivery_fee(
+                    order.restaurant,
+                    order.delivery_location,
+                    order=order
+                )
             original_total += fee
             per_order_fees.append({
                 'order_id': str(order.id),
