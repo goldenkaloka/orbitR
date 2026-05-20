@@ -15,7 +15,7 @@ from apps.restaurants.models import Restaurant
 from apps.products.models import Food
 from apps.orders.models import Order, DeliveryBatch
 from apps.delivery.models import Driver
-from apps.wallets.models import Wallet
+from apps.wallets.models import Wallet, WalletTransaction
 from apps.core.models import Notification
 from apps.marketplace.models import MarketplaceProduct
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, get_neighbors
@@ -360,20 +360,42 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "pending_payout": float(wallet.pending_balance)
                 }
             elif user.role == 'driver':
+                driver = user.driver_profile
                 orders = Order.objects.filter(
                     driver__user=user,
                     created_at__gte=start_of_day,
                     created_at__lt=end_of_day,
                     is_paid=True,
                 )
-                earnings = orders.filter(status='DELIVERED').aggregate(Sum('delivery_fee'))['delivery_fee__sum'] or 0
-                count = orders.count()
+                
+                # Calculate earnings from wallet transactions (actual driver payouts)
+                today_earnings = WalletTransaction.objects.filter(
+                    wallet=wallet,
+                    tx_type='CREDIT',
+                    created_at__gte=start_of_day,
+                    created_at__lt=end_of_day,
+                ).aggregate(Sum('amount'))['amount__sum'] or 0
+                
+                delivered_count = orders.filter(status='DELIVERED').count()
+                
+                # Calculate online time from driver's last_heartbeat
+                online_minutes = 0
+                if driver.last_heartbeat:
+                    online_seconds = (now - driver.last_heartbeat).total_seconds()
+                    if online_seconds > 0:
+                        online_minutes = int(online_seconds / 60)
+                online_hours = online_minutes // 60
+                online_mins = online_minutes % 60
+                
                 data = {
-                    "earnings_today": float(earnings),
-                    "trips_today": count,
-                    "online_time": "04:20",
+                    "earnings_today": float(today_earnings),
+                    "trips_today": delivered_count,
+                    "online_time": f"{online_hours:02d}:{online_mins:02d}",
                     "wallet_balance": float(wallet.balance),
-                    "status": user.driver_profile.status
+                    "pending_balance": float(wallet.pending_balance),
+                    "status": driver.status,
+                    "total_earnings": float(driver.total_earnings or 0),
+                    "today_earnings": float(driver.today_earnings or 0),
                 }
             else:
                 return Response({"error": "Stats not available for this role"}, status=400)
