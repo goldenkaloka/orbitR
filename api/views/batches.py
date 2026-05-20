@@ -106,8 +106,8 @@ class BatchViewSet(viewsets.ViewSet):
             driver = Driver.objects.get(user=request.user)
             batches = DeliveryBatch.objects.filter(
                 status='CREATED',
-                restaurant__h3_index__in=self._get_nearby_h3(driver.h3_index)
-            ).prefetch_related('orders', 'orders__restaurant')[:20]
+                batch_restaurants__restaurant__h3_index__in=self._get_nearby_h3(driver.h3_index)
+            ).prefetch_related('orders', 'orders__restaurant').distinct()[:20]
             
             from api.serializers.core import OrderSerializer
             return Response(OrderSerializer([o for b in batches for o in b.orders.all()], many=True).data)

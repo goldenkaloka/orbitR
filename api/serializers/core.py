@@ -145,11 +145,20 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_batch(self, obj):
         if not obj.batch:
             return None
+        
+        # Optimize N+1 by reading from prefetch cache or custom annotation if present
+        order_count = getattr(obj.batch, 'orders_count', None)
+        if order_count is None:
+            if hasattr(obj.batch, '_prefetched_objects_cache') and 'orders' in obj.batch._prefetched_objects_cache:
+                order_count = len(obj.batch.orders.all())
+            else:
+                order_count = obj.batch.orders.count()
+
         return {
             'id': str(obj.batch.id),
             'status': obj.batch.status,
             'batch_type': obj.batch.batch_type,
-            'order_count': obj.batch.orders.count(),
+            'order_count': order_count,
             'driver_payout': float(obj.batch.driver_payout) if obj.batch.driver_payout else None,
             'route_distance_km': float(obj.batch.route_distance_km) if obj.batch.route_distance_km else None,
             'route_optimization': obj.batch.route_optimization,

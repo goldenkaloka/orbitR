@@ -136,7 +136,7 @@ class AssignBatchService:
 
                 DeliveryAssignment.objects.update_or_create(
                     order=order,
-                    defaults={'driver': driver, 'batch': batch}
+                    defaults={'driver': driver}
                 )
 
                 transaction.on_commit(lambda o=order: EventBus.publish(DriverAssigned(

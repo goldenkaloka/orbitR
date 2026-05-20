@@ -342,7 +342,7 @@ class BatchDispatchService:
             driver.save(update_fields=['status'])
 
             assignments = [
-                DeliveryAssignment(order_id=o.id, driver_id=driver_id, batch=batch)
+                DeliveryAssignment(order_id=o.id, driver_id=driver_id)
                 for o in orders
             ]
             DeliveryAssignment.objects.bulk_create(assignments, ignore_conflicts=True)

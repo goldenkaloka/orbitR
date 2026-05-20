@@ -432,7 +432,12 @@ class OrderViewSet(viewsets.ModelViewSet):
                 if order.status != 'READY':
                     return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
                 
-                order = AssignDriverService.execute(pk, driver.id, request.user)
+                if order.batch_id:
+                    from domain.services.orders.order_assignment import AssignBatchService
+                    AssignBatchService.execute(order.batch_id, driver.id, request.user)
+                    order.refresh_from_db()
+                else:
+                    order = AssignDriverService.execute(pk, driver.id, request.user)
                 
                 # Track successful claim attempt
                 driver.total_claim_attempts += 1

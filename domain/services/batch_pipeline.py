@@ -216,7 +216,7 @@ class BatchPipeline:
 
         for cell in list(cells.keys()):
             neighbors = h3.grid_disk(cell, 1)
-            cluster_key = cell[:8] + "_cluster"
+            cluster_key = f"{cell}_cluster"
             cluster_seen: set = set()  # per-cluster — never shared
             cluster_orders: list = []
             for neighbor in neighbors:
@@ -287,8 +287,15 @@ class BatchPipeline:
         ]
 
         pickups = list(restaurant_locs.values())
-        route = _nearest_neighbour(pickups, delivery_locs)
-        route = _two_opt(route, pickups + delivery_locs)
+        
+        # Optimize pickups and deliveries separately to guarantee all pickups happen before all deliveries
+        pickups_route = _nearest_neighbour_single(pickups)
+        pickups_route = _two_opt(pickups_route, pickups)
+        
+        deliveries_route = _nearest_neighbour_single(delivery_locs)
+        deliveries_route = _two_opt(deliveries_route, delivery_locs)
+        
+        route = pickups_route + deliveries_route
 
         total_km = _route_distance_km(route, pickups + delivery_locs)
         num_pickups = sum(1 for s in route if s['type'] == 'pickup')
@@ -709,6 +716,25 @@ def _nearest_neighbour(pickups: list, deliveries: list) -> list:
             current_lat, current_lng = nearest['lat'], nearest['lng']
             remaining_d.remove(nearest)
 
+    return route
+
+
+def _nearest_neighbour_single(locs: list) -> list:
+    """Helper to optimize a single list of locations using nearest-neighbour."""
+    if not locs:
+        return []
+    route = [locs[0]]
+    remaining = list(locs[1:])
+    current_lat = locs[0]['lat']
+    current_lng = locs[0]['lng']
+    while remaining:
+        nearest = min(
+            remaining,
+            key=lambda l: _haversine_km(current_lat, current_lng, l['lat'], l['lng'])
+        )
+        route.append(nearest)
+        current_lat, current_lng = nearest['lat'], nearest['lng']
+        remaining.remove(nearest)
     return route
 
 
