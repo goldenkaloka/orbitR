@@ -317,6 +317,8 @@ class BatchDispatchService:
         """Driver accepts a batch offer. Re-dispatches any other pending offers to this driver."""
         from apps.delivery.models import Driver
         from apps.events.utils import broadcast_order_status
+        from apps.orders.models import DeliveryBatch, Order
+        from apps.delivery.models import DeliveryAssignment
 
         with transaction.atomic():
             batch = _lock_batch(batch_id)
@@ -327,6 +329,14 @@ class BatchDispatchService:
                 raise ValueError("This batch was not offered to you")
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
+
+            # Prevent driver from accepting multiple active batches
+            existing_active = DeliveryBatch.objects.filter(
+                driver_id=driver_id,
+                status__in=['ASSIGNED', 'PICKED_UP'],
+            ).exclude(id=batch_id).exists()
+            if existing_active:
+                raise ValueError("Driver already has an active batch in progress")
 
             order_count = batch.orders.count()
 
