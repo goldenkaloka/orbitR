@@ -295,9 +295,9 @@ class CrossBatchingService:
                     if key not in neighbor_clusters:
                         neighbor_clusters[key] = []
                     for order in clusters[neighbor]:
-                        if id(order) not in seen_orders:
+                        if order.id not in seen_orders:
                             neighbor_clusters[key].append(order)
-                            seen_orders.add(id(order))
+                            seen_orders.add(order.id)
 
         if not neighbor_clusters:
             return clusters

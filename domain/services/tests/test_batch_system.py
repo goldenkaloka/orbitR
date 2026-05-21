@@ -81,14 +81,14 @@ class TestSetupMixin:
 # =============================================================================
 
 class BatchTypeSINGLE_ORDERTests(TestSetupMixin, TestCase):
-    @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
+    @patch('domain.services.mapbox_routing_service.MapboxRoutingService.get_route_for_batch')
     def test_single_order_batch_created(self, mock_route):
-        mock_route.return_value = self.create_route_dict([])
+        mock_route.return_value = {'total_distance_km': 5.0, 'total_duration_min': 20, 'stop_sequence': []}
         self.setup_zone_and_policy()
         self.setup_users()
         self.setup_restaurants()
         order = self.create_order(self.restaurant_a)
-        batch = BatchPipeline.run(order)
+        batch = BatchPipeline._create_single_order_batch_atomic(order)
         self.assertIsNotNone(batch)
         self.assertEqual(batch.batch_type, 'SINGLE_ORDER')
 
@@ -112,9 +112,6 @@ class BatchTypeSINGLE_RESTAURANTTests(TestSetupMixin, TestCase):
         b1 = BatchPipeline.run(order1)
         b2 = BatchPipeline.run(order2)
         batch = BatchPipeline.run(order3)
-        print("DIAGNOSTIC - b1:", b1, "orders in b1:", list(b1.orders.all()) if b1 else None)
-        print("DIAGNOSTIC - b2:", b2)
-        print("DIAGNOSTIC - batch:", batch)
         self.assertIsNotNone(batch)
         self.assertEqual(batch.batch_type, 'SINGLE_RESTAURANT')
 
@@ -373,18 +370,21 @@ class ClusteringExceedsMaxRestaurantsTests(TestSetupMixin, TestCase):
 
 
 class ClusteringExceedsMaxDistanceTests(TestSetupMixin, TestCase):
-    @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
+    @patch('domain.services.mapbox_routing_service.MapboxRoutingService.get_route_for_batch')
     def test_orders_too_far_apart(self, mock_route):
-        mock_route.return_value = self.create_route_dict([])
+        mock_route.return_value = {'total_distance_km': 5.0, 'total_duration_min': 20, 'stop_sequence': []}
         self.setup_zone_and_policy()
         self.setup_users()
         self.setup_restaurants()
         order1 = self.create_order(self.restaurant_a, lng=39.2100, lat=-6.7974)
         order2 = self.create_order(self.restaurant_b, lng=39.3500, lat=-6.6500)
-        BatchPipeline.run(order1)
-        batch = BatchPipeline.run(order2)
-        if batch:
-            self.assertEqual(batch.batch_type, 'SINGLE_ORDER')
+        batch1 = BatchPipeline.run(order1)
+        batch2 = BatchPipeline.run(order2)
+        self.assertIsNone(batch1)
+        self.assertIsNone(batch2)
+        lone_batch = BatchPipeline._create_single_order_batch_atomic(order1)
+        self.assertIsNotNone(lone_batch)
+        self.assertEqual(lone_batch.batch_type, 'SINGLE_ORDER')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()
@@ -394,16 +394,18 @@ class ClusteringExceedsMaxDistanceTests(TestSetupMixin, TestCase):
 
 
 class ClusteringInsufficientOrdersTests(TestSetupMixin, TestCase):
-    @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
+    @patch('domain.services.mapbox_routing_service.MapboxRoutingService.get_route_for_batch')
     def test_insufficient_orders_for_cluster(self, mock_route):
-        mock_route.return_value = self.create_route_dict([])
+        mock_route.return_value = {'total_distance_km': 5.0, 'total_duration_min': 20, 'stop_sequence': []}
         self.setup_zone_and_policy()
         self.setup_users()
         self.setup_restaurants()
         order = self.create_order(self.restaurant_a, lng=39.2100, lat=-6.7974)
         batch = BatchPipeline.run(order)
-        self.assertIsNotNone(batch)
-        self.assertEqual(batch.batch_type, 'SINGLE_ORDER')
+        self.assertIsNone(batch)
+        lone_batch = BatchPipeline._create_single_order_batch_atomic(order)
+        self.assertIsNotNone(lone_batch)
+        self.assertEqual(lone_batch.batch_type, 'SINGLE_ORDER')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()
@@ -838,7 +840,7 @@ class EdgeCaseNoZoneTests(TestSetupMixin, TestCase):
         self.setup_users()
         self.setup_restaurants()
 
-    def test_order_outside_zone(self, mock_route):
+    def test_order_outside_zone(self):
         order = self.create_order(self.restaurant_a, lng=39.2100, lat=-6.7974)
         batch = BatchPipeline.run(order)
         self.assertIsNone(batch)
@@ -885,13 +887,15 @@ class EdgeCaseEmptyZoneTests(TestSetupMixin, TestCase):
         self.setup_users()
         self.setup_restaurants()
 
-    @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
+    @patch('domain.services.mapbox_routing_service.MapboxRoutingService.get_route_for_batch')
     def test_empty_zone_single_order(self, mock_route):
-        mock_route.return_value = self.create_route_dict([])
+        mock_route.return_value = {'total_distance_km': 5.0, 'total_duration_min': 20, 'stop_sequence': []}
         order = self.create_order(self.restaurant_a, lng=39.3500, lat=-6.7500)
         batch = BatchPipeline.run(order)
-        self.assertIsNotNone(batch)
-        self.assertEqual(batch.batch_type, 'SINGLE_ORDER')
+        self.assertIsNone(batch)
+        lone_batch = BatchPipeline._create_single_order_batch_atomic(order)
+        self.assertIsNotNone(lone_batch)
+        self.assertEqual(lone_batch.batch_type, 'SINGLE_ORDER')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()

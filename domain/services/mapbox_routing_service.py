@@ -146,7 +146,7 @@ class MapboxRoutingService:
         }
 
         try:
-            response = requests.get(url, params=params, timeout=15)
+            response = requests.get(url, params=params, timeout=8)
 
             if response.status_code == 429:
                 logger.warning("Mapbox optimization rate limited, falling back")

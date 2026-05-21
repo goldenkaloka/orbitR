@@ -23,6 +23,7 @@ from decimal import Decimal
 import h3
 from django.core.cache import cache
 from django.db import transaction
+from django.utils import timezone
 
 from apps.core.geo_utils import (
     get_zone_from_h3,
@@ -33,7 +34,7 @@ from apps.core.geo_utils import (
 logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-ZONE_LOCK_TTL = 30          # seconds — how long to hold the zone-level Redis lock
+ZONE_LOCK_TTL = 60          # seconds — how long to hold the zone-level Redis lock
 MAX_CANDIDATES = 50         # max orders to fetch per batching cycle
 MAX_ORDERS_PER_BATCH = 5
 MAX_RESTAURANTS_PER_BATCH = 3
@@ -41,6 +42,9 @@ MIN_ORDERS_FOR_BATCH = 2
 NEIGHBOR_RING_K = 3         # H3 rings to expand from delivery cell for clustering
 CLUSTER_RESOLUTION = 9     # fine resolution for delivery-proximity clustering
 MAX_2OPT_ITERATIONS = 20    # hard cap — prevents unbounded loops inside transactions
+CLUSTER_RING_K = 2          # H3 rings for delivery-proximity clustering (was 1 — expanded for denser batches)
+SINGLE_ORDER_GRACE_SECONDS = 60  # how long a lone order waits before getting its own batch
+SAME_CUSTOMER_GRACE_EXTRA = 60   # extra seconds for same-customer same-restaurant orders
 CROSS_BATCH_DISCOUNT = Decimal('0.15')
 
 # Fallback route estimation constants
@@ -100,6 +104,212 @@ class BatchPipeline:
             cache.delete(lock_key)
 
 
+    # ─── Batch polling ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def poll_all_zones():
+        """
+        Poll all active zones for READY, unbatched orders and form optimal batches.
+        Called periodically by Celery beat.
+
+        Designed as a complement to per-order triggering: this picks up orders
+        that arrived shortly after earlier orders were already batched, forming
+        denser multi-order clusters.
+        """
+        from apps.geo.models import OperationalZone
+
+        zones = OperationalZone.objects.filter(is_active=True)
+        total_batches = 0
+        total_orders = 0
+
+        for zone in zones:
+            lock_key = f"batch_zone_lock:{zone.id}"
+            acquired = cache.add(lock_key, "1", ZONE_LOCK_TTL)
+            if not acquired:
+                continue
+
+            try:
+                created = BatchPipeline._poll_zone(zone)
+                total_batches += len(created)
+                total_orders += sum(b.orders.count() for b in created if b)
+            except Exception as exc:
+                logger.error(
+                    f"[BatchPipeline] Poll zone {zone.id} failed: {exc}",
+                    exc_info=True,
+                )
+            finally:
+                cache.delete(lock_key)
+
+        if total_batches:
+            logger.info(
+                f"[BatchPipeline] Poll cycle complete — {total_batches} batch(es) "
+                f"formed with {total_orders} order(s)"
+            )
+        return total_batches
+
+    @staticmethod
+    def _poll_zone(zone):
+        """Collect and batch all READY unbatched orders in a single zone."""
+        from apps.orders.models import Order
+        from apps.core.geo_utils import get_zone_h3_cells
+
+        zone_h3_cells = get_zone_h3_cells([zone.id])
+        if not zone_h3_cells:
+            return []
+
+        candidates = list(
+            Order.objects.filter(
+                status='READY',
+                h3_index__in=zone_h3_cells,
+                batch__isnull=True,
+            )
+            .select_related('restaurant', 'customer')
+            .order_by('ready_at')[:MAX_CANDIDATES]
+        )
+
+        if not candidates:
+            return []
+
+        created = []
+
+        # ── Pass 1: Multi-order clusters ───────────────────────────────────────
+        clusters = BatchPipeline._form_clusters_from_pool(candidates)
+        batched_ids = set()
+        for cluster in clusters:
+            if len(cluster) < MIN_ORDERS_FOR_BATCH:
+                continue
+            route_dict = BatchPipeline._optimize_route(cluster)
+            batch = BatchPipeline._create_multi_order_batch_atomic(
+                cluster, route_dict, zone_id=zone.id
+            )
+            if batch:
+                created.append(batch)
+                for o in cluster:
+                    batched_ids.add(o.id)
+
+        # ── Pass 2: Stale singles (grace period expired) ───────────────────────
+        # Each order gets its own grace period — orders from customers who
+        # have other pending orders at the same restaurant wait longer.
+        from apps.orders.models import Order as OrderModel
+        remaining = [o for o in candidates if o.id not in batched_ids]
+        cutoff = timezone.now() - timezone.timedelta(seconds=SINGLE_ORDER_GRACE_SECONDS)
+        extra_cutoff = timezone.now() - timezone.timedelta(
+            seconds=SINGLE_ORDER_GRACE_SECONDS + SAME_CUSTOMER_GRACE_EXTRA
+        )
+        stale = []
+        for order in remaining:
+            has_pending = OrderModel.objects.filter(
+                customer=order.customer,
+                restaurant=order.restaurant,
+                status__in=['CONFIRMED', 'PREPARING'],
+            ).exclude(id=order.id).exists()
+            effective_cutoff = extra_cutoff if has_pending else cutoff
+            if (order.ready_at or order.created_at) < effective_cutoff:
+                stale.append((order, has_pending))
+        for order, has_pending in stale:
+            route_dict = BatchPipeline._optimize_route([order])
+            batch = BatchPipeline._create_single_order_batch_atomic(order, route_dict=route_dict)
+            if batch:
+                created.append(batch)
+                suffix = " extended same-customer grace)" if has_pending else ")"
+                logger.info(
+                    f"[BatchPipeline] Poll created single-order batch for order "
+                    f"{order.id} (waited ≥{SINGLE_ORDER_GRACE_SECONDS}s{suffix}"
+                )
+
+        return created
+
+    @staticmethod
+    def _form_clusters_from_pool(candidates: list) -> list:
+        """
+        Form optimal clusters from a pool of candidate orders.
+        Strategy: same-restaurant clusters first, then cross-restaurant.
+        """
+        from collections import defaultdict
+
+        # Group by restaurant
+        by_restaurant = defaultdict(list)
+        for o in candidates:
+            by_restaurant[o.restaurant_id].append(o)
+
+        clusters = []
+        batched_ids = set()
+
+        # Same-restaurant clusters (no discount needed)
+        # Sub-cluster by customer first so same person's orders are batched together.
+        for rest_id, orders in by_restaurant.items():
+            by_customer = defaultdict(list)
+            for o in orders:
+                by_customer[o.customer_id].append(o)
+
+            for cust_id, cust_orders in by_customer.items():
+                cust_orders.sort(key=lambda o: o.ready_at or o.created_at)
+                while cust_orders:
+                    cluster = cust_orders[:MAX_ORDERS_PER_BATCH]
+                    if len(cluster) >= MIN_ORDERS_FOR_BATCH:
+                        clusters.append(cluster)
+                        batched_ids.update(o.id for o in cluster)
+                    cust_orders = cust_orders[MAX_ORDERS_PER_BATCH:]
+
+            # Remaining singles (cross-customer) batched together
+            sorted_orders = sorted(orders, key=lambda o: o.ready_at or o.created_at)
+            remaining = [o for o in sorted_orders if o.id not in batched_ids]
+            while remaining:
+                cluster = remaining[:MAX_ORDERS_PER_BATCH]
+                if len(cluster) >= MIN_ORDERS_FOR_BATCH:
+                    clusters.append(cluster)
+                    batched_ids.update(o.id for o in cluster)
+                remaining = remaining[MAX_ORDERS_PER_BATCH:]
+
+        # Cross-restaurant clusters — group remaining by delivery proximity
+        remaining = [o for o in candidates if o.id not in batched_ids]
+        if remaining:
+            cross_clusters = BatchPipeline._form_cross_clusters(remaining)
+            clusters.extend(cross_clusters)
+
+        return clusters
+
+    @staticmethod
+    def _form_cross_clusters(orders: list) -> list:
+        """Form cross-restaurant clusters by delivery H3 proximity."""
+        from collections import defaultdict
+
+        # Assign each order a delivery H3 cell at CLUSTER_RESOLUTION
+        cell_groups = defaultdict(list)
+        for o in orders:
+            if not o.delivery_location:
+                continue
+            cell = latlng_to_h3(
+                o.delivery_location.y,
+                o.delivery_location.x,
+                CLUSTER_RESOLUTION,
+            )
+            if cell:
+                cell_groups[cell].append(o)
+
+        # Merge neighboring cells
+        merged = []
+        assigned = set()
+        for cell, group in cell_groups.items():
+            if cell in assigned:
+                continue
+            neighbor_cells = set(h3.grid_disk(cell, CLUSTER_RING_K))
+            merged_group = list(group)
+            assigned.add(cell)
+            for nc in neighbor_cells:
+                if nc in cell_groups and nc not in assigned:
+                    merged_group.extend(cell_groups[nc])
+                    assigned.add(nc)
+
+            # Cap by business rules
+            capped = _cap_by_restaurants(merged_group, MAX_ORDERS_PER_BATCH, MAX_RESTAURANTS_PER_BATCH)
+            capped = _dedup_by_pk(capped)
+            if len(capped) >= MIN_ORDERS_FOR_BATCH:
+                merged.append(capped)
+
+        return merged
+
+
     # ─── Internal pipeline ────────────────────────────────────────────────────
 
     @staticmethod
@@ -120,8 +330,12 @@ class BatchPipeline:
         candidates = BatchPipeline._fetch_candidates(valid_cells)
 
         if not candidates:
-            # No other orders — create single-order batch immediately
-            return BatchPipeline._create_single_order_batch_atomic(order)
+            # No other orders — defer to poll cycle for denser batching
+            logger.debug(
+                f"[BatchPipeline] Order {order.id} has no candidates — "
+                f"deferring to poll cycle"
+            )
+            return None
 
         # Try to form a multi-order cluster
         cluster = BatchPipeline._find_best_cluster(order, candidates)
@@ -133,8 +347,12 @@ class BatchPipeline:
                 cluster, route_dict, zone_id=zone.id
             )
 
-        # No suitable cluster — single-order batch
-        return BatchPipeline._create_single_order_batch_atomic(order)
+        # No suitable cluster — defer to poll cycle for denser batching
+        logger.debug(
+            f"[BatchPipeline] Order {order.id} has no cluster — "
+            f"deferring to poll cycle"
+        )
+        return None
 
 
     # ─── Candidate fetching ───────────────────────────────────────────────────
@@ -176,6 +394,12 @@ class BatchPipeline:
             if o.restaurant_id == trigger_order.restaurant_id
         ]
         if len(same_restaurant) >= MIN_ORDERS_FOR_BATCH:
+            # Prefer same-customer orders first (same person at same restaurant),
+            # then oldest ready_at for remaining slots.
+            same_restaurant.sort(key=lambda o: (
+                0 if o.customer_id == trigger_order.customer_id else 1,
+                o.ready_at or o.created_at,
+            ))
             return _dedup_by_pk(same_restaurant)[:MAX_ORDERS_PER_BATCH]
 
         # Strategy 2: Cross-restaurant — cluster by delivery proximity
@@ -201,7 +425,7 @@ class BatchPipeline:
         if not trigger_cell:
             return None
 
-        neighbors = set(h3.grid_disk(trigger_cell, 1))
+        neighbors = set(h3.grid_disk(trigger_cell, CLUSTER_RING_K))
 
         cluster_orders = []
         cluster_seen = set()
@@ -394,15 +618,19 @@ class BatchPipeline:
 
         logger.info(
             f"[BatchPipeline] Created {batch_type} batch {batch.id} "
-            f"with {len(locked_orders)} orders, "
-            f"{len(unique_restaurants)} restaurant(s)"
+            f"orders={len(locked_orders)} restaurants={len(unique_restaurants)} "
+            f"distance={route_distance}km discount={discount_rate} "
+            f"payout={driver_payout} profit={company_profit}"
         )
         return batch
 
     @staticmethod
-    def _create_single_order_batch_atomic(order):
+    def _create_single_order_batch_atomic(order, route_dict=None):
         """
         Create a batch for a single order.
+
+        Accepts an optional pre-computed route_dict to avoid a redundant
+        Mapbox call when the caller already fetched it (e.g., the poll cycle).
 
         Fix #8: Mapbox network call is now OUTSIDE the DB transaction.
         The old version called MapboxRoutingService inside @transaction.atomic,
@@ -410,7 +638,7 @@ class BatchPipeline:
 
         Steps:
           1. Optimistic existence check (no lock)
-          2. Mapbox route call (outside any transaction)
+          2. Mapbox route call (outside any transaction) — skipped if route_dict provided
           3. Atomic persist with row lock
         """
         from apps.orders.models import Order
@@ -424,16 +652,16 @@ class BatchPipeline:
             return None
 
         # Step 2: Route outside transaction (no locks held during network call)
-        route_dict = None
         route_distance = Decimal('0')
-        try:
-            route = MapboxRoutingService.get_route_for_batch([order])
-            if route:
-                route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
-                if route_dict and route_dict.get('total_distance_km'):
-                    route_distance = Decimal(str(route_dict['total_distance_km']))
-        except Exception as exc:
-            logger.warning(f"[BatchPipeline] Mapbox failed for single order {order.id}: {exc}")
+        if route_dict is None:
+            try:
+                route = MapboxRoutingService.get_route_for_batch([order])
+                if route:
+                    route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
+            except Exception as exc:
+                logger.warning(f"[BatchPipeline] Mapbox failed for single order {order.id}: {exc}")
+        if route_dict and route_dict.get('total_distance_km'):
+            route_distance = Decimal(str(route_dict['total_distance_km']))
 
         # Step 3: Persist atomically with a fresh row lock
         return BatchPipeline._persist_single_order_batch(order.id, route_dict, route_distance)
@@ -495,7 +723,11 @@ class BatchPipeline:
         batch_id_str = str(batch.id)
         transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
 
-        logger.info(f"[BatchPipeline] Created SINGLE_ORDER batch {batch.id} for order {locked_order.id}")
+        logger.info(
+            f"[BatchPipeline] Created SINGLE_ORDER batch {batch.id} "
+            f"order={locked_order.id} distance={route_distance}km "
+            f"payout={driver_payout} profit={company_profit}"
+        )
         return batch
 
 

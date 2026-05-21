@@ -96,6 +96,23 @@ def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
         )
         raise self.retry(exc=exc, countdown=delay)
 
+@shared_task(name='domain.services.dispatch_tasks.batch_poll_task')
+def batch_poll_task():
+    """
+    Periodic task that polls all active zones for READY, unbatched orders
+    and forms optimal multi-order batches.
+
+    Complements the per-order trigger in BatchPipeline.run() — captures orders
+    that became READY shortly after their neighbors were already batched,
+    dramatically increasing multi-order batch density.
+    """
+    from domain.services.batch_pipeline import BatchPipeline
+    total = BatchPipeline.poll_all_zones()
+    if total:
+        logger.info(f"[batch_poll_task] Formed {total} batch(es) via poll cycle")
+    return total
+
+
 @shared_task(name='domain.services.dispatch_tasks.expire_unassigned_orders_task')
 def expire_unassigned_orders_task():
     """

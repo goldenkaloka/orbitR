@@ -396,6 +396,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "status": driver.status,
                     "total_earnings": float(driver.total_earnings or 0),
                     "today_earnings": float(driver.today_earnings or 0),
+                    "rating": float(driver.rating),
                 }
             else:
                 return Response({"error": "Stats not available for this role"}, status=400)

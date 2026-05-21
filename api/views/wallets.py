@@ -13,8 +13,16 @@ logger = logging.getLogger(__name__)
 
 # Fee constants
 INSTANT_FEE_PERCENT = Decimal('0.01')  # 1%
-MPESA_FIXED_FEE = Decimal('220')  # TSh 220
+PROVIDER_FIXED_FEE = Decimal('220')  # TSh 220
 MINIMUM_CASHOUT = Decimal('1000')  # TSh 1000 minimum
+
+PROVIDERS = {
+    'M_PESA': 'M-Pesa',
+    'TIGO_PESA': 'Tigo Pesa',
+    'AIRTEL_MONEY': 'Airtel Money',
+    'HALOPESA': 'Halopesa',
+    'MOBILE_MONEY': 'Mobile Money',
+}
 
 class WalletViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
@@ -47,16 +55,20 @@ class WalletViewSet(viewsets.GenericViewSet):
         if amount > Decimal('10000000'):  # TSh 10 million max
             return Response({"error": "Amount exceeds maximum allowed", "code": "AMOUNT_TOO_HIGH"}, status=400)
         
+        provider_key = request.data.get('provider', 'M_PESA').upper().replace(' ', '_')
+        provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
+
         instant_fee = amount * INSTANT_FEE_PERCENT
-        total_fees = instant_fee + MPESA_FIXED_FEE
+        total_fees = instant_fee + PROVIDER_FIXED_FEE
         net_amount = amount - total_fees
         
-        logger.info(f"Fee calculation for user {request.user.id}: amount={amount}, fees={total_fees}")
+        logger.info(f"Fee calculation for user {request.user.id}: amount={amount}, provider={provider_name}, fees={total_fees}")
         
         return Response({
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
-            "mpesa_fee": float(MPESA_FIXED_FEE),
+            "provider_fee": float(PROVIDER_FIXED_FEE),
+            "provider_name": provider_name,
             "total_fees": float(total_fees),
             "net_amount": float(max(net_amount, 0)),
         })
@@ -70,7 +82,20 @@ class WalletViewSet(viewsets.GenericViewSet):
             wallet = Wallet.objects.select_for_update().get(user=request.user)
         except Wallet.DoesNotExist:
             wallet = Wallet.objects.create(user=request.user)
-            
+        
+        amount_str = request.data.get('amount')
+        if amount_str is not None:
+            try:
+                amount = Decimal(str(amount_str))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({"error": "Invalid amount format", "code": "INVALID_AMOUNT"}, status=400)
+            if amount <= 0:
+                return Response({"error": "Amount must be greater than zero", "code": "AMOUNT_TOO_LOW"}, status=400)
+            if amount > wallet.balance:
+                return Response({"error": "Amount exceeds wallet balance", "code": "INSUFFICIENT_BALANCE"}, status=400)
+        else:
+            amount = wallet.balance
+        
         if wallet.balance < MINIMUM_CASHOUT:
             logger.warning(f"Cashout failed for user {request.user.id}: balance {wallet.balance} below minimum {MINIMUM_CASHOUT}")
             return Response({
@@ -79,11 +104,13 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "current_balance": float(wallet.balance),
                 "minimum_required": float(MINIMUM_CASHOUT),
             }, status=400)
-            
-        amount = wallet.balance
+        
+        provider_key = request.data.get('provider', 'M_PESA').upper().replace(' ', '_')
+        provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
+        phone = request.data.get('phone', '')
         
         instant_fee = amount * INSTANT_FEE_PERCENT
-        total_fees = instant_fee + MPESA_FIXED_FEE
+        total_fees = instant_fee + PROVIDER_FIXED_FEE
         net_amount = amount - total_fees
         
         if net_amount <= 0:
@@ -93,14 +120,14 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "code": "FEES_EXCEED_AMOUNT",
             }, status=400)
         
-        wallet.balance = 0
+        wallet.balance -= amount
         wallet.save()
         
         WalletTransaction.objects.create(
             wallet=wallet,
             amount=amount,
             tx_type='DEBIT',
-            description="Cashout to Mobile Money",
+            description=f"Cashout to {provider_name}",
             created_at=timezone.now(),
         )
         
@@ -108,17 +135,18 @@ class WalletViewSet(viewsets.GenericViewSet):
             wallet=wallet,
             amount=total_fees,
             tx_type='DEBIT',
-            description="Cashout processing fees",
+            description=f"Cashout processing fees ({provider_name})",
             created_at=timezone.now(),
         )
         
-        logger.info(f"Cashout successful for user {request.user.id}: amount={amount}, net={net_amount}")
+        logger.info(f"Cashout successful for user {request.user.id}: amount={amount}, provider={provider_name}, phone={phone}, net={net_amount}")
         
         return Response({
             "message": "Cashout request submitted successfully",
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
-            "mpesa_fee": float(MPESA_FIXED_FEE),
+            "provider_fee": float(PROVIDER_FIXED_FEE),
+            "provider_name": provider_name,
             "total_fees": float(total_fees),
             "net_amount": float(net_amount),
         })
