@@ -275,7 +275,6 @@ class ReleasePaymentService:
             gateway = get_payment_gateway()
             platform_cut = payment.amount - restaurant_payout - driver_payout
             if platform_cut < 0:
-                # Emergency guard: don't let platform go negative due to rounding
                 platform_cut = Decimal('0')
 
             vendor_phone = order.restaurant.owner.phone if order.restaurant and order.restaurant.owner else None
@@ -283,13 +282,8 @@ class ReleasePaymentService:
                 raise ValueError(f"Cannot process payment: Restaurant {order.restaurant.id} has no owner")
 
             splits = [
-                {'identifier': 'PLATFORM_ESCROW', 'value': float(platform_cut)},
-                {'identifier': vendor_phone, 'value': float(restaurant_payout)},
+                {'identifier': 'PLATFORM', 'value': float(payment.amount)},
             ]
-            if order.driver and order.driver.user:
-                driver_phone = order.driver.user.phone
-                if driver_phone:
-                    splits.append({'identifier': driver_phone, 'value': float(driver_payout)})
 
             response = gateway.split_settlement(
                 airpay_id=payment.provider_reference,

@@ -483,6 +483,8 @@ AIRPAY_CONFIG = {
     'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
     'MERCHANT_DOMAIN': config('AIRPAY_MERCHANT_DOMAIN', default='mwanachuo.tz'),
     'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
+    'SPLIT_API_KEY': config('AIRPAY_SPLIT_API_KEY', default=''),
+    'PRIMARY_ACCOUNT': config('AIRPAY_PRIMARY_ACCOUNT', default=''),
 }
 
 # SMS & Notifications (RafikiSMS)

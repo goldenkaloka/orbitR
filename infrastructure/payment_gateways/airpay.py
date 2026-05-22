@@ -1,4 +1,6 @@
 import hashlib
+import hmac
+import time
 import requests
 import logging
 import json
@@ -259,6 +261,66 @@ class AirpayGateway(PaymentGateway):
             response = requests.post(f"https://kraken.airpay.tz/airpay/pay/v1/api/refund?token={token}", data=payload)
             return {'success': response.status_code == 200, 'data': response.json() if response.status_code == 200 else response.text}
         except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def split_settlement(self, airpay_id, rrn, splits):
+        """
+        Release escrowed funds via Airpay split settlement API.
+        Sends the full amount to the platform's primary settlement account.
+        Internal distribution to vendors/drivers is handled by wallet cashouts.
+
+        POST /airpay/neft/split_payout/transaction_level_split_config_api.php
+        """
+        api_key = self.config.get('SPLIT_API_KEY')
+        primary_account = self.config.get('PRIMARY_ACCOUNT')
+
+        if not api_key or not primary_account:
+            logger.error("Split settlement not configured: missing SPLIT_API_KEY or PRIMARY_ACCOUNT")
+            return {'success': False, 'error': 'Split settlement not configured'}
+
+        total_amount = sum(s['value'] for s in splits)
+        split_request_id = str(int(time.time() * 1000))[-15:]
+
+        # Generate auth token
+        private_key = hashlib.sha256(f"{api_key}@{self.username}:|:{self.password}".encode()).hexdigest()
+        token = hmac.new(api_key.encode(), f"{private_key}{airpay_id}".encode(), hashlib.sha256).hexdigest()
+
+        payload = {
+            'TRANSACTION_ID': airpay_id,
+            'RRN': rrn,
+            'SPLIT_REQUEST_ID': split_request_id,
+            'PRIACCT_IDENTIFIER': primary_account,
+            'PRIACCT_SPLIT_VALUE': str(total_amount),
+            'TOKEN': token,
+        }
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Api-Key': api_key,
+        }
+
+        endpoint = "https://kraken.airpay.tz/airpay/neft/split_payout/transaction_level_split_config_api.php"
+
+        try:
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+            result = response.json() if response.content else {}
+            success = result.get('errorCode') == '000'
+
+            if success:
+                logger.info(f"Split settlement successful for transaction {airpay_id}")
+            else:
+                error = result.get('errorCode', 'UNKNOWN')
+                message = result.get('message', 'Unknown error')
+                logger.error(f"Split settlement failed for {airpay_id}: [{error}] {message}")
+
+            return {
+                'success': success,
+                'error': result.get('message') if not success else None,
+                'error_code': result.get('errorCode'),
+                'raw_response': result,
+            }
+        except Exception as e:
+            logger.error(f"Split settlement request failed for {airpay_id}: {e}")
             return {'success': False, 'error': str(e)}
 
     def _get_token(self):

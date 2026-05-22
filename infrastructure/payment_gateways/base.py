@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import List, Dict, Any
 
 class PaymentGateway(ABC):
     @abstractmethod
@@ -14,4 +15,13 @@ class PaymentGateway(ABC):
     @abstractmethod
     def get_status(self, provider_reference):
         """Query status of a transaction"""
+        pass
+
+    @abstractmethod
+    def split_settlement(self, airpay_id: str, rrn: str, splits: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Release escrowed funds via split settlement.
+        Sends the full transaction amount to the platform's primary account.
+        Internal distribution to vendors/drivers is handled via wallet cashouts.
+        """
         pass
