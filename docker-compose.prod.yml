@@ -42,6 +42,7 @@ services:
       - "443:443"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/init-ssl.sh:/docker-entrypoint.d/00-init-ssl.sh:ro
       - certbot-etc:/etc/letsencrypt
       - certbot-var:/var/lib/letsencrypt
       - certbot-webroot:/var/www/certbot
