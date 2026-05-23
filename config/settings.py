@@ -481,7 +481,7 @@ AIRPAY_CONFIG = {
     'SECRET_KEY': config('AIRPAY_SECRET_KEY', default=''),
     'CLIENT_ID': config('AIRPAY_CLIENT_ID', default=''),
     'CLIENT_SECRET': config('AIRPAY_CLIENT_SECRET', default=''),
-    'MERCHANT_DOMAIN': config('AIRPAY_MERCHANT_DOMAIN', default='mwanachuo.tz'),
+    'MERCHANT_DOMAIN': config('AIRPAY_MERCHANT_DOMAIN', default='mwanachuoshop.com'),
     'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
     'SPLIT_API_KEY': config('AIRPAY_SPLIT_API_KEY', default=''),
     'PRIMARY_ACCOUNT': config('AIRPAY_PRIMARY_ACCOUNT', default=''),

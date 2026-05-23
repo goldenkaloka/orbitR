@@ -16,8 +16,8 @@ from apps.core.geo_utils import haversine_distance
 logger = logging.getLogger(__name__)
 
 # Operational Constants
-PICKUP_GEOFENCE_RADIUS_METERS = 100
-DELIVERY_GEOFENCE_RADIUS_METERS = 200
+PICKUP_GEOFENCE_RADIUS_METERS = 1000
+DELIVERY_GEOFENCE_RADIUS_METERS = 1000
 
 class StartPreparingService:
     @staticmethod

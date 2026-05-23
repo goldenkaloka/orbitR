@@ -25,7 +25,7 @@ class AirpayGateway(PaymentGateway):
         self.secret = self.config.get('SECRET_KEY')
         self.client_id = self.config.get('CLIENT_ID')
         self.client_secret = self.config.get('CLIENT_SECRET')
-        self.merchant_domain = self.config.get('MERCHANT_DOMAIN', 'mwanachuo.tz').replace('https://', '').replace('http://', '').split('/')[0]
+        self.merchant_domain = self.config.get('MERCHANT_DOMAIN', 'mwanachuoshop.com').replace('https://', '').replace('http://', '').split('/')[0]
         
         # Endpoints
         self.oauth_url = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth2/"
@@ -263,36 +263,57 @@ class AirpayGateway(PaymentGateway):
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def split_settlement(self, airpay_id, rrn, splits):
+    def split_settlement(self, airpay_id, rrn, primary_account=None, primary_value=None, other_identifiers=None, split_values=None, splits=None):
         """
         Release escrowed funds via Airpay split settlement API.
-        Sends the full amount to the platform's primary settlement account.
-        Internal distribution to vendors/drivers is handled by wallet cashouts.
+
+        Per Airpay docs:
+          PRIACCT_IDENTIFIER  = platform primary bank account identifier
+          PRIACCT_SPLIT_VALUE = platform's share (absolute TZS amount)
+          OTHER_IDENTIFIERS   = pipe-separated vendor/driver phone numbers
+          SPLIT_VALUES        = pipe-separated amounts matching OTHER_IDENTIFIERS
 
         POST /airpay/neft/split_payout/transaction_level_split_config_api.php
         """
         api_key = self.config.get('SPLIT_API_KEY')
-        primary_account = self.config.get('PRIMARY_ACCOUNT')
+        if not primary_account:
+            primary_account = self.config.get('PRIMARY_ACCOUNT')
 
         if not api_key or not primary_account:
             logger.error("Split settlement not configured: missing SPLIT_API_KEY or PRIMARY_ACCOUNT")
             return {'success': False, 'error': 'Split settlement not configured'}
 
-        total_amount = sum(s['value'] for s in splits)
+        # Support legacy callers that pass a splits list
+        if splits is not None and primary_value is None:
+            primary_value = sum(s['value'] for s in splits)
+            other_identifiers = []
+            split_values = []
+
         split_request_id = str(int(time.time() * 1000))[-15:]
 
-        # Generate auth token
+        # Generate auth token per Airpay docs:
+        # PRIVATE_KEY = SHA256(APIKEY + '@' + USERNAME + ':|:' + PASSWORD)
+        # TOKEN = HMAC-SHA256(PRIVATE_KEY + TRANSACTION_ID, APIKEY)
         private_key = hashlib.sha256(f"{api_key}@{self.username}:|:{self.password}".encode()).hexdigest()
-        token = hmac.new(api_key.encode(), f"{private_key}{airpay_id}".encode(), hashlib.sha256).hexdigest()
+        token = hmac.new(
+            key=api_key.encode(),
+            msg=f"{private_key}{airpay_id}".encode(),
+            digestmod=hashlib.sha256
+        ).hexdigest()
 
         payload = {
             'TRANSACTION_ID': airpay_id,
             'RRN': rrn,
             'SPLIT_REQUEST_ID': split_request_id,
             'PRIACCT_IDENTIFIER': primary_account,
-            'PRIACCT_SPLIT_VALUE': str(total_amount),
+            'PRIACCT_SPLIT_VALUE': str(primary_value),
             'TOKEN': token,
         }
+
+        # Add other recipients only if present
+        if other_identifiers:
+            payload['OTHER_IDENTIFIERS'] = '|'.join(str(i) for i in other_identifiers)
+            payload['SPLIT_VALUES'] = '|'.join(str(v) for v in split_values)
 
         headers = {
             'Content-Type': 'application/json',

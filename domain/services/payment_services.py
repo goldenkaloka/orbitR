@@ -230,25 +230,27 @@ class CompletePaymentService:
 class ReleasePaymentService:
     @staticmethod
     def execute(payment_id):
+        from domain.services.wallet_services import WalletDomainService
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
-            
+
             # Resolve payout targets
             order = None
             restaurant_payout = Decimal('0')
             driver_payout = Decimal('0')
+            vendor_phone = None
+            driver_phone = None
 
             if payment.payable_type == 'order':
-                order = Order.objects.select_related('restaurant', 'batch', 'driver').get(id=payment.payable_id)
+                order = Order.objects.select_related(
+                    'restaurant', 'restaurant__owner', 'batch', 'driver', 'driver__user'
+                ).get(id=payment.payable_id)
                 commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
 
                 if order.batch and order.batch.driver_payout:
                     batch_order_count = order.batch.orders.count()
-                    if batch_order_count > 0:
-                        driver_payout = order.batch.driver_payout / batch_order_count
-                    else:
-                        driver_payout = Decimal('0')
+                    driver_payout = order.batch.driver_payout / batch_order_count if batch_order_count > 0 else Decimal('0')
                 elif order.driver:
                     from domain.services.pricing_service import PricingService
                     policy = PricingService.get_active_policy()
@@ -258,56 +260,122 @@ class ReleasePaymentService:
                     driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
                 else:
                     driver_payout = Decimal('0')
+
+                if order.restaurant and order.restaurant.owner:
+                    vendor_phone = order.restaurant.owner.phone
+                if order.driver and order.driver.user:
+                    driver_phone = order.driver.user.phone
+
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import PoolMember
-                member = PoolMember.objects.get(id=payment.payable_id)
+                member = PoolMember.objects.select_related(
+                    'pool', 'pool__restaurant', 'pool__restaurant__owner'
+                ).get(id=payment.payable_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
                 driver_payout = Decimal(str(member.delivery_fee_share or 0))
-                order = member.pool.final_order
-                if not order:
-                    # Fallback for pools finalized before this change
-                    order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
-            
+                order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
+                if order and order.restaurant and order.restaurant.owner:
+                    vendor_phone = order.restaurant.owner.phone
+                if order and order.driver and order.driver.user:
+                    driver_phone = order.driver.user.phone
+
             if not order:
                 raise ValueError("No payout target found for this payment.")
+            if not vendor_phone:
+                raise ValueError(f"Cannot process payment: Restaurant has no owner phone number")
 
-            gateway = get_payment_gateway()
             platform_cut = payment.amount - restaurant_payout - driver_payout
             if platform_cut < 0:
                 platform_cut = Decimal('0')
 
-            vendor_phone = order.restaurant.owner.phone if order.restaurant and order.restaurant.owner else None
-            if not vendor_phone:
-                raise ValueError(f"Cannot process payment: Restaurant {order.restaurant.id} has no owner")
+            # Build split payload per Airpay docs:
+            # PRIACCT_IDENTIFIER = platform primary account
+            # OTHER_IDENTIFIERS = vendor phone | driver phone (pipe-separated)
+            # SPLIT_VALUES = vendor amount | driver amount (pipe-separated)
+            primary_account = get_payment_gateway().config.get('PRIMARY_ACCOUNT')
+            if not primary_account:
+                raise ValueError("AIRPAY_PRIMARY_ACCOUNT not configured")
 
-            splits = [
-                {'identifier': 'PLATFORM', 'value': float(payment.amount)},
-            ]
+            other_identifiers = []
+            split_values = []
 
+            if restaurant_payout > 0:
+                other_identifiers.append(vendor_phone)
+                split_values.append(float(restaurant_payout))
+
+            if driver_payout > 0 and driver_phone:
+                other_identifiers.append(driver_phone)
+                split_values.append(float(driver_payout))
+
+            gateway = get_payment_gateway()
             response = gateway.split_settlement(
                 airpay_id=payment.provider_reference,
                 rrn=payment.rrn,
-                splits=splits
+                primary_account=primary_account,
+                primary_value=float(platform_cut),
+                other_identifiers=other_identifiers,
+                split_values=split_values,
             )
-            
+
             if response and response.get('success'):
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
-                
+
+                # Credit vendor wallet
+                if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
+                    WalletDomainService.credit(
+                        order.restaurant.owner,
+                        restaurant_payout,
+                        f"Earnings from Order #{order.id}"
+                    )
+                    Transaction.objects.create(
+                        payment=payment,
+                        from_wallet=None,
+                        to_wallet=order.restaurant.owner,
+                        amount=restaurant_payout,
+                        transaction_type='platform_to_restaurant',
+                        status='COMPLETED'
+                    )
+
+                # Credit driver wallet
+                if driver_payout > 0 and order.driver and order.driver.user:
+                    WalletDomainService.credit(
+                        order.driver.user,
+                        driver_payout,
+                        f"Delivery fee for Order #{order.id}"
+                    )
+                    Transaction.objects.create(
+                        payment=payment,
+                        from_wallet=None,
+                        to_wallet=order.driver.user,
+                        amount=driver_payout,
+                        transaction_type='platform_to_driver',
+                        status='COMPLETED'
+                    )
+
                 transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(
-                    aggregate_id=payment.id, 
+                    aggregate_id=payment.id,
                     payload={
                         'order_id': str(order.id),
-                        'restaurant_owner_id': str(order.restaurant.owner.id) if (order.restaurant and order.restaurant.owner) else None,
                         'restaurant_payout': str(restaurant_payout),
-                        'driver_user_id': str(order.driver.user.id) if (order.driver and order.driver.user) else None,
-                        'driver_payout': str(driver_payout) if order.driver else '0.0',
+                        'driver_payout': str(driver_payout),
                     }
                 )))
             else:
-                FailedPayout.objects.create(payment=payment, to_wallet=order.restaurant.owner, amount=restaurant_payout, transaction_type='split_settlement_failure', reason=response.get('error', 'Unknown Error'))
-            
+                error_msg = response.get('error', 'Unknown Error') if response else 'No response from gateway'
+                error_code = response.get('error_code', 'UNKNOWN') if response else 'NO_RESPONSE'
+                FailedPayout.objects.create(
+                    payment=payment,
+                    to_wallet=order.restaurant.owner,
+                    amount=restaurant_payout,
+                    transaction_type='split_settlement_failure',
+                    reason=error_msg,
+                    error_code=error_code,
+                    retry_count=0
+                )
+                logger.error(f"Split settlement failed for payment {payment.id}: [{error_code}] {error_msg}")
+
             return payment
 
 class RefundPaymentService:
