@@ -173,7 +173,7 @@ class OrderSerializer(serializers.ModelSerializer):
         try:
             dist_km = obj.restaurant.geo_location.distance(obj.delivery_location) / 1000
             est = 8 + (dist_km * 4)
-            return int(max(15, min(60, est)))
+            return int(min(60, est))
         except Exception:
             return 30
 
