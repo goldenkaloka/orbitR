@@ -384,6 +384,51 @@ def expire_stale_preparing_orders_task():
     logger.info(f"[PrepExpiry] Completed. Cancelled {len(cancelled_ids)} orders.")
 
 
+@shared_task(name='domain.services.dispatch_tasks.expire_stale_assigned_orders_task')
+def expire_stale_assigned_orders_task():
+    """
+    Cancels orders stuck in ASSIGNED state for more than 30 minutes.
+    Handles cases where a driver accepted an order but never picked it up
+    (e.g. GPS failures, app crashes, or driver inactivity).
+
+    Uses CancelOrderService to properly release the driver, refund payment,
+    delete the assignment, and publish the OrderCancelled event.
+    """
+    cutoff = timezone.now() - timedelta(minutes=30)
+
+    system_user, _ = User.objects.get_or_create(
+        username='system_dispatcher',
+        defaults={'role': 'admin', 'is_staff': True},
+    )
+
+    stale_orders = Order.objects.filter(
+        status='ASSIGNED',
+        status_changed_at__lt=cutoff,
+    )
+
+    cancelled = 0
+    for order in stale_orders:
+        try:
+            CancelOrderService.execute(
+                order_id=str(order.id),
+                actor=system_user,
+                reason=(
+                    'Expired: Driver did not pick up within 30 minutes '
+                    'of assignment.'
+                ),
+            )
+            cancelled += 1
+        except Exception as exc:
+            logger.error(
+                f"[AssignedExpiry] Failed to cancel order {order.id}: {exc}"
+            )
+
+    if cancelled:
+        logger.info(
+            f"[AssignedExpiry] Cancelled {cancelled} stale ASSIGNED orders."
+        )
+
+
 @shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
 def retry_dispatch_task(order_id: str, attempt: int = 1):
     """

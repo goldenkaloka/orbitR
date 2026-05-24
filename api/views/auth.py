@@ -232,7 +232,7 @@ class MeView(APIView):
                 'id': str(user.id),
                 'phone': user.phone,
                 'username': user.username,
-                'avatar_url': user.avatar_url,
+                'avatar_url': user.avatar.url if user.avatar else user.avatar_url,
                 'role': user.role
             }
         })
@@ -245,12 +245,15 @@ class MeView(APIView):
         
         if username:
             user.username = username
+        if request.FILES.get('avatar'):
+            user.avatar = request.FILES['avatar']
+            user.avatar_url = None  # clear old URL in favour of uploaded file
         if avatar_url:
             user.avatar_url = avatar_url
         if onesignal_id:
             user.onesignal_id = onesignal_id
             
-        if username or avatar_url or onesignal_id:
+        if username or avatar_url or onesignal_id or request.FILES.get('avatar'):
             user.save()
             
         return Response({
@@ -258,7 +261,7 @@ class MeView(APIView):
                 'id': str(user.id),
                 'phone': user.phone,
                 'username': user.username,
-                'avatar_url': user.avatar_url,
+                'avatar_url': user.avatar.url if user.avatar else user.avatar_url,
                 'role': user.role,
                 'onesignal_id': user.onesignal_id
             }

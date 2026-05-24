@@ -31,6 +31,7 @@ class User(AbstractUser):
     username = models.CharField(max_length=150, unique=False, blank=True, null=True)
     phone = models.CharField(max_length=20, unique=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='customer', db_index=True)
+    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
     avatar_url = models.URLField(max_length=500, blank=True, null=True)
     onesignal_id = models.CharField(max_length=255, blank=True, null=True, help_text="OneSignal Player/Subscription ID for push notifications")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
