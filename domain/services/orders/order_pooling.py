@@ -70,7 +70,7 @@ class PoolOrderService:
                         h3_index=h3_index,
                         expires_at=timezone.now() + timedelta(hours=2)
                     )
-                    PoolMember.objects.create(pool=pool, user=initiator)
+                    PoolMember.objects.create(pool=pool, user=initiator, status='READY')
                 break
             except IntegrityError as e:
                 if 'unique_open_pool_per_user' in str(e).lower() or 'initiator' in str(e).lower():
