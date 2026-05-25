@@ -18,7 +18,7 @@ from apps.delivery.models import Driver
 from apps.wallets.models import Wallet, WalletTransaction
 from apps.core.models import Notification
 from apps.marketplace.models import MarketplaceProduct
-from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, get_neighbors
+from apps.core.geo_utils import get_neighbors
 from apps.core.cache_keys import stable_cache_key
 
 from api.serializers.core import (
@@ -122,30 +122,33 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = Restaurant.objects.select_related('owner').prefetch_related('foods').filter(is_active=True)
         if getattr(self, "action", None) in ("retrieve", "mine"):
-            # Already prefetched above for all actions
             pass
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
-            
-        # H3 Proximity Filtering (only for list view)
+
+        # Proximity sorting — nearest first, expanding outward across all zones
         if getattr(self, "action", None) == "list":
             lat = self.request.query_params.get('lat')
             lng = self.request.query_params.get('lng')
             if lat and lng:
-                user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
-                if user_h3:
-                    # Include neighbors for a better user experience
-                    neighbor_cells = get_neighbors(user_h3, 1)
-                    if neighbor_cells:
-                        queryset = queryset.filter(h3_index__in=neighbor_cells)
+                from django.contrib.gis.db.models.functions import Distance
+                from django.contrib.gis.geos import Point
+                from django.db.models import Case, Value, FloatField, When
+                user_location = Point(float(lng), float(lat), srid=4326)
+                queryset = queryset.annotate(
+                    distance=Case(
+                        When(geo_location__isnull=False, then=Distance('geo_location', user_location)),
+                        default=Value(1e10),
+                        output_field=FloatField(),
+                    )
+                ).order_by('distance')
         return queryset
 
     def list(self, request, *args, **kwargs):
         category = request.query_params.get('category', 'all').lower()
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
-        user_h3 = latlng_to_h3(lat, lng, ZONE_RESOLUTION) if (lat and lng) else None
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
 
@@ -153,7 +156,8 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             "restaurant_list",
             {
                 "category": category,
-                "h3": user_h3 or "none",
+                "lat": lat or "none",
+                "lng": lng or "none",
                 "limit": limit or "default",
                 "offset": offset or "0",
             },

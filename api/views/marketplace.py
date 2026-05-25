@@ -16,6 +16,8 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Filter by zone, category, and status.
+        Supports lat/lng for proximity sorting (nearest first across all zones),
+        with zone param as a fallback filter.
         Only show ACTIVE products to general users.
         """
         from django.db.models import Subquery, OuterRef
@@ -23,7 +25,6 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         
         user = self.request.user
         
-        # Optimize zone name resolution to prevent N+1 queries during serialization
         zone_name_subquery = ZoneH3Index.objects.filter(
             h3_index=OuterRef('h3_index')
         ).values('zone__name')[:1]
@@ -34,21 +35,34 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             annotated_zone_name=Subquery(zone_name_subquery)
         )
         
-        # Filtering
-        zone_h3 = self.request.query_params.get('zone')
-        if zone_h3:
-            from apps.core.geo_utils import get_neighbors
-            # Include neighbors to show nearby products across hexagon boundaries
-            neighbor_cells = get_neighbors(zone_h3, 1)
-            queryset = queryset.filter(h3_index__in=neighbor_cells)
+        # Proximity sorting — nearest first when lat/lng provided
+        lat = self.request.query_params.get('lat')
+        lng = self.request.query_params.get('lng')
+        if lat and lng:
+            from django.contrib.gis.db.models.functions import Distance
+            from django.contrib.gis.geos import Point
+            from django.db.models import Case, Value, FloatField, When
+            user_location = Point(float(lng), float(lat), srid=4326)
+            queryset = queryset.annotate(
+                distance=Case(
+                    When(location__isnull=False, then=Distance('location', user_location)),
+                    default=Value(1e10),
+                    output_field=FloatField(),
+                )
+            ).order_by('distance')
+        else:
+            # Fallback to zone filtering for backward compatibility
+            zone_h3 = self.request.query_params.get('zone')
+            if zone_h3:
+                from apps.core.geo_utils import get_neighbors
+                neighbor_cells = get_neighbors(zone_h3, 1)
+                queryset = queryset.filter(h3_index__in=neighbor_cells)
             
         category_id = self.request.query_params.get('category')
         if category_id:
             queryset = queryset.filter(category_id=category_id)
 
-        # Visibility logic
         if self.action == 'list':
-            # Public listings must be active
             return queryset.filter(status='ACTIVE')
         
         if self.action == 'mine':
