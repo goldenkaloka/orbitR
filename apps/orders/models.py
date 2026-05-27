@@ -261,7 +261,7 @@ class PoolMember(models.Model):
         unique_together = ('pool', 'user')
 
 class PoolItem(models.Model):
-    member = models.ForeignKey(PoolMember, on_delete=models.CASCADE, related_name='items')
+    member = models.ForeignKey(PoolMember, on_delete=models.CASCADE, related_name='pool_item_entries')
     food = models.ForeignKey(Food, on_delete=models.CASCADE)
     quantity = models.PositiveIntegerField(default=1)
     price_at_addition = models.DecimalField(max_digits=10, decimal_places=2)
