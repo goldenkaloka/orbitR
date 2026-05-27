@@ -187,3 +187,41 @@ class RouteCalculated(DomainEvent):
 class RouteOptimizationFailed(DomainEvent):
     aggregate_type = 'DeliveryBatch'
     event_type = 'RouteOptimizationFailed'
+
+@dataclass
+class PoolLocked(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolLocked'
+
+@dataclass
+class PoolPaid(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolPaid'
+
+    def __post_init__(self):
+        self.payload.setdefault('all_paid', False)
+
+@dataclass
+class PoolReady(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolReady'
+
+@dataclass
+class PoolBatchStarted(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolBatchStarted'
+
+@dataclass
+class PoolCompleted(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolCompleted'
+
+@dataclass
+class PoolCancelled(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolCancelled'
+
+@dataclass
+class PoolExpired(DomainEvent):
+    aggregate_type = 'OrderPool'
+    event_type = 'PoolExpired'

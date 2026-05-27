@@ -244,22 +244,34 @@ class DisputeSerializer(serializers.ModelSerializer):
         fields = '__all__'
         read_only_fields = ['id', 'raised_by', 'created_at', 'updated_at']
 
-class PoolItemSerializer(serializers.ModelSerializer):
-    food_name = serializers.ReadOnlyField(source='food.name')
+class PoolItemSerializer(serializers.Serializer):
+    """
+    Serializes pool items stored as JSON on PoolMember.items.
+    Each item is a dict: {food_id, name, quantity, price, image_url}
+    The 'id' field is the food_id (used by the Flutter client as item identifier).
+    """
     id = serializers.SerializerMethodField()
-    class Meta:
-        from apps.orders.models import PoolItem
-        model = PoolItem
-        fields = ['id', 'food', 'food_name', 'quantity', 'price_at_addition']
+    food = serializers.CharField(source='food_id')
+    food_name = serializers.CharField(source='name')
+    quantity = serializers.IntegerField()
+    price_at_addition = serializers.SerializerMethodField()
 
     def get_id(self, obj):
-        return str(obj.id)
+        # Flutter client uses food_id as the item identifier for remove-item calls
+        return str(obj.get('food_id', ''))
+
+    def get_price_at_addition(self, obj):
+        # price in JSON is total (unit_price * qty); return unit price
+        qty = obj.get('quantity', 1) or 1
+        total = float(obj.get('price', 0))
+        return round(total / qty, 2)
 
 
 class PoolMemberSerializer(serializers.ModelSerializer):
-    items = PoolItemSerializer(many=True, read_only=True)
+    items = serializers.SerializerMethodField()
     username = serializers.ReadOnlyField(source='user.username')
     id = serializers.SerializerMethodField()
+
     class Meta:
         from apps.orders.models import PoolMember
         model = PoolMember
@@ -267,6 +279,11 @@ class PoolMemberSerializer(serializers.ModelSerializer):
 
     def get_id(self, obj):
         return str(obj.id)
+
+    def get_items(self, obj):
+        # Items are stored as JSON on the member — no DB join needed
+        items = obj.items if isinstance(obj.items, list) else []
+        return PoolItemSerializer(items, many=True).data
 
 
 class OrderPoolSerializer(serializers.ModelSerializer):

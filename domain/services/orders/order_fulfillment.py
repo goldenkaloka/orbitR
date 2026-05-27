@@ -54,11 +54,6 @@ class MarkReadyService:
             order.ready_at = timezone.now()
             order.save()
             
-            # Proactively try to batch
-            if order.h3_index:
-                from domain.services.batching_engine import BatchingEngine
-                BatchingEngine.attempt_batching(order)
-            
             transaction.on_commit(lambda: EventBus.publish(FoodReady(
                 aggregate_id=order.id, 
                 payload={'actor_id': str(actor.id)}

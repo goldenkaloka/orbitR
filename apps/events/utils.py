@@ -46,8 +46,22 @@ def broadcast_order_status(order_id, status, message="Status updated"):
                 'restaurant_name': order.restaurant.name,
                 'delivery_fee': float(order.delivery_fee)
             })
-        
-        # 6. Notify ALL Riders to refresh available jobs when order is claimed/accepted/assigned
+
+        # 6. Send push notifications when a job is offered to a specific driver
+        if status == 'OFFERED' and order.driver:
+            from infrastructure.notifications.service import NotificationService
+            NotificationService.send_push(
+                user_id=str(order.driver.user_id),
+                title="New Delivery Order!",
+                body=f"Order from {order.restaurant.name} is ready for pickup.",
+                data={
+                    'type': 'new_order',
+                    'order_id': str(order_id),
+                    'restaurant_name': order.restaurant.name,
+                }
+            )
+
+        # 7. Notify ALL Riders to refresh available jobs when order is claimed/accepted/assigned
         # This ensures the ping disappears for all other riders
         if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and order.driver:
             async_to_sync(channel_layer.group_send)('riders', {

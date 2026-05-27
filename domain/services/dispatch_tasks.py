@@ -16,13 +16,19 @@ User = get_user_model()
 MAX_DISPATCH_ATTEMPTS = 3
 DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
 
-@shared_task(name='domain.services.dispatch_tasks.dispatch_order_task')
-def dispatch_order_task(order_id):
+@shared_task(
+    name='domain.services.dispatch_tasks.dispatch_order_task',
+    bind=True,
+    max_retries=3,
+    acks_late=True,
+)
+def dispatch_order_task(self, order_id):
     """Asynchronous task to initiate driver dispatch for an order."""
     try:
         DispatchService.execute(order_id)
     except Exception as e:
         logger.error(f"Dispatch failed for order {order_id}: {str(e)}")
+        raise self.retry(exc=e, countdown=120)
 
 
 # Fix #4 — Retry storm: use Celery's own self.retry() instead of manual
@@ -170,17 +176,72 @@ def expire_unassigned_orders_task():
             logger.error(f"[ExpiryTask] Failed to emit cancel event for order {order.id}: {exc}")
 
 
+LOCKED_POOL_TIMEOUT_MINUTES = 30
+
+
+@shared_task(name='domain.services.dispatch_tasks.expire_stale_locked_pools_task')
+def expire_stale_locked_pools_task():
+    """
+    Auto-expires LOCKED pools where members haven't paid within the timeout window.
+    Uses lock_expires_at set by lock_pool for precision.
+    Auto-refunds any members who already paid.
+    """
+    from apps.orders.models import OrderPool
+    from apps.events.utils import broadcast_pool_status
+    from domain.events.bus import EventBus
+    from domain.events.types import PoolExpired
+    from domain.fsm.pool_fsm import PoolFSM
+    from domain.services.payment_services import RefundPaymentService
+
+    stuck_pools = OrderPool.objects.filter(
+        status='LOCKED',
+        lock_expires_at__lt=timezone.now(),
+    )
+
+    count = 0
+    for pool in stuck_pools:
+        try:
+            with transaction.atomic():
+                pool_locked = OrderPool.objects.select_for_update().get(id=pool.id)
+                if pool_locked.status != 'LOCKED':
+                    continue
+                pool_locked.status = PoolFSM.transition(pool_locked.status, 'EXPIRED')
+                pool_locked.save(update_fields=['status'])
+
+            paid_members = pool.members.filter(status='PAID')
+            for member in paid_members:
+                try:
+                    RefundPaymentService.execute('pool_member', member.id)
+                except Exception as e:
+                    logger.error(f"Failed to refund pool member {member.id} during LOCKED pool expiry: {e}")
+
+            _pool_id = str(pool.id)
+            broadcast_pool_status(_pool_id, 'EXPIRED', message="Pool payment window expired. Refunding paid members.")
+            EventBus.publish(PoolExpired(
+                aggregate_id=pool.id,
+                payload={'pool_id': _pool_id, 'reason': 'lock_timeout'},
+            ))
+            count += 1
+        except Exception as e:
+            logger.error(f"Failed to expire stuck LOCKED pool {pool.id}: {str(e)}")
+
+    if count:
+        logger.info(f"[Locked Pool Expiry] Expired {count} LOCKED pool(s) past {LOCKED_POOL_TIMEOUT_MINUTES}min timeout.")
+    return count
+
+
 @shared_task(name='domain.services.dispatch_tasks.expire_stale_pools_task')
 def expire_stale_pools_task():
     """
-    Auto-expires OPEN/LOCKED pools that have passed their expires_at deadline.
+    Auto-expires OPEN pools that have passed their expires_at deadline.
     Broadcasts EXPIRED status to all connected members via WebSocket.
+    LOCKED pools are handled by expire_stale_locked_pools_task.
     """
     from apps.orders.models import OrderPool
     from apps.events.utils import broadcast_pool_status
 
     expired_pools = OrderPool.objects.filter(
-        status__in=['OPEN', 'LOCKED'],
+        status='OPEN',
         expires_at__lt=timezone.now()
     )
 
@@ -433,27 +494,7 @@ def expire_stale_assigned_orders_task():
 def retry_dispatch_task(order_id: str, attempt: int = 1):
     """
     Retry dispatch for an order after initial failure.
-    Uses exponential backoff based on attempt number.
+    Delegates to dispatch_order_task which handles its own self.retry().
     """
-
-    max_attempts = 3
-    retry_delays = {1: 120, 2: 300, 3: 900}
-
-    if attempt > max_attempts:
-        logger.warning(f"[retry_dispatch_task] Order {order_id} exhausted all retry attempts")
-        from domain.events.bus import EventBus
-        from domain.events.types import DispatchFailed
-        EventBus.publish(DispatchFailed(
-            aggregate_id=order_id,
-            payload={'order_id': order_id, 'attempt_retry': False, 'reason': 'max_retries_exceeded'}
-        ))
-        return
-
-    try:
-        logger.info(f"[retry_dispatch_task] Retrying dispatch for order {order_id}, attempt {attempt}/{max_attempts}")
-        DispatchService.execute(order_id)
-        logger.info(f"[retry_dispatch_task] Dispatch succeeded for order {order_id}")
-    except Exception as e:
-        logger.error(f"[retry_dispatch_task] Dispatch failed for order {order_id}: {str(e)}")
-        delay = retry_delays.get(attempt, 120)
-        retry_dispatch_task.apply_async(args=[str(order_id), attempt + 1], countdown=delay)
+    logger.info(f"[retry_dispatch_task] Retrying dispatch for order {order_id}, attempt {attempt}")
+    dispatch_order_task.delay(order_id)

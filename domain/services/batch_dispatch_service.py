@@ -254,9 +254,11 @@ class BatchDispatchService:
             batch.offer_sent_at = timezone.now()
             batch.save(update_fields=['driver', 'status', 'offer_attempt', 'offer_sent_at'])
 
-            driver.current_active_orders += order_count
             driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-            driver.save(update_fields=['current_active_orders', 'status'])
+            # Improvement #3: Track offer attempts so the acceptance-rate scorer
+            # in CrossBatchDriverMatcher has accurate data to work with.
+            driver.total_claim_attempts = driver.total_claim_attempts + 1
+            driver.save(update_fields=['status', 'total_claim_attempts'])
 
             orders_to_update = []
             for order in batch.orders.select_related('restaurant').all():
@@ -349,7 +351,11 @@ class BatchDispatchService:
             Order.objects.bulk_update(orders, ['status'])
 
             driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
-            driver.save(update_fields=['status'])
+            driver.current_active_orders += order_count
+            # Improvement #3: Record the acceptance so the scoring function can
+            # compute an accurate acceptance rate for this driver going forward.
+            driver.total_claims_accepted = driver.total_claims_accepted + 1
+            driver.save(update_fields=['status', 'current_active_orders', 'total_claims_accepted'])
 
             assignments = [
                 DeliveryAssignment(order_id=o.id, driver_id=driver_id)

@@ -15,11 +15,12 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        # Users see only active pools they initiated or joined
+        # Users see only active pools they initiated or joined.
+        # Note: PoolMember.items is now a JSONField — no related prefetch needed.
         return OrderPool.objects.filter(
             Q(initiator=user) | Q(members__user=user),
-            status__in=['OPEN', 'LOCKED']
-        ).distinct().prefetch_related('members', 'members__user', 'members__items', 'members__items__food')
+            status__in=['OPEN', 'LOCKED', 'PAID', 'READY', 'DISPATCHING', 'DELIVERING']
+        ).distinct().prefetch_related('members', 'members__user')
 
     def create(self, request, *args, **kwargs):
         # UX Improvement: If user already has an open pool, just return it
@@ -87,10 +88,13 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='remove-item')
     def remove_item(self, request, pk=None):
-        item_id = request.data.get('item_id')
+        # The client sends food_id (the item identifier in the JSON items list)
+        food_id = request.data.get('food_id') or request.data.get('item_id')
         quantity = int(request.data.get('quantity', 1))
+        if not food_id:
+            return Response({'error': 'food_id is required'}, status=400)
         try:
-            pool = PoolOrderService.remove_item(request.user, pk, item_id, quantity)
+            pool = PoolOrderService.remove_item(request.user, pk, food_id, quantity)
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
@@ -169,9 +173,21 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='ready')
     def mark_ready(self, request, pk=None):
+        """Member marks themselves as ready to pay (ADDING → READY)."""
         try:
             pool = PoolOrderService.mark_member_ready(request.user, pk)
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='pool-ready')
+    def mark_pool_ready(self, request, pk=None):
+        """Restaurant marks the pool's food as ready for dispatch (PAID → READY)."""
+        try:
+            pool = PoolOrderService.mark_pool_ready(pk, request.user)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 

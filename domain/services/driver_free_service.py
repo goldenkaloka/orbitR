@@ -56,6 +56,7 @@ class DriverFreeService:
         # always evaluates to False, permanently leaking the driver's state.
         # ─────────────────────────────────────────────────────────────────────
         current_driver_id = batch.driver_id  # Use the FK id, never the object
+        was_accepted = batch.status in ('ASSIGNED', 'PICKED', 'COMPLETED')
 
         order_count = batch.orders.count()
 
@@ -82,9 +83,12 @@ class DriverFreeService:
             try:
                 driver = Driver.objects.select_for_update().get(id=current_driver_id)
 
-                driver.current_active_orders = max(
-                    0, driver.current_active_orders - order_count
-                )
+                # Only decrement capacity if the driver had actually accepted
+                # (current_active_orders is incremented only on accept_batch, not on offer)
+                if was_accepted:
+                    driver.current_active_orders = max(
+                        0, driver.current_active_orders - order_count
+                    )
 
                 try:
                     driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')

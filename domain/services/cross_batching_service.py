@@ -8,6 +8,8 @@ All cross-restaurant batching is now handled by BatchPipeline
 CrossBatchDriverMatcher is STILL ACTIVE and used by BatchDispatchService
 for driver selection scoring. Do not remove it.
 """
+from datetime import timedelta
+
 from django.db import transaction
 from django.utils import timezone
 from django.core.cache import cache
@@ -15,6 +17,11 @@ from decimal import Decimal
 import logging
 import math
 import h3
+
+# Drivers whose app hasn't sent a heartbeat within this window are treated as
+# offline even if their DB status is still AVAILABLE.  This prevents stale
+# drivers from eating the 5-minute offer window on every dispatch cycle.
+DRIVER_HEARTBEAT_THRESHOLD = timedelta(minutes=5)
 
 logger = logging.getLogger(__name__)
 
@@ -566,13 +573,19 @@ class CrossBatchDriverMatcher:
             logger.warning(f"Batch {batch.id} - no primary zone H3 cells found")
             return None
 
+        heartbeat_threshold = timezone.now() - DRIVER_HEARTBEAT_THRESHOLD
+
         with transaction.atomic():
             def find_best_driver(zone_cells, zone_penalty=0, filter_q=Q()):
                 drivers = Driver.objects.select_for_update(skip_locked=True).filter(
                     status='AVAILABLE',
                     current_active_orders__lt=F('max_active_orders'),
                     h3_index__in=zone_cells,
-                    location__dwithin=(restaurant_point, D(km=max_radius_km))
+                    location__dwithin=(restaurant_point, D(km=max_radius_km)),
+                    # Improvement #1: Heartbeat staleness guard.
+                    # Exclude drivers whose app hasn't checked in recently — they
+                    # are effectively offline and will waste the offer window.
+                    last_heartbeat__gte=heartbeat_threshold,
                 ).filter(filter_q).annotate(
                     distance_meters=Distance('location', restaurant_point)
                 )
@@ -584,13 +597,27 @@ class CrossBatchDriverMatcher:
                 min_score = float('inf')
 
                 for driver in drivers:
-                    rating_penalty = 5.0 - float(driver.rating)
                     dist_km = driver.distance_meters.km if driver.distance_meters else max_radius_km
 
+                    # Rating penalty: lower rating → higher penalty (0–4 range)
+                    rating_penalty = 5.0 - float(driver.rating)
+
+                    # Improvement #2: Acceptance-rate penalty.
+                    # Drivers who historically decline offers are deprioritised.
+                    # We use a neutral prior of 0.5 for new drivers with no history
+                    # so they aren't unfairly penalised before they've had a chance.
+                    if driver.total_claim_attempts > 0:
+                        acceptance_rate = driver.total_claims_accepted / driver.total_claim_attempts
+                    else:
+                        acceptance_rate = 0.5  # neutral prior for new drivers
+                    # Scale to 0–3 range so it's comparable to the other factors
+                    acceptance_penalty = (1.0 - acceptance_rate) * 3.0
+
                     score = (
-                        float(dist_km) * 0.4 +
-                        rating_penalty * 0.4 +
-                        zone_penalty * 0.2
+                        float(dist_km) * 0.35 +
+                        rating_penalty * 0.30 +
+                        acceptance_penalty * 0.25 +
+                        zone_penalty * 0.10
                     )
 
                     if score < min_score:

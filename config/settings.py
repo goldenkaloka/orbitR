@@ -565,6 +565,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'domain.services.dispatch_tasks.expire_stale_pools_task',
         'schedule': crontab(minute='*/15'),
     },
+    'expire-stale-locked-pools-every-5-mins': {
+        'task': 'domain.services.dispatch_tasks.expire_stale_locked_pools_task',
+        'schedule': crontab(minute='*/5'),
+    },
     'expire-stale-preparing-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_preparing_orders_task',
         'schedule': crontab(minute='*/5'),

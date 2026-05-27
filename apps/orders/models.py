@@ -44,6 +44,14 @@ class Order(models.Model):
     # Group Ordering Metadata
     group_breakdown = models.JSONField(null=True, blank=True)
 
+    # Pool fast-path flag — set by PoolOrderService.finalize_pool()
+    # Tells BatchPipeline to skip H3 re-clustering (pool already shares a delivery point)
+    is_pool_order = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text='True when this order was created by finalising an OrderPool.',
+    )
+
     route_sequence = models.PositiveIntegerField(null=True, blank=True, db_index=True)
     original_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     discount_applied = models.BooleanField(default=False, db_index=True)
@@ -111,9 +119,14 @@ class OrderPool(models.Model):
     STATUS_CHOICES = (
         ('OPEN', 'Open for additions'),
         ('LOCKED', 'Locked for payment'),
-        ('COMPLETED', 'Ordered'),
+        ('PAID', 'All members paid, restaurant preparing'),
+        ('READY', 'Ready for dispatch'),
+        ('DISPATCHING', 'Driver search in progress'),
+        ('DELIVERING', 'Driver en route'),
+        ('COMPLETED', 'All delivered'),
         ('CANCELLED', 'Cancelled'),
         ('EXPIRED', 'Expired'),
+        ('REFUNDED', 'Refunded'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -122,19 +135,38 @@ class OrderPool(models.Model):
     
     invite_code = models.CharField(max_length=10, unique=True, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN', db_index=True)
+
+    # Deprecated: master Order created during old finalize_pool path
+    # Will be removed once all pools use the new direct path
     final_order = models.OneToOneField('Order', on_delete=models.SET_NULL, null=True, blank=True, related_name='source_pool')
+
+    # Link to the DeliveryBatch created when this pool was dispatched.
+    batch = models.ForeignKey(
+        'DeliveryBatch',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='source_pools',
+        help_text='The delivery batch created when this pool was dispatched.',
+    )
     
     # Shared delivery details
     delivery_address = models.TextField()
     delivery_location = gis_models.PointField(geography=True, db_index=True)
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
+    # Financials — pooled across all members
     total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     service_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
     expires_at = models.DateTimeField()
+    locked_at = models.DateTimeField(null=True, blank=True)
+    lock_expires_at = models.DateTimeField(null=True, blank=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
 
     def save(self, *args, **kwargs):
         if self.delivery_location:
@@ -142,17 +174,13 @@ class OrderPool(models.Model):
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
 
-        original_status = getattr(self, '_original_status', None)
-        if original_status is not None and self.status != original_status:
-            from django.utils import timezone
-            self.status_changed_at = timezone.now()
-
         self._original_status = self.status
         super().save(*args, **kwargs)
 
     class Meta:
         indexes = [
             models.Index(fields=['status', 'expires_at'], name='pool_status_expires_idx'),
+            models.Index(fields=['status', 'locked_at'], name='pool_locked_status_idx'),
         ]
         constraints = [
             models.UniqueConstraint(fields=['initiator'], condition=models.Q(status='OPEN'), name='unique_open_pool_per_user')
@@ -163,26 +191,40 @@ class OrderPool(models.Model):
         from django.utils import timezone
         return timezone.now() > self.expires_at
 
+    @property
+    def all_members_paid(self) -> bool:
+        return not self.members.exclude(status='PAID').exists()
+
+    @property
+    def member_count(self) -> int:
+        return self.members.count()
+
     def __str__(self):
         return f"Pool {self.invite_code} at {self.restaurant.name}"
 
 class PoolMember(models.Model):
     STATUS_CHOICES = (
-        ('JOINED', 'Joined'),
+        ('ADDING', 'Adding items'),
         ('READY', 'Ready to pay'),
         ('PAID', 'Paid share'),
+        ('REFUNDED', 'Refunded'),
     )
 
     pool = models.ForeignKey(OrderPool, on_delete=models.CASCADE, related_name='members')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='pool_memberships')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='JOINED')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ADDING')
     
     delivery_fee_share = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     service_fee_share = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     items_subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+
+    # Items stored as JSON: [{food_id, name, quantity, price, image_url}]
+    # Replaces the separate PoolItem table for reads in the dispatch path.
+    items = models.JSONField(default=list, blank=True)
     
     joined_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    paid_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ('pool', 'user')

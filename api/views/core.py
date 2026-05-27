@@ -439,12 +439,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             status='READY', 
             is_paid=True, 
             driver__isnull=True,
-            batch__isnull=False
         ).order_by('-created_at')[offset:offset+limit]
         
-        logger.info(f"Available jobs: {orders.count()} orders found")
+        driver_status = None
+        try:
+            driver_status = request.user.driver_profile.status
+        except Exception:
+            pass
+        logger.info(f"Available jobs: {len(orders)} orders found for driver (status={driver_status})")
         for o in orders:
-            logger.info(f"  Order {o.id}: batch={o.batch_id}, h3_index={o.h3_index}, restaurant={o.restaurant_id}")
+            logger.info(f"  Order {o.id}: batch={o.batch_id}, h3_index={o.h3_index}, restaurant={o.restaurant_id}, driver={o.driver_id}")
         
         return Response(OrderSerializer(orders, many=True).data)
 
@@ -564,8 +568,13 @@ class OrderViewSet(viewsets.ModelViewSet):
     def rider_reject(self, request, pk=None):
         from domain.services.order_services import RejectOrderService
         try:
-            order = RejectOrderService.execute(pk, request.user)
-            return Response(OrderSerializer(order).data)
+            result = RejectOrderService.execute(pk, request.user)
+            # RejectOrderService returns a DeliveryBatch when the order belongs
+            # to a batch (the normal dispatch path), or an Order for legacy offers.
+            from apps.orders.models import DeliveryBatch
+            if isinstance(result, DeliveryBatch):
+                return Response({'status': 'declined', 'batch_id': str(result.id)})
+            return Response(OrderSerializer(result).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
         except (InvalidStateTransitionError, ValueError) as e:

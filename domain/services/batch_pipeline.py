@@ -74,6 +74,28 @@ class BatchPipeline:
             logger.debug(f"[BatchPipeline] Order {order.id} has no h3_index — skipping")
             return None
 
+        # ── Pool order fast-path ───────────────────────────────────────────────
+        # Pool orders already share a single delivery point by design — all
+        # members' items are consolidated into one master order.  There is no
+        # benefit in trying to cluster them with other orders; just create a
+        # dedicated single-order batch immediately and dispatch it.
+        if getattr(order, 'is_pool_order', False):
+            logger.info(
+                f"[BatchPipeline] Pool order {order.id} — skipping clustering, "
+                f"creating dedicated single-order batch"
+            )
+            batch = BatchPipeline._create_single_order_batch_atomic(order)
+            if batch:
+                if order.pool_id:
+                    from apps.orders.models import OrderPool
+                    OrderPool.objects.filter(id=order.pool_id).update(batch_id=batch.id)
+            return batch
+
+        # ── Regular order path ────────────────────────────────────────────────
+        # Check the order is inside an active operational zone, then attempt
+        # to form a multi-order cluster.  If no cluster is found the order is
+        # left for the poll cycle (batch_poll_task) which runs every N seconds
+        # and forms denser batches across all pending orders in the zone.
         zone = get_zone_from_h3(order.h3_index)
         if not zone:
             logger.warning(
@@ -102,6 +124,19 @@ class BatchPipeline:
             return None
         finally:
             cache.delete(lock_key)
+
+    @staticmethod
+    def run_for_pool(pool):
+        """
+        Create a dedicated batch for a pool and dispatch it immediately.
+        Pools always dispatch as a single unit — no clustering with other orders.
+        """
+        if not pool.h3_index:
+            logger.debug(f"[BatchPipeline] Pool {pool.id} has no h3_index — skipping")
+            return None
+
+        logger.info(f"[BatchPipeline] Creating dedicated batch for pool {pool.id}")
+        return BatchPipeline._create_single_pool_batch(pool)
 
 
     # ─── Batch polling ────────────────────────────────────────────────────────
@@ -587,6 +622,7 @@ class BatchPipeline:
             zone_ids=[str(zone_id)],
             is_inter_zone=False,
             offer_attempt=0,
+            waiting_since=timezone.now(),
         )
 
         # Build delivery sequence map from route
@@ -621,6 +657,76 @@ class BatchPipeline:
             f"orders={len(locked_orders)} restaurants={len(unique_restaurants)} "
             f"distance={route_distance}km discount={discount_rate} "
             f"payout={driver_payout} profit={company_profit}"
+        )
+        return batch
+
+    @staticmethod
+    def _create_single_pool_batch(pool, route_dict=None):
+        """
+        Create a single batch for a pool (no Order involvement).
+        Pools always dispatch as a single unit.
+        """
+        from domain.services.mapbox_routing_service import MapboxRoutingService
+
+        route_distance = Decimal('0')
+        if route_dict is None:
+            try:
+                route = MapboxRoutingService.get_route_for_batch([pool])
+                if route:
+                    route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
+            except Exception as exc:
+                logger.warning(f"[BatchPipeline] Mapbox failed for pool {pool.id}: {exc}")
+        if route_dict and route_dict.get('total_distance_km'):
+            route_distance = Decimal(str(route_dict['total_distance_km']))
+
+        return BatchPipeline._persist_single_pool_batch(pool.id, pool, route_dict, route_distance)
+
+    @staticmethod
+    @transaction.atomic
+    def _persist_single_pool_batch(pool_id, pool, route_dict, route_distance):
+        """Atomically create a single batch for a pool."""
+        from apps.orders.models import DeliveryBatch
+        from domain.services.pricing_service import PricingService
+
+        policy = PricingService.get_active_policy()
+        min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
+        per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
+        per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
+
+        delivery_fee = Decimal(str(pool.total_delivery_fee or 0))
+        service_fee = Decimal(str(pool.service_fee or 0))
+        user_paid_total = delivery_fee + service_fee
+
+        driver_share = policy.single_order_driver_share if policy else Decimal('0.90')
+        driver_payout = delivery_fee * driver_share
+        if route_distance > 0:
+            calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
+            driver_payout = max(driver_payout, calc)
+
+        driver_payout = min(driver_payout, user_paid_total)
+        driver_payout = max(driver_payout, Decimal('0'))
+        company_profit = user_paid_total - driver_payout
+
+        batch = DeliveryBatch.objects.create(
+            batch_type='SINGLE_ORDER',
+            status='CREATED',
+            route_optimization=route_dict,
+            route_distance_km=route_distance,
+            user_paid_total=user_paid_total,
+            original_total_fee=delivery_fee,
+            discounted_total_fee=delivery_fee,
+            driver_payout=driver_payout,
+            company_profit=company_profit,
+            offer_attempt=0,
+            waiting_since=timezone.now(),
+        )
+
+        batch_id_str = str(batch.id)
+        transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
+
+        logger.info(
+            f"[BatchPipeline] Created POOL batch {batch.id} for pool {pool_id} "
+            f"distance={route_distance}km payout={driver_payout} profit={company_profit}"
         )
         return batch
 
@@ -714,6 +820,7 @@ class BatchPipeline:
             driver_payout=driver_payout,
             company_profit=company_profit,
             offer_attempt=0,
+            waiting_since=timezone.now(),
         )
 
         locked_order.batch = batch
