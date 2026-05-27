@@ -43,20 +43,15 @@ class BatchViewSet(viewsets.ViewSet):
 
         try:
             from apps.delivery.models import Driver
+            from apps.orders.models import Order
             driver = Driver.objects.get(user=request.user)
 
-            active_batches = DeliveryBatch.objects.filter(
-                driver_id=driver.id,
-                status__in=['OFFERED', 'ASSIGNED', 'PICKED_UP'],
-            )
-            if active_batches.count() > 1:
+            active_batch_ids = Order.objects.filter(
+                driver_id=driver.id, status__in=['ASSIGNED', 'PICKED']
+            ).values_list('batch_id', flat=True).distinct()
+            if active_batch_ids:
                 return Response(
-                    {'error': f'Driver has {active_batches.count()} active or pending batches. Complete or decline them first.'},
-                    status=400
-                )
-            if active_batches.exists() and str(active_batches.first().id) != pk:
-                return Response(
-                    {'error': 'Driver already has an active or pending batch. Complete it before accepting another.'},
+                    {'error': 'Driver already has active deliveries. Complete them before accepting another batch.'},
                     status=400
                 )
 

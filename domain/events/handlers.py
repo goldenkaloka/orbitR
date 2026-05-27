@@ -345,51 +345,11 @@ def on_food_ready_cross_batching(event):
         logger.error(f"Error in batching handler: {str(e)}")
 
 
-def on_order_status_update_batch_lifecycle(event):
-    """
-    Manages the lifecycle of a DeliveryBatch based on its member orders.
-    """
-    from apps.orders.models import Order, DeliveryBatch
-    from django.db import transaction
-    
-    try:
-        # 1. Fetch order and check if it belongs to a batch
-        order = Order.objects.select_related('batch').get(id=event.aggregate_id)
-        if not order.batch:
-            return
-
-        batch = order.batch
-        with transaction.atomic():
-            # 2. Lock the batch for state transition
-            batch = DeliveryBatch.objects.select_for_update().get(id=batch.id)
-            
-            if event.event_type == 'OrderPicked':
-                # Transition Batch to PICKED if it was just ASSIGNED
-                if batch.status == 'ASSIGNED':
-                    batch.status = 'PICKED'
-                    batch.save()
-                    logger.info(f"Batch {batch.id} transitioned to PICKED")
-            
-            elif event.event_type in ['OrderDelivered', 'OrderCancelled']:
-                # 3. Check if ALL orders in the batch have reached a terminal state
-                terminal_states = ['DELIVERED', 'CANCELLED']
-                remaining_active = batch.orders.exclude(status__in=terminal_states).exists()
-                
-                if not remaining_active:
-                    # If any order was delivered, the batch as a whole is COMPLETED
-                    if batch.orders.filter(status='DELIVERED').exists():
-                        batch.status = 'COMPLETED'
-                    else:
-                        # If everything was cancelled, the batch is CANCELLED
-                        batch.status = 'CANCELLED'
-                    
-                    batch.save()
-                    logger.info(f"Batch {batch.id} transitioned to {batch.status}")
-                    
-    except Order.DoesNotExist:
-        pass
-    except Exception as e:
-        logger.error(f"Error in batch lifecycle handler: {str(e)}")
+# Batch lifecycle syncing has been removed.
+# Order fulfillment states (ASSIGNED, PICKED, DELIVERED, CANCELLED) are no
+# longer replicated on the batch model. Batch tracks only dispatch states
+# (CREATED, OFFERED, EXPIRED, WAITING_TEMP_DRIVER, DISPATCHED, CANCELLED).
+# See BatchLifecycleService / AssignBatchService / DispatchService instead.
 
 
 def on_batch_offered(event):
@@ -486,12 +446,12 @@ def on_temp_driver_registered(event):
                 return
 
             batch.driver = driver
-            batch.status = 'ASSIGNED'
+            batch.status = 'DISPATCHED'
             batch.save()
 
             if driver.status == 'OFFLINE':
                 driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
-            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
+            driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
             driver.current_active_orders += order_count
             driver.save()
 
@@ -550,7 +510,7 @@ def notify_other_restaurants_in_batch(batch_id, batch, assigned_restaurant_id):
 def on_pool_cancelled(event):
     """
     Handle PoolCancelled event.
-    If a batch was already in a non-cancellable state (PICKED_UP, DELIVERED),
+    If a batch was already dispatched (driver assigned),
     alert admins so they can handle it manually.
     """
     batch_id = event.payload.get('batch_id')
@@ -559,13 +519,14 @@ def on_pool_cancelled(event):
     if not batch_id:
         return  # Pool was cancelled before it was ever finalised — nothing to do
 
-    from apps.orders.models import DeliveryBatch
+    from apps.orders.models import DeliveryBatch, Order
     try:
         batch = DeliveryBatch.objects.get(id=batch_id)
-        if batch.status in ('PICKED_UP', 'PICKED', 'DELIVERED', 'COMPLETED'):
+        active_orders = batch.orders.filter(status__in=['ASSIGNED', 'PICKED']).exists()
+        if active_orders:
             logger.warning(
                 f"[PoolCancelled] Pool {pool_id} cancelled but batch {batch_id} "
-                f"is already in '{batch.status}' — manual intervention required."
+                f"has active orders — manual intervention required."
             )
             NotificationService.notify_admins(
                 title="Pool Cancelled — Batch In Transit ⚠️",
@@ -758,10 +719,8 @@ def register_all_handlers():
     EventBus.subscribe(PaymentReleaseRequested, on_payment_release_requested)
     EventBus.subscribe(DispatchFailed, on_dispatch_failed)
     
-    # Batch Lifecycle
-    EventBus.subscribe(OrderPicked, on_order_status_update_batch_lifecycle)
-    EventBus.subscribe(OrderDelivered, on_order_status_update_batch_lifecycle)
-    EventBus.subscribe(OrderCancelled, on_order_status_update_batch_lifecycle)
+    # Batch lifecycle syncing via events has been removed.
+    # Batch only tracks dispatch states. Order fulfillment is independent.
 
     # Cross-Restaurant Batching
     from domain.events.types import FoodReady

@@ -464,9 +464,22 @@ class OrderViewSet(viewsets.ModelViewSet):
                     return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
                 
                 if order.batch_id:
-                    from domain.services.orders.order_assignment import AssignBatchService
-                    AssignBatchService.execute(order.batch_id, driver.id, request.user)
-                    order.refresh_from_db()
+                    from domain.services.orders.order_assignment import AssignBatchService, AssignDriverService
+                    batch = AssignBatchService.execute(order.batch_id, driver.id, request.user)
+                    if batch.status == 'DISPATCHED':
+                        order.refresh_from_db()
+                    elif batch.status == 'WAITING_TEMP_DRIVER':
+                        # Expired batch — assign this single order directly.
+                        order = AssignDriverService.execute(pk, driver.id, request.user)
+                    elif batch.status == 'CREATED':
+                        # AssignBatchService didn't assign (shouldn't happen for CREATED).
+                        order = AssignDriverService.execute(pk, driver.id, request.user)
+                    else:
+                        # OFFERED — batch reserved for another driver
+                        return Response(
+                            {"error": "This order is currently reserved for another driver"},
+                            status=409,
+                        )
                 else:
                     order = AssignDriverService.execute(pk, driver.id, request.user)
                 
@@ -555,10 +568,27 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='rider-accept')
     def rider_accept(self, request, pk=None):
-        from domain.services.order_services import AcceptOrderService
         try:
-            order = AcceptOrderService.execute(pk, request.user)
-            return Response(OrderSerializer(order).data)
+            from apps.delivery.models import Driver
+            from apps.orders.models import DeliveryBatch
+            from domain.services.batch_dispatch_service import BatchDispatchService
+
+            with transaction.atomic():
+                order = Order.objects.select_for_update().get(id=pk)
+                if not order.batch_id:
+                    raise ValueError("Order is not part of any batch.")
+                batch = DeliveryBatch.objects.select_for_update().get(id=order.batch_id)
+                if batch.status != 'OFFERED':
+                    raise ValueError(f"Batch is in {batch.status} state — cannot accept.")
+
+                driver = Driver.objects.get(user=request.user)
+                result = BatchDispatchService.accept_batch(
+                    str(batch.id), str(driver.id), request.user
+                )
+                order.refresh_from_db()
+                return Response(OrderSerializer(order).data)
+        except Driver.DoesNotExist:
+            return Response({"error": "Driver profile not found"}, status=403)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
         except (InvalidStateTransitionError, ValueError) as e:
@@ -566,15 +596,12 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='rider-reject')
     def rider_reject(self, request, pk=None):
-        from domain.services.order_services import RejectOrderService
+        from domain.services.orders.order_assignment import RejectOrderService
         try:
             result = RejectOrderService.execute(pk, request.user)
-            # RejectOrderService returns a DeliveryBatch when the order belongs
-            # to a batch (the normal dispatch path), or an Order for legacy offers.
-            from apps.orders.models import DeliveryBatch
-            if isinstance(result, DeliveryBatch):
-                return Response({'status': 'declined', 'batch_id': str(result.id)})
-            return Response(OrderSerializer(result).data)
+            return Response(
+                OrderSerializer(result).data if hasattr(result, 'id') else {'status': 'declined'}
+            )
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
         except (InvalidStateTransitionError, ValueError) as e:

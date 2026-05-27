@@ -147,6 +147,10 @@ def expire_unassigned_orders_task():
             .filter(
                 Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff)
             )
+            # In the new design, orders stay READY during the offer window.
+            # Exclude orders whose batch is currently being offered to a driver
+            # so we don't cancel orders that are mid-dispatch.
+            .exclude(batch__status='OFFERED')
         )
 
         if not stale_orders:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 """
-BatchFSM — Explicit Finite State Machine for DeliveryBatch.
+BatchFSM — Dispatch-only Finite State Machine for DeliveryBatch.
 
-All batch status transitions MUST go through BatchFSM.transition().
-Invalid transitions raise BatchFSMError immediately — no silent failures.
+Batch tracks only the driver-hunting lifecycle. Fulfillment tracking
+(ASSIGNED, PICKED, COMPLETED) has moved to orders — batch never stores
+those states. Once a batch is DISPATCHED, its job is done.
 """
 import logging
 
@@ -18,69 +19,53 @@ class BatchFSMError(Exception):
 
 class BatchFSM:
     """
-    Defines every valid batch lifecycle transition.
+    Defines every valid batch dispatch transition.
 
     States:
-        CREATED          — Batch created, waiting for a driver offer
-        OFFERED          — Offer sent to a specific driver
-        ASSIGNED         — Driver accepted
-        PICKED_UP        — Driver picked up all orders
-        DELIVERED        — All orders delivered
-        RETRYING         — Offer declined/timed out, looking for next driver
-        WAITING_TEMP_DRIVER — Max permanent-driver attempts exhausted
-        CANCELLED        — Batch cancelled (no driver found, or orders failed)
-        EXPIRED          — System-level expiry after max attempts
+        CREATED              — Batch created, ready for dispatch
+        OFFERED              — Offer sent to a specific driver
+        EXPIRED              — Max offer attempts reached
+        WAITING_TEMP_DRIVER  — Escalated: max permanent-driver attempts exhausted
+        DISPATCHED           — Driver found and assigned (terminal for dispatch)
+        CANCELLED            — Batch cancelled by admin / temp-driver timeout
 
     Events:
-        OFFER            — Dispatch sends offer to a driver
-        ACCEPT           — Driver accepts the offer
-        DECLINE          — Driver declines the offer
-        TIMEOUT          — Offer window expired (5 minutes)
-        PICKUP           — Driver confirmed pickup at restaurant
-        DELIVER          — Driver confirmed final delivery
-        MAX_ATTEMPTS     — Max offer attempts exhausted
-        TEMP_ASSIGNED    — A temporary/restaurant driver accepts
-        CANCEL           — Admin or system cancels the batch
+        OFFER       — Dispatch sends offer to a driver
+        ACCEPT      — Driver accepts the offer / claims the batch
+        DECLINE     — Driver declines the offer
+        TIMEOUT     — Offer window expired
+        MAX_ATTEMPTS — Max offer attempts exhausted
+        ESCALATE    — Move from EXPIRED to WAITING_TEMP_DRIVER
+        CANCEL      — Admin or system cancels the batch
     """
 
     TRANSITIONS: dict[tuple, str] = {
         # Normal dispatch flow
-        ('CREATED',             'OFFER'):         'OFFERED',
-        ('OFFERED',             'ACCEPT'):        'ASSIGNED',
-        ('OFFERED',             'DECLINE'):       'CREATED',
-        ('OFFERED',             'TIMEOUT'):       'CREATED',
-        ('ASSIGNED',            'PICKUP'):        'PICKED_UP',
-        ('PICKED_UP',           'DELIVER'):       'DELIVERED',
+        ('CREATED',  'OFFER'):   'OFFERED',
+        ('CREATED',  'ACCEPT'):  'DISPATCHED',       # direct claim via claim-job
+        ('OFFERED',  'ACCEPT'):  'DISPATCHED',
+        ('OFFERED',  'DECLINE'): 'CREATED',           # decline → retry
+        ('OFFERED',  'TIMEOUT'): 'CREATED',           # timeout → retry
 
-        # Retry / fallback flow
-        ('CREATED',             'MAX_ATTEMPTS'):  'EXPIRED',
-        ('OFFERED',             'MAX_ATTEMPTS'):  'EXPIRED',
-        ('EXPIRED',             'ESCALATE'):      'WAITING_TEMP_DRIVER',
-        ('WAITING_TEMP_DRIVER', 'TEMP_ASSIGNED'): 'ASSIGNED',
-        ('WAITING_TEMP_DRIVER', 'TIMEOUT'):       'CANCELLED',
+        # Retry / fallback
+        ('CREATED',  'MAX_ATTEMPTS'): 'EXPIRED',
+        ('OFFERED',  'MAX_ATTEMPTS'): 'EXPIRED',
+        ('EXPIRED',  'ESCALATE'):     'WAITING_TEMP_DRIVER',
 
-        # Cancellation — allowed from most active states
-        ('CREATED',             'CANCEL'):        'CANCELLED',
-        ('OFFERED',             'CANCEL'):        'CANCELLED',
-        ('ASSIGNED',            'CANCEL'):        'CANCELLED',
-        ('WAITING_TEMP_DRIVER', 'CANCEL'):        'CANCELLED',
+        # Temp-driver → driver found
+        ('WAITING_TEMP_DRIVER', 'ACCEPT'): 'DISPATCHED',
+        ('WAITING_TEMP_DRIVER', 'TIMEOUT'): 'CANCELLED',
+
+        # Cancellation — allowed from any active state
+        ('CREATED',              'CANCEL'): 'CANCELLED',
+        ('OFFERED',              'CANCEL'): 'CANCELLED',
+        ('WAITING_TEMP_DRIVER',  'CANCEL'): 'CANCELLED',
+        ('DISPATCHED',           'CANCEL'): 'CANCELLED',
+        ('EXPIRED',              'CANCEL'): 'CANCELLED',
     }
 
     @classmethod
     def transition(cls, batch, event: str) -> str:
-        """
-        Compute the next state for a batch given an event.
-
-        Args:
-            batch: DeliveryBatch instance (must have .status attribute)
-            event: One of the defined event strings above
-
-        Returns:
-            New status string
-
-        Raises:
-            BatchFSMError: If the transition is not defined
-        """
         current = batch.status
         key = (current, event)
         new_status = cls.TRANSITIONS.get(key)
@@ -95,11 +80,6 @@ class BatchFSM:
             f"[BatchFSM] Batch {batch.id}: {current} → {new_status} (event={event})"
         )
         return new_status
-
-    @classmethod
-    def is_terminal(cls, status: str) -> bool:
-        """Returns True if the status is a terminal state (no further transitions)."""
-        return status in ('DELIVERED', 'CANCELLED', 'EXPIRED')
 
     @classmethod
     def can_dispatch(cls, batch) -> bool:

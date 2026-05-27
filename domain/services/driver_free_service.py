@@ -56,7 +56,7 @@ class DriverFreeService:
         # always evaluates to False, permanently leaking the driver's state.
         # ─────────────────────────────────────────────────────────────────────
         current_driver_id = batch.driver_id  # Use the FK id, never the object
-        was_accepted = batch.status in ('ASSIGNED', 'PICKED', 'COMPLETED')
+        was_accepted = batch.status == 'DISPATCHED'
 
         order_count = batch.orders.count()
 
@@ -72,11 +72,13 @@ class DriverFreeService:
         batch.status = new_status
         batch.save(update_fields=['driver', 'status'])
 
-        # Reset orders
-        Order.objects.filter(batch_id=batch_id).update(
-            status='READY',
-            driver=None
-        )
+        # Reset orders that haven't been picked up yet back to READY.
+        # Orders in PICKED or DELIVERED state are already in progress and
+        # must not be reset — the driver is physically holding them.
+        Order.objects.filter(
+            batch_id=batch_id,
+            status__in=['READY', 'ASSIGNED'],
+        ).update(status='READY', driver=None)
 
         # Free the driver if one was assigned
         if current_driver_id:

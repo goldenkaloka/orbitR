@@ -256,20 +256,10 @@ class BatchDispatchService:
 
             # Driver is offered, not yet assigned — keep AVAILABLE so the driver
             # can still be found by other queries, but track the pending offer.
-            # DriverFSM has no OFFERED state, so we stay AVAILABLE until accept.
+            # Orders stay READY; they are never set to OFFERED.
             # total_claim_attempts is incremented here to track offer volume.
             driver.total_claim_attempts = driver.total_claim_attempts + 1
             driver.save(update_fields=['total_claim_attempts'])
-
-            orders_to_update = []
-            for order in batch.orders.select_related('restaurant').all():
-                order.status = 'OFFERED'
-                order.driver = driver
-                orders_to_update.append(order)
-
-            if orders_to_update:
-                from apps.orders.models import Order
-                Order.objects.bulk_update(orders_to_update, ['status', 'driver'])
 
             cache.set(
                 f"{OFFER_CACHE_PREFIX}{batch.id}",
@@ -289,7 +279,25 @@ class BatchDispatchService:
                 },
             ))
 
-            order_id_strs = [str(o.id) for o in orders_to_update]
+            # Notify driver via push (order.driver is not set during offer window)
+            from infrastructure.notifications.service import NotificationService
+            try:
+                NotificationService.send_push(
+                    user_id=str(driver.user_id),
+                    title="New Delivery Offer!",
+                    body=f"{order_count} order(s) ready. Payout: TSh {payout_val}",
+                    data={
+                        'type': 'batch_offer',
+                        'batch_id': str(batch.id),
+                        'num_orders': order_count,
+                        'payout': float(payout_val),
+                    }
+                )
+            except Exception as exc:
+                logger.warning(f"[Dispatch] Failed to push offer notification to driver {driver.id}: {exc}")
+
+            # Broadcast the status to each order's channel for the tracking UI
+            order_id_strs = [str(order.id) for order in batch.orders.all()]
             for oid in order_id_strs:
                 transaction.on_commit(lambda oid=oid: broadcast_order_status(
                     oid, 'OFFERED',
@@ -326,20 +334,20 @@ class BatchDispatchService:
         with transaction.atomic():
             batch = _lock_batch(batch_id)
 
-            if batch.status != 'OFFERED':
-                raise ValueError(f"Batch is not in OFFERED status: {batch.status}")
+            if batch.status not in ('OFFERED', 'WAITING_TEMP_DRIVER'):
+                raise ValueError(f"Batch is in {batch.status} state — cannot accept.")
             if str(batch.driver_id) != str(driver_id):
                 raise ValueError("This batch was not offered to you")
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
 
-            # Prevent driver from accepting multiple active batches
-            existing_active = DeliveryBatch.objects.filter(
-                driver_id=driver_id,
-                status__in=['ASSIGNED', 'PICKED_UP'],
-            ).exclude(id=batch_id).exists()
-            if existing_active:
-                raise ValueError("Driver already has an active batch in progress")
+            # Prevent driver from accepting when they already have active orders.
+            from apps.orders.models import Order
+            active_orders = Order.objects.filter(
+                driver_id=driver_id, status__in=['ASSIGNED', 'PICKED']
+            ).exclude(batch_id=batch_id).exists()
+            if active_orders:
+                raise ValueError("Driver already has active deliveries in progress")
 
             order_count = batch.orders.count()
 
@@ -351,9 +359,9 @@ class BatchDispatchService:
                 order.status = 'ASSIGNED'
             Order.objects.bulk_update(orders, ['status'])
 
-            # Driver was AVAILABLE during the offer window (not ASSIGNED).
-            # Now that they've accepted, transition AVAILABLE → ASSIGNED.
-            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
+            # Driver transitions directly from AVAILABLE → DELIVERING.
+            # The ASSIGNED driver state has been removed.
+            driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
             driver.current_active_orders += order_count
             driver.total_claims_accepted = driver.total_claims_accepted + 1
             driver.save(update_fields=['status', 'current_active_orders', 'total_claims_accepted'])
@@ -378,6 +386,7 @@ class BatchDispatchService:
             # the accept transaction is committed before we try to re-offer.
             def _reassign_other_batches():
                 from domain.services.dispatch_tasks import dispatch_batch_task
+                from apps.orders.models import DeliveryBatch
                 other_offers = DeliveryBatch.objects.filter(
                     driver_id=driver_id,
                     status='OFFERED'

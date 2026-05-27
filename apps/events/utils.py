@@ -63,7 +63,8 @@ def broadcast_order_status(order_id, status, message="Status updated"):
 
         # 7. Notify ALL Riders to refresh available jobs when order is claimed/accepted/assigned
         # This ensures the ping disappears for all other riders
-        if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and order.driver:
+        # For OFFERED, always remove from pool (order.driver may not be set in Phase 2)
+        if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and (order.driver or status == 'OFFERED'):
             async_to_sync(channel_layer.group_send)('riders', {
                 'type': 'order_removed_from_pool',
                 'order_id': str(order_id),

@@ -273,11 +273,9 @@ class DeliveryBatch(models.Model):
     STATUS_CHOICES = (
         ('CREATED', 'Batch Created'),
         ('OFFERED', 'Offered to Driver'),
-        ('ASSIGNED', 'Rider Assigned'),
-        ('PICKED', 'Rider Picked Up'),
-        ('COMPLETED', 'All Delivered'),
         ('EXPIRED', 'Expired (No Driver)'),
         ('WAITING_TEMP_DRIVER', 'Waiting for Temp Driver'),
+        ('DISPATCHED', 'Driver Assigned'),
         ('CANCELLED', 'Cancelled'),
     )
 
