@@ -3,8 +3,9 @@ from apps.payments.models import Payment
 from domain.services.payment_services import ReleasePaymentService
 from infrastructure.notifications.service import NotificationService
 from domain.events.types import (
-    OrderDelivered, PaymentReleaseRequested, PaymentCollected, 
-    PaymentInitiated, PaymentDisbursed, PaymentRefunded, OrderConfirmed
+    OrderDelivered, PaymentReleaseRequested, PaymentCollected,
+    PaymentInitiated, PaymentDisbursed, PaymentRefunded, OrderConfirmed,
+    OrderDisputed, OrderResolved,
 )
 from domain.services.order_services import ConfirmOrderService, DispatchService
 import logging
@@ -583,6 +584,80 @@ def on_pool_cancelled(event):
         pass  # Batch already gone — nothing to do
 
 
+def on_order_disputed(event):
+    """Handle dispute raised — notify customer, vendor, and admin."""
+    from apps.events.utils import broadcast_order_status
+    from apps.orders.models import Order
+
+    order_id = event.payload.get('order_id')
+    try:
+        order = Order.objects.select_related('customer', 'restaurant__owner', 'driver__user').get(id=order_id)
+        broadcast_order_status(
+            order_id=order_id,
+            status='DISPUTED',
+            message="A dispute has been raised on this order",
+        )
+
+        NotificationService.send_push(
+            user_id=str(order.customer.id),
+            title="Dispute Received",
+            body="We're reviewing your dispute. We'll get back to you shortly.",
+            data={"order_id": str(order.id), "type": "dispute_raised"},
+        )
+        NotificationService.send_push(
+            user_id=str(order.restaurant.owner.id),
+            title="Order Disputed",
+            body=f"Order #{str(order.id)[:8]} has been disputed by the customer.",
+            data={"order_id": str(order.id), "type": "dispute_raised"},
+        )
+        if order.driver:
+            NotificationService.send_push(
+                user_id=str(order.driver.user.id),
+                title="Order Disputed",
+                body=f"A dispute has been raised on order #{str(order.id)[:8]}. Payout held until resolved.",
+                data={"order_id": str(order.id), "type": "dispute_raised"},
+            )
+
+        NotificationService.notify_admins(
+            title="New Dispute",
+            body=f"Order #{str(order_id)[:8]} has been disputed by {order.customer.username}.",
+            data={"order_id": str(order_id), "type": "new_dispute"},
+        )
+    except Order.DoesNotExist:
+        logger.error(f"[DisputeHandler] Order {order_id} not found")
+
+
+def on_order_resolved(event):
+    """Handle dispute resolved — notify all parties."""
+    from apps.events.utils import broadcast_order_status
+    from apps.orders.models import Order
+
+    order_id = event.payload.get('order_id')
+    resolution = event.payload.get('resolution', '')
+    try:
+        order = Order.objects.select_related('customer', 'restaurant__owner', 'driver__user').get(id=order_id)
+        broadcast_order_status(
+            order_id=order_id,
+            status='RESOLVED',
+            message=f"Dispute resolved: {resolution}",
+        )
+
+        NotificationService.send_push(
+            user_id=str(order.customer.id),
+            title="Dispute Resolved",
+            body=f"Your dispute has been resolved: {resolution.replace('RESOLVED_', '').replace('_', ' ').title()}",
+            data={"order_id": str(order.id), "type": "dispute_resolved"},
+        )
+        NotificationService.send_push(
+            user_id=str(order.restaurant.owner.id),
+            title="Dispute Resolved",
+            body=f"The dispute on order #{str(order.id)[:8]} has been resolved.",
+            data={"order_id": str(order.id), "type": "dispute_resolved"},
+        )
+    except Order.DoesNotExist:
+        logger.error(f"[ResolveHandler] Order {order_id} not found")
+
+
 def on_dispatch_failed(event):
     order_id = event.payload.get('order_id')
     attempt_retry = event.payload.get('attempt_retry', True)
@@ -698,6 +773,10 @@ def register_all_handlers():
     EventBus.subscribe(BatchAccepted, on_batch_accepted)
     EventBus.subscribe(BatchDeclined, on_batch_declined)
     EventBus.subscribe(BatchExpired, on_batch_expired)
+
+    # Dispute Events
+    EventBus.subscribe(OrderDisputed, on_order_disputed)
+    EventBus.subscribe(OrderResolved, on_order_resolved)
 
     # Temp Driver Events
     from domain.events.types import TempDriverRegistered

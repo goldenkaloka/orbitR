@@ -110,6 +110,11 @@ class OrderDisputed(DomainEvent):
     event_type = 'OrderDisputed'
 
 @dataclass
+class OrderResolved(DomainEvent):
+    aggregate_type = 'Order'
+    event_type = 'OrderResolved'
+
+@dataclass
 class FoodCreated(DomainEvent):
     aggregate_type = 'Product'
     event_type = 'FoodCreated'

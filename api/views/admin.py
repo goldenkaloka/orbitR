@@ -206,24 +206,29 @@ class AdminViewSet(viewsets.GenericViewSet):
     def dispute_order(self, request):
         """
         Admin marks an order as DISPUTED (e.g. restaurant mistake).
-        Body: { order_id }
+        Body: { order_id, reason, category }
         """
         order_id = request.data.get('order_id')
         if not order_id:
             return Response({'error': 'order_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        from django.db import IntegrityError
+
         try:
             reason = request.data.get('reason', 'Admin Dispute')
-            order = DisputeOrderService.execute(order_id, request.user, reason)
+            category = request.data.get('category', 'other')
+            dispute = DisputeOrderService.execute(order_id, request.user, reason, category=category)
         except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
         except InvalidStateTransitionError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except IntegrityError:
+            return Response({'error': 'An active dispute already exists for this order'}, status=status.HTTP_409_CONFLICT)
 
-        return Response({
-            'message': f'Order {order_id} marked as DISPUTED',
-            'order': OrderSerializer(order).data,
-        })
+        from api.serializers.core import DisputeSerializer
+        return Response(DisputeSerializer(dispute).data)
 
     @action(detail=False, methods=['POST'], url_path='toggle-restaurant')
     def toggle_restaurant(self, request):

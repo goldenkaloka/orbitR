@@ -242,7 +242,10 @@ class DisputeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dispute
         fields = '__all__'
-        read_only_fields = ['id', 'raised_by', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'raised_by', 'created_at', 'updated_at',
+            'resolved_at', 'resolved_by', 'escalated_at',
+        ]
 
 class PoolItemSerializer(serializers.Serializer):
     """

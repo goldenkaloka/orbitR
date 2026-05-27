@@ -1,4 +1,6 @@
+from decimal import Decimal
 from django.db import transaction
+from django.utils import timezone
 from apps.users.models import User
 from apps.restaurants.models import Restaurant
 from apps.delivery.models import Driver
@@ -8,9 +10,11 @@ from domain.events.types import (
     UserPromotedToVendor,
     UserPromotedToDriver,
     TempDriverRegistered,
-    OrderDisputed
+    OrderDisputed,
+    OrderResolved,
 )
 from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
+from domain.fsm.payment_fsm import PaymentFSM
 
 class PromoteUserService:
     @staticmethod
@@ -83,31 +87,115 @@ class PromoteUserService:
 
 class DisputeOrderService:
     @staticmethod
-    def execute(order_id: str, actor, reason: str):
+    def execute(order_id: str, actor, reason: str, category: str = 'other'):
+        from apps.orders.models import Dispute
+        from apps.payments.models import Payment
+
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
-            
-            from apps.orders.models import Dispute
+
+            # Guard: FSM must allow DISPUTED transition
+            new_state = OrderFSM.transition(order.status, 'DISPUTED')
+            order.status = new_state
+            order.save(update_fields=['status'])
+
+            # Guard: one active dispute per category
+            existing = Dispute.objects.filter(
+                order=order, raised_by=actor, category=category
+            ).exclude(
+                status__in=['RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED']
+            ).exists()
+            if existing:
+                raise ValueError(f"An active {category} dispute already exists for this order")
+
             dispute = Dispute.objects.create(
                 order=order,
                 raised_by=actor,
-                reason=reason
+                reason=reason,
+                category=category,
             )
-            
-            # Validates transition via FSM
-            try:
-                new_state = OrderFSM.transition(order.status, 'DISPUTED')
-                order.status = new_state
-                order.save(update_fields=['status'])
-            except InvalidStateTransitionError:
-                pass # Keep state transition errors silent if FSM fails but record created
+
+            # Hold payment if collected
+            Payment.objects.filter(
+                payable_type='order', payable_id=order.id, status='COLLECTED'
+            ).update(status='ON_HOLD')
 
             EventBus.publish(OrderDisputed(
                 aggregate_id=order.id,
-                payload={'order_id': str(order.id), 'disputed_by': str(actor.id), 'reason': reason}
+                payload={
+                    'order_id': str(order.id),
+                    'disputed_by': str(actor.id),
+                    'reason': reason,
+                    'category': category,
+                    'dispute_id': str(dispute.id),
+                }
             ))
 
-            return order
+            return dispute
+
+
+class DisputeResolutionService:
+    RESOLUTION_ACTIONS = ('RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED')
+
+    @staticmethod
+    def resolve(dispute_id: str, actor, resolution: str, resolution_note: str = '', refund_amount: Decimal = None):
+        from apps.orders.models import Dispute
+        from apps.payments.models import Payment
+        from domain.services.payment_services import RefundPaymentService
+
+        if resolution not in DisputeResolutionService.RESOLUTION_ACTIONS:
+            raise ValueError(f"Invalid resolution: {resolution}")
+
+        with transaction.atomic():
+            dispute = Dispute.objects.select_for_update().get(id=dispute_id)
+            if dispute.status in ('RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED'):
+                raise ValueError("Dispute is already resolved")
+
+            dispute.status = resolution
+            dispute.resolution_note = resolution_note
+            dispute.resolved_at = timezone.now()
+            dispute.resolved_by = actor
+            dispute.save()
+
+            order = Order.objects.select_for_update().get(id=dispute.order_id)
+
+            if resolution == 'RESOLVED_DISMISSED':
+                # Release hold — payment goes back to vendor
+                Payment.objects.filter(
+                    payable_type='order', payable_id=order.id, status='ON_HOLD'
+                ).update(status='COLLECTED')
+                order.status = OrderFSM.transition(order.status, 'RESOLVED')
+                order.save(update_fields=['status'])
+                EventBus.publish(OrderResolved(
+                    aggregate_id=order.id,
+                    payload={
+                        'order_id': str(order.id),
+                        'resolution': resolution,
+                        'dispute_id': str(dispute.id),
+                    }
+                ))
+                return dispute
+
+            # REFUND or PARTIAL: refund the payment
+            if refund_amount is None:
+                refund_amount = order.total_amount
+
+            RefundPaymentService.execute('order', order.id, override_amount=refund_amount)
+
+            order.status = OrderFSM.transition(order.status, 'RESOLVED')
+            order.save(update_fields=['status'])
+
+            EventBus.publish(OrderResolved(
+                aggregate_id=order.id,
+                payload={
+                    'order_id': str(order.id),
+                    'resolution': resolution,
+                    'refund_amount': str(refund_amount),
+                    'dispute_id': str(dispute.id),
+                }
+            ))
+
+            return dispute
 
 class RegisterTempDriverService:
     @staticmethod

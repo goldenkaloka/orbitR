@@ -2,7 +2,7 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import Order, OrderItem, BatchingStrategy
+from .models import Order, OrderItem, BatchingStrategy, Dispute
 
 
 class OrderItemInline(TabularInline):
@@ -122,6 +122,47 @@ class OrderItemAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('order', 'food')
+
+
+@admin.register(Dispute)
+class DisputeAdmin(ModelAdmin):
+    list_display = ('short_id', 'order', 'raised_by', 'status', 'category', 'created_at', 'assigned_to')
+    list_filter = ('status', 'category', 'created_at')
+    search_fields = ('id', 'order__id', 'raised_by__username', 'raised_by__email')
+    ordering = ('-created_at',)
+    list_per_page = 25
+    raw_id_fields = ('order', 'raised_by', 'assigned_to', 'resolved_by')
+    readonly_fields = ('id', 'created_at', 'updated_at', 'resolved_at', 'escalated_at')
+
+    fieldsets = (
+        ('Dispute Info', {'fields': ('id', 'order', 'raised_by', 'status', 'category')}),
+        ('Details', {'fields': ('reason', 'resolution_note', 'refund_amount')}),
+        ('Assignment', {'fields': ('assigned_to', 'resolved_by', 'parent_dispute')}),
+        ('Timestamps', {'fields': ('created_at', 'updated_at', 'resolved_at', 'escalated_at')}),
+    )
+
+    actions = ['mark_investigating', 'mark_escalated']
+
+    @display(description="Dispute ID")
+    def short_id(self, obj):
+        return str(obj.id)[:8] + '…'
+
+    @admin.action(description='🔍 Mark selected as INVESTIGATING')
+    def mark_investigating(self, request, queryset):
+        updated = queryset.filter(status='PENDING').update(status='INVESTIGATING')
+        self.message_user(request, f'{updated} dispute(s) moved to INVESTIGATING')
+
+    @admin.action(description='🚨 Mark selected as ESCALATED')
+    def mark_escalated(self, request, queryset):
+        from django.utils import timezone
+        now = timezone.now()
+        updated = queryset.filter(status__in=['PENDING', 'INVESTIGATING']).update(
+            status='ESCALATED', escalated_at=now,
+        )
+        self.message_user(request, f'{updated} dispute(s) escalated')
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('order', 'raised_by', 'assigned_to', 'resolved_by')
 
 
 @admin.register(BatchingStrategy)

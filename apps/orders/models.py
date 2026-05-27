@@ -94,26 +94,57 @@ class OrderItem(models.Model):
         return f"{self.quantity} x {self.food.name}"
 
 class Dispute(models.Model):
-    STATUS_CHOICES = (
+    CATEGORY_CHOICES = [
+        ('wrong_items', 'Wrong Items'),
+        ('missing_items', 'Missing Items'),
+        ('quality', 'Poor Quality'),
+        ('late', 'Late Delivery'),
+        ('never_arrived', 'Never Arrived'),
+        ('charging', 'Incorrect Charge'),
+        ('other', 'Other'),
+    ]
+
+    STATUS_CHOICES = [
         ('PENDING', 'Pending Review'),
         ('INVESTIGATING', 'Under Investigation'),
-        ('RESOLVED', 'Resolved'),
-        ('REJECTED', 'Rejected'),
-    )
+        ('RESOLVED_REFUND', 'Resolved — Refund Issued'),
+        ('RESOLVED_PARTIAL', 'Resolved — Partial Refund'),
+        ('RESOLVED_DISMISSED', 'Resolved — Dismissed'),
+        ('ESCALATED', 'Escalated'),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='disputes')
-    raised_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='disputes_raised')
-    
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name='disputes')
+    raised_by = models.ForeignKey(User, on_delete=models.PROTECT, related_name='disputes_raised')
+    assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_disputes')
+    parent_dispute = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True, related_name='escalations')
+
     reason = models.TextField()
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='other')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
-    resolution = models.TextField(null=True, blank=True)
-    
+    resolution_note = models.TextField(null=True, blank=True)
+    refund_amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    resolved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='resolved_disputes')
+    escalated_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['order', 'raised_by', 'category'],
+                condition=~models.Q(status__in=['RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED']),
+                name='unique_active_dispute_per_category',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['status', 'created_at'], name='dispute_status_created_idx'),
+        ]
 
     def __str__(self):
-        return f"Dispute for Order {self.order.id} - {self.status}"
+        return f"Dispute for Order {self.order.id} - {self.status} ({self.get_category_display()})"
 
 class OrderPool(models.Model):
     STATUS_CHOICES = (

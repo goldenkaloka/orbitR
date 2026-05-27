@@ -671,14 +671,24 @@ class OrderViewSet(viewsets.ModelViewSet):
         reason = request.data.get('reason')
         if not reason:
             return Response({"error": "reason is required"}, status=400)
-        
+        category = request.data.get('category', 'other')
+
         order = self.get_object()
         if order.customer != request.user:
             return Response({"error": "Only the customer can dispute this order"}, status=403)
-            
+
+        from django.db import IntegrityError
+        from domain.fsm.order_fsm import InvalidStateTransitionError
         from domain.services.admin_services import DisputeOrderService
-        dispute = DisputeOrderService.execute(order.id, request.user, reason)
-            
+        try:
+            dispute = DisputeOrderService.execute(order.id, request.user, reason, category=category)
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+        except InvalidStateTransitionError as e:
+            return Response({"error": str(e)}, status=400)
+        except IntegrityError:
+            return Response({"error": "An active dispute already exists for this order"}, status=409)
+
         return Response(DisputeSerializer(dispute).data)
 
     @action(detail=True, methods=['POST'])
@@ -722,6 +732,35 @@ class DisputeViewSet(viewsets.ModelViewSet):
         elif user.role == 'admin':
             return Dispute.objects.all()
         return Dispute.objects.none()
+
+    @action(detail=True, methods=['POST'])
+    def resolve(self, request, pk=None):
+        from domain.services.admin_services import DisputeResolutionService
+
+        resolution = request.data.get('resolution')
+        if resolution not in ('RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED'):
+            return Response({"error": "resolution must be one of: RESOLVED_REFUND, RESOLVED_PARTIAL, RESOLVED_DISMISSED"}, status=400)
+
+        refund_amount = request.data.get('refund_amount')
+        if refund_amount is not None:
+            try:
+                from decimal import Decimal
+                refund_amount = Decimal(str(refund_amount))
+            except Exception:
+                return Response({"error": "invalid refund_amount"}, status=400)
+
+        try:
+            dispute = DisputeResolutionService.resolve(
+                dispute_id=pk,
+                actor=request.user,
+                resolution=resolution,
+                resolution_note=request.data.get('resolution_note', ''),
+                refund_amount=refund_amount,
+            )
+        except ValueError as e:
+            return Response({"error": str(e)}, status=400)
+
+        return Response(DisputeSerializer(dispute).data)
 
 class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = NotificationSerializer

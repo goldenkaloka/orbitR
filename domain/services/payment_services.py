@@ -380,23 +380,26 @@ class ReleasePaymentService:
 
 class RefundPaymentService:
     @staticmethod
-    def execute(payable_type, payable_id):
+    def execute(payable_type, payable_id, override_amount: Decimal = None):
         with transaction.atomic():
             payments = Payment.objects.select_for_update().filter(
                 payable_type=payable_type,
                 payable_id=payable_id,
-                status='COLLECTED'
+                status__in=['COLLECTED', 'ON_HOLD'],
             )
             
             if not payments.exists():
                 # Legacy fallback for old callers passing order_id only
                 if payable_type == 'order':
-                    payments = Payment.objects.select_for_update().filter(order_id=payable_id, status='COLLECTED')
+                    payments = Payment.objects.select_for_update().filter(
+                        order_id=payable_id, status__in=['COLLECTED', 'ON_HOLD'],
+                    )
 
             gateway = get_payment_gateway()
             
             for payment in payments:
-                response = gateway.refund(airpay_id=payment.provider_reference, amount=payment.amount)
+                refund_amount = override_amount if override_amount is not None else payment.amount
+                response = gateway.refund(airpay_id=payment.provider_reference, amount=refund_amount)
                 if response and response.get('success'):
                     payment.status = PaymentFSM.transition(payment.status, 'REFUNDED')
                     payment.refund_id = response.get('refund_id')
@@ -415,16 +418,16 @@ class RefundPaymentService:
                         Transaction.objects.create(
                             payment=payment,
                             to_wallet=recipient,
-                            amount=payment.amount,
+                            amount=refund_amount,
                             transaction_type='platform_to_customer_refund',
                             status='COMPLETED'
                         )
                     
                     # Use a function to capture the current payment in the closure
-                    def publish_refund(p=payment):
+                    def publish_refund(p=payment, amt=refund_amount):
                         EventBus.publish(PaymentRefunded(
                             aggregate_id=p.id, 
-                            payload={'type': p.payable_type, 'payable_id': str(p.payable_id)}
+                            payload={'type': p.payable_type, 'payable_id': str(p.payable_id), 'refund_amount': str(amt)}
                         ))
                     transaction.on_commit(publish_refund)
             

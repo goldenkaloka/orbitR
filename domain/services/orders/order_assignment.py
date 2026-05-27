@@ -167,7 +167,9 @@ class AssignBatchService:
                 driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
 
             driver.current_active_orders += new_order_count
-            driver.save(update_fields=['status', 'current_active_orders'])
+            # Track acceptance for scoring — self-claimed batches count as accepted
+            driver.total_claims_accepted += 1
+            driver.save(update_fields=['status', 'current_active_orders', 'total_claims_accepted'])
 
             for order in orders:
                 order.status = OrderFSM.transition(order.status, 'ASSIGNED')

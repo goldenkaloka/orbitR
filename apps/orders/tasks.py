@@ -2,7 +2,7 @@ from celery import shared_task
 from django.utils import timezone
 from django.db import transaction
 from datetime import timedelta
-from apps.orders.models import Order
+from apps.orders.models import Order, Dispute
 from domain.fsm.order_fsm import OrderFSM
 from domain.events.bus import EventBus
 from domain.events.types import OrderCancelled
@@ -99,3 +99,55 @@ def check_waiting_batches_timeout():
             logger.error(f"Error expiring batch {batch.id}: {e}")
 
     return f"Expired {count} waiting batches"
+
+
+@shared_task
+def dispute_sla_check():
+    """
+    Escalate disputes that have been PENDING for > 1 hour
+    or INVESTIGATING for > 24 hours.
+    """
+    now = timezone.now()
+    escalated_count = 0
+
+    pending_cutoff = now - timedelta(hours=1)
+    investigating_cutoff = now - timedelta(hours=24)
+
+    stale = Dispute.objects.filter(
+        status__in=['PENDING', 'INVESTIGATING'],
+        created_at__lt=pending_cutoff,
+    ).select_for_update(skip_locked=True)
+
+    for dispute in stale:
+        try:
+            with transaction.atomic():
+                d = Dispute.objects.select_for_update().get(id=dispute.id)
+                if d.status == 'PENDING' and d.created_at < pending_cutoff:
+                    d.status = 'ESCALATED'
+                    d.escalated_at = now
+                    d.save(update_fields=['status', 'escalated_at'])
+                    escalated_count += 1
+                    from infrastructure.notifications.service import NotificationService
+                    NotificationService.notify_admins(
+                        title="Dispute Escalated ⏰",
+                        body=f"Dispute {d.id} has been auto-escalated (PENDING > 1h).",
+                        data={"dispute_id": str(d.id), "type": "dispute_escalated"},
+                    )
+                elif d.status == 'INVESTIGATING' and d.created_at < investigating_cutoff:
+                    d.status = 'ESCALATED'
+                    d.escalated_at = now
+                    d.save(update_fields=['status', 'escalated_at'])
+                    escalated_count += 1
+                    NotificationService.notify_admins(
+                        title="Dispute Escalated ⏰",
+                        body=f"Dispute {d.id} has been auto-escalated (INVESTIGATING > 24h).",
+                        data={"dispute_id": str(d.id), "type": "dispute_escalated"},
+                    )
+        except Dispute.DoesNotExist:
+            continue
+        except Exception as e:
+            logger.error(f"Error escalating dispute {dispute.id}: {e}")
+
+    if escalated_count:
+        logger.info(f"[DisputeSLA] Escalated {escalated_count} stale disputes")
+    return f"Escalated {escalated_count} disputes"

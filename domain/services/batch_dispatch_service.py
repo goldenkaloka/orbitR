@@ -254,11 +254,12 @@ class BatchDispatchService:
             batch.offer_sent_at = timezone.now()
             batch.save(update_fields=['driver', 'status', 'offer_attempt', 'offer_sent_at'])
 
-            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
-            # Improvement #3: Track offer attempts so the acceptance-rate scorer
-            # in CrossBatchDriverMatcher has accurate data to work with.
+            # Driver is offered, not yet assigned — keep AVAILABLE so the driver
+            # can still be found by other queries, but track the pending offer.
+            # DriverFSM has no OFFERED state, so we stay AVAILABLE until accept.
+            # total_claim_attempts is incremented here to track offer volume.
             driver.total_claim_attempts = driver.total_claim_attempts + 1
-            driver.save(update_fields=['status', 'total_claim_attempts'])
+            driver.save(update_fields=['total_claim_attempts'])
 
             orders_to_update = []
             for order in batch.orders.select_related('restaurant').all():
@@ -276,7 +277,6 @@ class BatchDispatchService:
                 OFFER_EXPIRY_SECONDS,
             )
 
-            # Fix #7: use freshly locked batch's payout to ensure accuracy
             payout_val = batch.driver_payout
             EventBus.publish(BatchOffered(
                 aggregate_id=str(batch.id),
@@ -289,12 +289,13 @@ class BatchDispatchService:
                 },
             ))
 
-            batch_id_str = str(batch.id)
-            transaction.on_commit(lambda: broadcast_order_status(
-                batch_id_str, 'OFFERED',
-                f"You have {order_count} order(s) to deliver. "
-                f"Payout: TSh {payout_val}",
-            ))
+            order_id_strs = [str(o.id) for o in orders_to_update]
+            for oid in order_id_strs:
+                transaction.on_commit(lambda oid=oid: broadcast_order_status(
+                    oid, 'OFFERED',
+                    f"You have {order_count} order(s) to deliver. "
+                    f"Payout: TSh {payout_val}",
+                ))
 
             logger.info(f"[Dispatch] Batch {batch.id} offered to driver {driver.id}")
 
@@ -317,10 +318,10 @@ class BatchDispatchService:
     @staticmethod
     def accept_batch(batch_id: str, driver_id: str, actor):
         """Driver accepts a batch offer. Re-dispatches any other pending offers to this driver."""
-        from apps.delivery.models import Driver
+        from apps.delivery.models import Driver, DeliveryAssignment
         from apps.events.utils import broadcast_order_status
         from apps.orders.models import DeliveryBatch, Order
-        from apps.delivery.models import DeliveryAssignment
+        from domain.fsm.driver_fsm import DriverFSM
 
         with transaction.atomic():
             batch = _lock_batch(batch_id)
@@ -350,10 +351,10 @@ class BatchDispatchService:
                 order.status = 'ASSIGNED'
             Order.objects.bulk_update(orders, ['status'])
 
-            driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
+            # Driver was AVAILABLE during the offer window (not ASSIGNED).
+            # Now that they've accepted, transition AVAILABLE → ASSIGNED.
+            driver.status = DriverFSM.transition(driver.status, 'ASSIGNED')
             driver.current_active_orders += order_count
-            # Improvement #3: Record the acceptance so the scoring function can
-            # compute an accurate acceptance rate for this driver going forward.
             driver.total_claims_accepted = driver.total_claims_accepted + 1
             driver.save(update_fields=['status', 'current_active_orders', 'total_claims_accepted'])
 
@@ -372,20 +373,26 @@ class BatchDispatchService:
 
             logger.info(f"[Dispatch] Driver {driver_id} accepted batch {batch_id}")
 
-        def _reassign_other_batches():
-            from domain.services.dispatch_tasks import dispatch_batch_task
-            other_offers = DeliveryBatch.objects.filter(
-                driver_id=driver_id,
-                status='OFFERED'
-            ).exclude(id=batch_id)
+            # Re-dispatch any other batches that were offered to this driver
+            # while they were considering this one. Must be inside on_commit so
+            # the accept transaction is committed before we try to re-offer.
+            def _reassign_other_batches():
+                from domain.services.dispatch_tasks import dispatch_batch_task
+                other_offers = DeliveryBatch.objects.filter(
+                    driver_id=driver_id,
+                    status='OFFERED'
+                ).exclude(id=batch_id)
 
-            for other_batch in other_offers:
-                logger.info(
-                    f"[Dispatch] Re-dispatching batch {other_batch.id} to another driver "
-                    f"(driver {driver_id} already accepted {batch_id})"
-                )
-                DriverFreeService.release(str(other_batch.id), event='DECLINE', reason='Driver accepted another batch')
-                dispatch_batch_task.delay(str(other_batch.id))
+                for other_batch in other_offers:
+                    logger.info(
+                        f"[Dispatch] Re-dispatching batch {other_batch.id} to another driver "
+                        f"(driver {driver_id} already accepted {batch_id})"
+                    )
+                    DriverFreeService.release(
+                        str(other_batch.id), event='DECLINE',
+                        reason='Driver accepted another batch'
+                    )
+                    dispatch_batch_task.delay(str(other_batch.id))
 
             transaction.on_commit(_reassign_other_batches)
 
