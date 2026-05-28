@@ -32,12 +32,13 @@ from django.core.cache import cache
 from django.utils import timezone
 from django.conf import settings
 from domain.services.order_services import (
-    ConfirmOrderService, 
+    ConfirmOrderService,
     StartPreparingService,
     MarkReadyService,
-    AssignDriverService, 
+    AssignDriverService,
+    AssignBatchService,
     PickupOrderService,
-    DeliverOrderService
+    DeliverOrderService,
 )
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
@@ -464,7 +465,6 @@ class OrderViewSet(viewsets.ModelViewSet):
                     return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
                 
                 if order.batch_id:
-                    from domain.services.orders.order_assignment import AssignBatchService, AssignDriverService
                     batch = AssignBatchService.execute(order.batch_id, driver.id, request.user)
                     if batch.status == 'DISPATCHED':
                         order.refresh_from_db()
