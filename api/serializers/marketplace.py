@@ -18,16 +18,23 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class MarketplaceProductListSerializer(serializers.ModelSerializer):
     images = ProductImageSerializer(many=True, read_only=True)
     seller_name = serializers.ReadOnlyField(source='seller.username')
+    whatsapp_url = serializers.SerializerMethodField()
     zone_name = serializers.SerializerMethodField()
 
     class Meta:
         model = MarketplaceProduct
         fields = [
             'id', 'seller_name', 'category', 'name', 'description',
-            'price', 'condition', 'whatsapp_number',
+            'price', 'condition', 'whatsapp_number', 'whatsapp_url',
             'location', 'h3_index', 'zone_name', 'status', 'expiry_date',
             'images', 'created_at'
         ]
+
+    def get_whatsapp_url(self, obj):
+        import urllib.parse
+        clean_number = obj.whatsapp_number.replace('+', '').replace(' ', '')
+        text = urllib.parse.quote(f"Hi, I'm interested in your {obj.name} on orbit.")
+        return f"https://wa.me/{clean_number}?text={text}"
 
     def get_zone_name(self, obj):
         if obj.h3_index:
