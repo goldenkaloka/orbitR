@@ -9,7 +9,7 @@ class Payment(models.Model):
     # Polymorphic associations
     # Use payable_type and payable_id for unified access
     payable_type = models.CharField(max_length=50, db_index=True, null=True, blank=True)
-    payable_id = models.UUIDField(db_index=True, null=True, blank=True)
+    payable_id = models.CharField(max_length=255, db_index=True, null=True, blank=True)
 
     # Legacy associations (deprecated)
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='payment', null=True, blank=True)
