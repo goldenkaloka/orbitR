@@ -119,7 +119,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch', 'route_sequence', 'waiting_info'
+            'batch', 'route_sequence'
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
@@ -188,6 +188,7 @@ class OrderSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data['estimated_arrival_minutes'] = self.get_estimated_arrival_minutes(instance)
+        data['waiting_info'] = self.get_waiting_info(instance)
         
         # Hide OTP from drivers (only customer should see it)
         request = self.context.get('request')
