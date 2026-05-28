@@ -399,7 +399,7 @@ class RefundPaymentService:
             
             for payment in payments:
                 refund_amount = override_amount if override_amount is not None else payment.amount
-                response = gateway.refund(airpay_id=payment.provider_reference, amount=refund_amount)
+                response = gateway.refund(transaction_id=payment.provider_reference, amount=refund_amount)
                 if response and response.get('success'):
                     payment.status = PaymentFSM.transition(payment.status, 'REFUNDED')
                     payment.refund_id = response.get('refund_id')
