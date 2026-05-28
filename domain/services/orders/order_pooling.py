@@ -5,7 +5,8 @@ from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
 from django.db import transaction, IntegrityError
 from django.utils import timezone
-from apps.orders.models import OrderPool, PoolMember
+from apps.orders.models import OrderPool, PoolMember, Order, OrderItem
+from apps.products.models import Food
 from apps.restaurants.models import Restaurant
 from apps.geo.models import ZoneH3Index
 from apps.events.utils import broadcast_pool_status
@@ -324,6 +325,109 @@ class PoolOrderService:
                 )))
 
             return pool
+
+    @staticmethod
+    def finalize_pool(pool_id):
+        """
+        Creates individual Order records for each PoolMember that has paid.
+        Called when all members have completed payment.
+        """
+        from decimal import Decimal
+        from django.utils import timezone
+
+        pool = OrderPool.objects.get(id=pool_id)
+
+        if Order.objects.filter(pool=pool).exists():
+            logger.info(f"[finalize_pool] Orders already exist for pool {pool_id}, skipping.")
+            return
+
+        members = pool.members.filter(status='PAID')
+        if not members.exists():
+            raise ValueError(f"No paid members found in pool {pool_id}.")
+
+        # Transition pool LOCKED → PAID (required before READY)
+        try:
+            pool.status = PoolFSM.transition(pool.status, 'PAID')
+        except InvalidPoolTransitionError:
+            logger.warning(f"[finalize_pool] Pool {pool_id} status is '{pool.status}', expected 'LOCKED'")
+
+        pool.paid_at = timezone.now()
+        pool.save(update_fields=['status', 'paid_at'])
+
+        orders = []
+        order_items_bulk = []
+
+        for member in members:
+            items_data = member.items or []
+            items_subtotal = member.items_subtotal or Decimal('0.00')
+            delivery_fee = member.delivery_fee_share or Decimal('0.00')
+            service_fee = member.service_fee_share or Decimal('0.00')
+            total_amount = items_subtotal + delivery_fee + service_fee
+
+            order = Order(
+                customer=member.user,
+                restaurant=pool.restaurant,
+                pool=pool,
+                is_pool_order=True,
+                is_paid=True,
+                status='PENDING',
+                items_subtotal=items_subtotal,
+                delivery_fee=delivery_fee,
+                service_fee=service_fee,
+                total_amount=total_amount,
+                delivery_address=pool.delivery_address,
+                delivery_location=pool.delivery_location,
+                h3_index=pool.h3_index,
+                group_breakdown={
+                    'pool_id': str(pool.id),
+                    'member_id': str(member.id),
+                    'invite_code': pool.invite_code,
+                },
+                confirmed_at=timezone.now(),
+            )
+            orders.append(order)
+
+            for item in items_data:
+                food_id = item.get('food_id')
+                food = None
+                if food_id:
+                    try:
+                        food = Food.objects.get(id=food_id)
+                    except Food.DoesNotExist:
+                        logger.warning(f"[finalize_pool] Food {food_id} not found for member {member.id}")
+                order_items_bulk.append(
+                    OrderItem(
+                        order=order,
+                        food=food,
+                        quantity=item.get('quantity', 1),
+                        price=Decimal(str(item.get('price', 0))),
+                    )
+                )
+
+        with transaction.atomic():
+            Order.objects.bulk_create(orders)
+            OrderItem.objects.bulk_create(order_items_bulk)
+
+            _pool_id = str(pool.id)
+            transaction.on_commit(lambda: broadcast_pool_status(
+                _pool_id, 'PAID', message="All paid! Restaurant is preparing."
+            ))
+            transaction.on_commit(lambda: EventBus.publish(PoolPaid(
+                aggregate_id=pool.id,
+                payload={'pool_id': _pool_id, 'all_paid': True},
+            )))
+
+            for order in orders:
+                _oid = str(order.id)
+                _cid = str(order.customer.id)
+                _pid = _pool_id
+                transaction.on_commit(lambda oid=_oid, cid=_cid, pid=_pid: EventBus.publish(OrderCreated(
+                    aggregate_id=oid,
+                    payload={'customer_id': cid, 'pool_id': pid},
+                )))
+
+        logger.info(f"[finalize_pool] Created {len(orders)} order(s) for pool {pool_id}")
+        return orders
 
     @staticmethod
     def mark_pool_ready(pool_id: str, actor):

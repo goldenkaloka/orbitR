@@ -2,16 +2,29 @@ from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from apps.marketplace.models import MarketplaceProduct, MarketplaceCategory
-from api.serializers.marketplace import MarketplaceProductSerializer, MarketplaceCategorySerializer
+from api.serializers.marketplace import (
+    MarketplaceProductSerializer,
+    MarketplaceProductListSerializer,
+    MarketplaceCategorySerializer,
+)
 from domain.services.marketplace_services import MarketplaceService
+from django.core.cache import cache
+from apps.core.cache_keys import stable_cache_key
+
 
 class MarketplaceCategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MarketplaceCategory.objects.all()
     serializer_class = MarketplaceCategorySerializer
 
+
 class MarketplaceProductViewSet(viewsets.ModelViewSet):
     serializer_class = MarketplaceProductSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return MarketplaceProductListSerializer
+        return self.serializer_class
 
     def get_queryset(self):
         """
@@ -20,21 +33,16 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         with zone param as a fallback filter.
         Only show ACTIVE products to general users.
         """
-        from django.db.models import Subquery, OuterRef
-        from apps.geo.models import ZoneH3Index
-        
-        user = self.request.user
-        
-        zone_name_subquery = ZoneH3Index.objects.filter(
-            h3_index=OuterRef('h3_index')
-        ).values('zone__name')[:1]
-
         queryset = MarketplaceProduct.objects.select_related(
             'seller', 'category'
-        ).prefetch_related('images').annotate(
-            annotated_zone_name=Subquery(zone_name_subquery)
+        ).prefetch_related('images').only(
+            'seller__id', 'seller__username',
+            'category__id', 'category__name',
+            'name', 'description', 'price', 'condition',
+            'whatsapp_number', 'location', 'h3_index',
+            'status', 'expiry_date', 'is_fee_paid', 'created_at',
         )
-        
+
         # Proximity sorting — nearest first when lat/lng provided
         lat = self.request.query_params.get('lat')
         lng = self.request.query_params.get('lng')
@@ -51,24 +59,50 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 )
             ).order_by('distance')
         else:
-            # Fallback to zone filtering for backward compatibility
             zone_h3 = self.request.query_params.get('zone')
             if zone_h3:
                 from apps.core.geo_utils import get_neighbors
                 neighbor_cells = get_neighbors(zone_h3, 1)
                 queryset = queryset.filter(h3_index__in=neighbor_cells)
-            
+
         category_id = self.request.query_params.get('category')
         if category_id:
             queryset = queryset.filter(category_id=category_id)
 
         if self.action == 'list':
             return queryset.filter(status='ACTIVE')
-        
+
         if self.action == 'mine':
-            return queryset.filter(seller=user)
+            return queryset.filter(seller=self.request.user)
 
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        category = request.query_params.get('category', 'all')
+        zone = request.query_params.get('zone', 'none')
+        limit = request.query_params.get('limit')
+        offset = request.query_params.get('offset')
+
+        cache_key = stable_cache_key(
+            "marketplace_list",
+            {
+                "lat": lat or "none",
+                "lng": lng or "none",
+                "category": category,
+                "zone": zone,
+                "limit": limit or "default",
+                "offset": offset or "0",
+            },
+        )
+        cached_data = cache.get(cache_key)
+        if cached_data:
+            return Response(cached_data)
+
+        response = super().list(request, *args, **kwargs)
+        cache.set(cache_key, response.data, 900)
+        return response
 
     @action(detail=False, methods=['GET'])
     def mine(self, request):
