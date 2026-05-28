@@ -88,7 +88,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         driver.location = new_loc
         driver.h3_index = latlng_to_h3(lat_f, lng_f, ZONE_RESOLUTION)
         driver.last_heartbeat = timezone.now()
-        driver.save(update_fields=['location', 'h3_index', 'last_heartbeat', 'updated_at'])
+        driver.save(update_fields=['location', 'h3_index', 'last_heartbeat'])
 
 
         cache.set(cache_key, True, 10)
