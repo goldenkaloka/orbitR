@@ -136,7 +136,7 @@ class BatchDispatchServiceTests(TestCase):
         batch.refresh_from_db()
         order.refresh_from_db()
 
-        self.assertEqual(batch.status, 'ASSIGNED')
+        self.assertEqual(batch.status, 'DISPATCHED')
         self.assertEqual(order.status, 'ASSIGNED')
 
     def test_decline_batch_resets_status(self):

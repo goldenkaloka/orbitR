@@ -302,8 +302,18 @@ class AdminViewSet(viewsets.GenericViewSet):
     def pending_manual_assignment(self, request):
         """
         Get orders that need manual driver assignment.
+        In the new design, these are READY orders with no batch or whose batch
+        has exhausted all dispatch attempts (WAITING_TEMP_DRIVER).
         """
-        orders = Order.objects.filter(status='PENDING_MANUAL_ASSIGNMENT').select_related('restaurant', 'customer')
+        from apps.orders.models import DeliveryBatch
+        waiting_batch_ids = DeliveryBatch.objects.filter(
+            status='WAITING_TEMP_DRIVER'
+        ).values_list('id', flat=True)
+
+        orders = Order.objects.filter(
+            models.Q(status='READY', batch__isnull=True) |
+            models.Q(status='READY', batch_id__in=waiting_batch_ids)
+        ).select_related('restaurant', 'customer')
         return Response({
             'count': orders.count(),
             'orders': OrderSerializer(orders, many=True).data
@@ -333,9 +343,9 @@ class AdminViewSet(viewsets.GenericViewSet):
 
         from domain.fsm.driver_fsm import DriverFSM
 
-        if order.status not in ['PENDING_MANUAL_ASSIGNMENT', 'READY']:
+        if order.status != 'READY':
             return Response({
-                'error': f'Cannot assign driver to order in status {order.status}. Only PENDING_MANUAL_ASSIGNMENT or READY allowed.'
+                'error': f'Cannot assign driver to order in status {order.status}. Only READY orders can be manually assigned.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if driver.status not in ['OFFLINE', 'AVAILABLE']:
@@ -351,11 +361,11 @@ class AdminViewSet(viewsets.GenericViewSet):
             order.status = 'ASSIGNED'
             order.save()
 
-            new_status = driver.status
-            if driver.status == 'OFFLINE':
-                new_status = DriverFSM.transition(driver.status, 'AVAILABLE')
-
-            new_status = DriverFSM.transition(new_status, 'ASSIGNED')
+            # Driver goes directly to DELIVERING (ASSIGNED state removed from DriverFSM)
+            if driver.status in ('OFFLINE', 'AVAILABLE'):
+                new_status = DriverFSM.transition('AVAILABLE', 'DELIVERING')
+            else:
+                new_status = driver.status  # already DELIVERING
 
             Driver.objects.filter(id=driver.id).update(
                 status=new_status,

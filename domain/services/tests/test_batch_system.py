@@ -699,9 +699,9 @@ class DriverMatchingAcceptOfferTests(TestSetupMixin, TestCase):
         BatchDispatchService.dispatch_batch(batch.id)
         batch.refresh_from_db()
         batch.driver = self.driver
-        batch.status = 'ASSIGNED'
+        batch.status = 'DISPATCHED'
         batch.save()
-        self.assertEqual(batch.status, 'ASSIGNED')
+        self.assertEqual(batch.status, 'DISPATCHED')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()
@@ -963,16 +963,16 @@ class StateTransitionOFFEREDToASSIGNEDTests(TestSetupMixin, TestCase):
         self.driver.save()
 
     @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
-    def test_offered_to_assigned(self, mock_route):
+    def test_offered_to_dispatched(self, mock_route):
         mock_route.return_value = self.create_route_dict([])
         order = self.create_order(self.restaurant_a)
         batch = BatchPipeline.run(order)
         BatchDispatchService.dispatch_batch(batch.id)
         batch.refresh_from_db()
         batch.driver = self.driver
-        batch.status = 'ASSIGNED'
+        batch.status = 'DISPATCHED'
         batch.save()
-        self.assertEqual(batch.status, 'ASSIGNED')
+        self.assertEqual(batch.status, 'DISPATCHED')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()
@@ -992,16 +992,20 @@ class StateTransitionASSIGNEDToPICKEDTests(TestSetupMixin, TestCase):
         self.driver = Driver.objects.create(user=self.driver_user, status='AVAILABLE', location=Point(self.LNG_CENTER + 0.003, self.LAT_CENTER - 0.003), last_heartbeat=timezone.now(), max_active_orders=3)
 
     @patch('domain.services.batch_pipeline.BatchPipeline._optimize_route')
-    def test_assigned_to_picked(self, mock_route):
+    def test_dispatched_to_picked(self, mock_route):
         mock_route.return_value = self.create_route_dict([])
         order = self.create_order(self.restaurant_a)
         batch = BatchPipeline.run(order)
         batch.driver = self.driver
-        batch.status = 'ASSIGNED'
+        batch.status = 'DISPATCHED'
         batch.save()
-        batch.status = 'PICKED'
-        batch.save()
-        self.assertEqual(batch.status, 'PICKED')
+        # In the new design, batch stays DISPATCHED — order tracks PICKED state
+        order.status = 'PICKED'
+        order.save()
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'PICKED')
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, 'DISPATCHED')
 
     def tearDown(self):
         Order.objects.filter(customer=self.customer).delete()
