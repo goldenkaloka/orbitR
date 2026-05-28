@@ -27,6 +27,12 @@ class Restaurant(models.Model):
         help_text="Maximum delivery distance in km from the restaurant"
     )
 
+    # Average food preparation time in minutes — used for ETA calculation
+    average_prep_time = models.PositiveIntegerField(
+        default=20,
+        help_text="Average preparation time in minutes"
+    )
+
     # Commission rate for platform monetization
     commission_rate = models.DecimalField(
         max_digits=4, 

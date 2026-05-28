@@ -2,6 +2,7 @@ import logging
 import random
 from decimal import Decimal
 from django.db import transaction
+from django.utils import timezone
 import h3
 from apps.orders.models import Order, OrderItem
 from apps.restaurants.models import Restaurant
@@ -125,6 +126,7 @@ class ConfirmOrderService:
                 
             new_state = OrderFSM.transition(order.status, 'CONFIRMED')
             order.status = new_state
+            order.confirmed_at = timezone.now()
             order.save()
             
             # CONSISTENCY: Added on_commit

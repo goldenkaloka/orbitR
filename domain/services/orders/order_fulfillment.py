@@ -30,6 +30,7 @@ class StartPreparingService:
 
             new_state = OrderFSM.transition(order.status, 'PREPARING')
             order.status = new_state
+            order.preparing_at = timezone.now()
             order.save()
 
             transaction.on_commit(lambda: EventBus.publish(OrderPreparing(
@@ -86,6 +87,7 @@ class PickupOrderService:
 
             new_state = OrderFSM.transition(order.status, 'PICKED')
             order.status = new_state
+            order.picked_up_at = timezone.now()
             order.save()
 
             # Driver is already in DELIVERING state (set on batch accept / claim).
@@ -126,6 +128,7 @@ class DeliverOrderService:
 
             new_state = OrderFSM.transition(order.status, 'DELIVERED')
             order.status = new_state
+            order.delivered_at = timezone.now()
             order.save()
 
             # Payout: per-order, not batch-divided.

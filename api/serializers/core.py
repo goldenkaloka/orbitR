@@ -119,7 +119,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch', 'route_sequence'
+            'batch', 'route_sequence', 'waiting_info'
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
@@ -167,15 +167,13 @@ class OrderSerializer(serializers.ModelSerializer):
         }
 
     def get_estimated_arrival_minutes(self, obj):
-        if not obj.restaurant or not obj.delivery_location or not obj.restaurant.geo_location:
-            return 30
+        from domain.services.eta_service import ETAService
+        result = ETAService.calculate(obj)
+        return result.get('total_minutes')
 
-        try:
-            dist_km = obj.restaurant.geo_location.distance(obj.delivery_location) / 1000
-            est = 8 + (dist_km * 4)
-            return int(min(60, est))
-        except Exception:
-            return 30
+    def get_waiting_info(self, obj):
+        from domain.services.eta_service import ETAService
+        return ETAService.calculate(obj)
 
     def get_original_delivery_fee(self, obj):
         if obj.original_delivery_fee and obj.original_delivery_fee > 0:

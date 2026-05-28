@@ -37,6 +37,10 @@ class Order(models.Model):
     notes = models.TextField(null=True, blank=True)
     driver = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders', db_index=True)
     ready_at = models.DateTimeField(null=True, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    preparing_at = models.DateTimeField(null=True, blank=True)
+    picked_up_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
     
     # OTP Delivery Verification
     delivery_otp = models.CharField(max_length=6, null=True, blank=True)
