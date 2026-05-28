@@ -243,6 +243,14 @@ class PoolOrderService:
             if pool.status != 'OPEN':
                 raise ValueError("Pool is not OPEN.")
 
+            # Auto-mark the initiator as READY when they lock
+            initiator_member = pool.members.filter(user=actor).first()
+            if initiator_member and initiator_member.status != 'READY':
+                if initiator_member.items_subtotal <= 0:
+                    raise ValueError("You must add at least one item before locking.")
+                initiator_member.status = 'READY'
+                initiator_member.save(update_fields=['status'])
+
             not_ready = pool.members.exclude(status='READY').values_list('user__username', flat=True)
             if not_ready.exists():
                 raise ValueError(f"Members not ready: {', '.join(not_ready)}")
