@@ -25,7 +25,7 @@ class AirpayGateway(PaymentGateway):
         self.secret = self.config.get('SECRET_KEY')
         self.client_id = self.config.get('CLIENT_ID')
         self.client_secret = self.config.get('CLIENT_SECRET')
-        self.merchant_domain = self.config.get('MERCHANT_DOMAIN', 'mwanachuoshop.com').replace('https://', '').replace('http://', '').split('/')[0]
+        self.merchant_domain = self.config.get('MERCHANT_DOMAIN', 'https://mwanachuoshop.com')
         
         # Endpoints
         self.oauth_url = "https://kraken.airpay.tz/airpay/pay/v1/api/oauth2/"
@@ -44,6 +44,8 @@ class AirpayGateway(PaymentGateway):
             token = self._get_token()
             if not token:
                 return {'success': False, 'error': 'Failed to obtain Airpay authentication token'}
+
+            is_retry = kwargs.get('is_retry', False)
 
             # 1. Prepare Seamless Payload
             sanitized_order_id = str(order_reference).replace('-', '')[:30]
@@ -84,16 +86,18 @@ class AirpayGateway(PaymentGateway):
                 timeout=15
             )
             
-            if response.status_code == 200:
-                # ... [Parsing logic handled below] ...
-                pass # Placeholder for existing code context
-            elif response.status_code == 401 or "validation failed" in response.text.lower():
-                # TOKEN EXPIRED OR INVALID - Clear cache and retry once
-                logger.warning("Airpay token validation failed. Clearing cache and retrying...")
+            # Helper to clear cache and retry
+            def handle_token_failure(reason):
+                logger.warning(f"Airpay token validation failed ({reason}). Clearing cache and retrying...")
                 cache.delete(f"airpay_token_{self.mercid}")
-                return self.collect(amount, phone, order_reference, **kwargs)
+                if not is_retry:
+                    kwargs['is_retry'] = True
+                    return self.collect(amount, phone, order_reference, **kwargs)
+                return {'success': False, 'error': 'Access token validation failed. Please try again.'}
 
-            # --- Refined Parsing for the 200 block ---
+            if response.status_code == 401:
+                return handle_token_failure("HTTP 401")
+
             if response.status_code == 200:
                 try:
                     res_json = response.json()
@@ -102,15 +106,13 @@ class AirpayGateway(PaymentGateway):
                     last_brace = text.rfind('}')
                     res_json = json.loads(text[:last_brace+1])
                 
-                # Double check for error inside JSON
-                if res_json.get('status') == 'error' and 'validation failed' in str(res_json.get('message')).lower():
-                    logger.warning("Airpay token error inside 200 response. Clearing cache.")
-                    cache.delete(f"airpay_token_{self.mercid}")
-                    # Don't recurse here to avoid infinite loops, but return a clear error
-                    return {'success': False, 'error': 'Security token expired. Please try again in a moment.'}
+                # Check for unencrypted validation error
+                message_str = str(res_json.get('message') or '').lower()
+                status_str = str(res_json.get('status') or '').lower()
+                if status_str == 'error' and 'validation failed' in message_str:
+                    return handle_token_failure("Unencrypted 200 validation error")
 
                 if 'response' in res_json:
-                    # [Previous safe_json_loads logic follows here...]
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
                     try:
                         res_data = self.transformer.safe_json_loads(decrypted)
@@ -118,6 +120,11 @@ class AirpayGateway(PaymentGateway):
                         logger.error(f"AIRPAY_DEBUG: Failed to parse decrypted JSON: {str(e)}. String: {decrypted}")
                         return {'success': False, 'error': f"Payment provider returned malformed data: {str(e)}"}
                     
+                    # Check if decrypted message contains token validation failure
+                    decrypted_msg = str(res_data.get('message') or '').lower()
+                    if 'validation failed' in decrypted_msg or 'invalid token' in decrypted_msg:
+                        return handle_token_failure("Decrypted 200 validation error")
+
                     # Status 200 means the request was accepted and push sent
                     if res_data.get('status_code') == '200' or res_data.get('status') == 'success':
                         return {
@@ -131,9 +138,17 @@ class AirpayGateway(PaymentGateway):
                     error_msg = res_data.get('message') or "USSD Push rejected by provider"
                     return {'success': False, 'error': error_msg, 'code': res_data.get('response_code')}
                 
+                # If neither 'response' nor expected error is in res_json, check raw text
+                if 'validation failed' in response.text.lower():
+                    return handle_token_failure("Raw response text validation error")
+
                 logger.error(f"AIRPAY_DEBUG: Unexpected 200 response format: {response.text}")
                 return {'success': False, 'error': "Unexpected response format from Airpay"}
             else:
+                # If non-200 check if raw text has validation failed
+                if 'validation failed' in response.text.lower():
+                    return handle_token_failure(f"HTTP {response.status_code} validation error")
+                
                 logger.error(f"AIRPAY_DEBUG: Seamless/Push Request Failed. Status: {response.status_code}, Body: {response.text}")
                 return {'success': False, 'error': f"Airpay API Error: {response.status_code}"}
 
@@ -182,11 +197,12 @@ class AirpayGateway(PaymentGateway):
         # Standard IPN (Direct keys)
         return self.transformer.verify_checksum_v4(response_data, self.mercid, self.username)
 
-    def get_status(self, provider_reference=None, orderid=None):
+    def get_status(self, provider_reference=None, orderid=None, **kwargs):
         """
         Queries the transaction status using the Verify API.
         """
         try:
+            is_retry = kwargs.get('is_retry', False)
             token = self._get_token()
             if not token: return {'success': False, 'error': 'No token'}
 
@@ -206,6 +222,19 @@ class AirpayGateway(PaymentGateway):
             }
 
             response = requests.post(f"{self.verify_url}?token={token}", data=payload, timeout=10)
+            
+            # Helper to clear cache and retry
+            def handle_token_failure(reason):
+                logger.warning(f"Airpay verify token validation failed ({reason}). Clearing cache and retrying...")
+                cache.delete(f"airpay_token_{self.mercid}")
+                if not is_retry:
+                    kwargs['is_retry'] = True
+                    return self.get_status(provider_reference, orderid, **kwargs)
+                return {'success': False, 'error': 'Access token validation failed. Please try again.'}
+
+            if response.status_code == 401 or 'validation failed' in response.text.lower():
+                return handle_token_failure(f"HTTP {response.status_code}")
+
             if response.status_code == 200:
                 try:
                     res_json = response.json()
@@ -213,9 +242,22 @@ class AirpayGateway(PaymentGateway):
                     text = response.text.strip()
                     last_brace = text.rfind('}')
                     res_json = json.loads(text[:last_brace+1])
+                
+                # Check for unencrypted validation error
+                message_str = str(res_json.get('message') or '').lower()
+                status_str = str(res_json.get('status') or '').lower()
+                if status_str == 'error' and 'validation failed' in message_str:
+                    return handle_token_failure("Unencrypted verify response validation error")
+
                 if 'response' in res_json:
                     decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
                     res_data = self.transformer.safe_json_loads(decrypted)
+                    
+                    # Check if decrypted message contains token validation failure
+                    decrypted_msg = str(res_data.get('message') or '').lower()
+                    if 'validation failed' in decrypted_msg or 'invalid token' in decrypted_msg:
+                        return handle_token_failure("Decrypted verify response validation error")
+
                     actual_data = res_data.get('data', {})
                     
                     status = actual_data.get('transaction_status')
@@ -232,11 +274,12 @@ class AirpayGateway(PaymentGateway):
     def disburse(self, amount, account_info, reference, **kwargs):
         return {'success': False, 'error': 'B2C disbursements not supported via this Airpay MID'}
 
-    def refund(self, transaction_id, amount):
+    def refund(self, transaction_id, amount, **kwargs):
         """
         Initiates a refund for a transaction.
         """
         try:
+            is_retry = kwargs.get('is_retry', False)
             token = self._get_token()
             refund_data = [{
                 "ap_transactionid": transaction_id,
@@ -259,6 +302,41 @@ class AirpayGateway(PaymentGateway):
             }
 
             response = requests.post(f"https://kraken.airpay.tz/airpay/pay/v1/api/refund?token={token}", data=payload)
+            
+            # Helper to clear cache and retry
+            def handle_token_failure(reason):
+                logger.warning(f"Airpay refund token validation failed ({reason}). Clearing cache and retrying...")
+                cache.delete(f"airpay_token_{self.mercid}")
+                if not is_retry:
+                    kwargs['is_retry'] = True
+                    return self.refund(transaction_id, amount, **kwargs)
+                return {'success': False, 'error': 'Access token validation failed. Please try again.'}
+
+            if response.status_code == 401 or 'validation failed' in response.text.lower():
+                return handle_token_failure(f"HTTP {response.status_code}")
+
+            if response.status_code == 200:
+                try:
+                    res_json = response.json()
+                except json.JSONDecodeError:
+                    text = response.text.strip()
+                    last_brace = text.rfind('}')
+                    res_json = json.loads(text[:last_brace+1])
+                
+                # Check for unencrypted validation error
+                message_str = str(res_json.get('message') or '').lower()
+                status_str = str(res_json.get('status') or '').lower()
+                if status_str == 'error' and 'validation failed' in message_str:
+                    return handle_token_failure("Unencrypted refund response validation error")
+
+                # Decrypt and check inside response if possible
+                if 'response' in res_json:
+                    decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
+                    res_data = self.transformer.safe_json_loads(decrypted)
+                    decrypted_msg = str(res_data.get('message') or '').lower()
+                    if 'validation failed' in decrypted_msg or 'invalid token' in decrypted_msg:
+                        return handle_token_failure("Decrypted refund response validation error")
+
             return {'success': response.status_code == 200, 'data': response.json() if response.status_code == 200 else response.text}
         except Exception as e:
             return {'success': False, 'error': str(e)}

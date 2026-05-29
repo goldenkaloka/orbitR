@@ -536,19 +536,73 @@ def notify_other_restaurants_in_batch(batch_id, batch, assigned_restaurant_id):
         logger.error(f"Error notifying other restaurants: {e}")
 
 
+def on_pool_locked(event):
+    """Notify all pool members that payment is now required."""
+    pool_id = event.payload.get('pool_id')
+    try:
+        from apps.orders.models import OrderPool
+        pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        for member in pool.members.all():
+            if member.user_id:
+                NotificationService.send_push(
+                    user_id=str(member.user_id),
+                    title="Pool Locked — Time to Pay!",
+                    body=f"Your group order at {pool.restaurant.name} is locked. "
+                         f"Please complete payment before it expires.",
+                    data={'pool_id': str(pool_id), 'type': 'pool_locked'},
+                )
+    except Exception as e:
+        logger.error(f"[PoolLocked] Failed to notify pool members for {pool_id}: {e}")
+
+
+def on_pool_paid(event):
+    """Notify all pool members that the group order is paid and being prepared."""
+    pool_id = event.payload.get('pool_id')
+    try:
+        from apps.orders.models import OrderPool
+        pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        for member in pool.members.all():
+            if member.user_id:
+                NotificationService.send_push(
+                    user_id=str(member.user_id),
+                    title="Pool Paid! 🎉",
+                    body=f"Your group order at {pool.restaurant.name} has been fully paid "
+                         f"and the restaurant is preparing your food.",
+                    data={'pool_id': str(pool_id), 'type': 'pool_paid'},
+                )
+    except Exception as e:
+        logger.error(f"[PoolPaid] Failed to notify pool members for {pool_id}: {e}")
+
+
 def on_pool_cancelled(event):
     """
     Handle PoolCancelled event.
-    If a batch was already dispatched (driver assigned),
-    alert admins so they can handle it manually.
+    Notify all pool members and, if a batch was dispatched, alert admins.
     """
-    batch_id = event.payload.get('batch_id')
     pool_id = event.payload.get('pool_id')
+    batch_id = event.payload.get('batch_id')
+    actor_id = event.payload.get('actor_id')
 
+    # Notify all pool members
+    try:
+        from apps.orders.models import OrderPool
+        pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        for member in pool.members.all():
+            if member.user_id and str(member.user_id) != actor_id:
+                NotificationService.send_push(
+                    user_id=str(member.user_id),
+                    title="Pool Cancelled",
+                    body=f"The group order at {pool.restaurant.name} has been cancelled.",
+                    data={'pool_id': str(pool_id), 'type': 'pool_cancelled'},
+                )
+    except Exception as e:
+        logger.error(f"[PoolCancelled] Failed to notify pool members for {pool_id}: {e}")
+
+    # If batch was already dispatched, alert admins
     if not batch_id:
-        return  # Pool was cancelled before it was ever finalised — nothing to do
+        return
 
-    from apps.orders.models import DeliveryBatch, Order
+    from apps.orders.models import DeliveryBatch
     try:
         batch = DeliveryBatch.objects.get(id=batch_id)
         active_orders = batch.orders.filter(status__in=['ASSIGNED', 'PICKED']).exists()
@@ -571,7 +625,25 @@ def on_pool_cancelled(event):
                 },
             )
     except DeliveryBatch.DoesNotExist:
-        pass  # Batch already gone — nothing to do
+        pass
+
+
+def on_pool_completed(event):
+    """Notify all pool members that all deliveries are complete."""
+    pool_id = event.payload.get('pool_id')
+    try:
+        from apps.orders.models import OrderPool
+        pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        for member in pool.members.all():
+            if member.user_id:
+                NotificationService.send_push(
+                    user_id=str(member.user_id),
+                    title="Pool Complete! 🎉",
+                    body="All orders in your group delivery have been completed. Enjoy your meal!",
+                    data={'pool_id': str(pool_id), 'type': 'pool_completed'},
+                )
+    except Exception as e:
+        logger.error(f"[PoolCompleted] Failed to notify pool members for {pool_id}: {e}")
 
 
 def on_order_disputed(event):
@@ -771,9 +843,12 @@ def register_all_handlers():
     EventBus.subscribe(TempDriverRegistered, on_temp_driver_registered)
 
     # Pool lifecycle events
-    from domain.events.types import PoolCancelled, PoolReady
+    from domain.events.types import PoolCancelled, PoolReady, PoolLocked, PoolPaid, PoolCompleted
     EventBus.subscribe(PoolCancelled, on_pool_cancelled)
     EventBus.subscribe(PoolReady, on_pool_ready)
+    EventBus.subscribe(PoolLocked, on_pool_locked)
+    EventBus.subscribe(PoolPaid, on_pool_paid)
+    EventBus.subscribe(PoolCompleted, on_pool_completed)
 
     # Other Domain Events
     from domain.events.types import PaymentCollected, AuthOTPRequested, AuthUserVerified, AuthUserRegistered

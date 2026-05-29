@@ -110,6 +110,7 @@ class OrderSerializer(serializers.ModelSerializer):
     discount_amount = serializers.SerializerMethodField()
     route_sequence = serializers.ReadOnlyField()
     pool_id = serializers.SerializerMethodField()
+    group_breakdown = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -145,6 +146,36 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_pool_id(self, obj):
         return str(obj.pool_id) if obj.pool_id else None
+
+    def get_group_breakdown(self, obj):
+        raw = getattr(obj, 'group_breakdown', None)
+        pool = getattr(obj, 'pool', None)
+        if not pool:
+            # Single-order group_breakdown — wrap in list for frontend
+            if raw:
+                return [raw] if isinstance(raw, dict) else raw
+            return None
+
+        breakdown = []
+        for member in pool.members.all():
+            items_data = member.items or []
+            breakdown.append({
+                'member_id': str(member.id),
+                'user_id': str(member.user_id) if member.user_id else None,
+                'username': member.user.username if member.user_id else 'Member',
+                'subtotal': float(member.items_subtotal) if member.items_subtotal else 0,
+                'delivery_share': float(member.delivery_fee_share) if member.delivery_fee_share else 0,
+                'items': [
+                    {
+                        'food_name': i.get('name', 'Item'),
+                        'food_id': i.get('food_id', ''),
+                        'quantity': i.get('quantity', 0),
+                        'price': float(i.get('price', 0)),
+                    }
+                    for i in items_data
+                ],
+            })
+        return breakdown if breakdown else None
 
     def get_batch(self, obj):
         if not obj.batch:

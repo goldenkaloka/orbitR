@@ -63,6 +63,9 @@ class OrderConsumer(AsyncWebsocketConsumer):
                 }
             )
 
+            # Broadcast to sibling pool orders so all pool members see the rider
+            await self._broadcast_to_pool_siblings(lat, lng)
+
             # Update Driver model in DB for geofence checks
             await self._update_driver_location(lat, lng)
 
@@ -116,6 +119,35 @@ class OrderConsumer(AsyncWebsocketConsumer):
 
         except Exception as e:
             print(f"Error updating driver location from WS: {e}")
+
+    @database_sync_to_async
+    def _get_pool_sibling_order_ids(self):
+        from apps.orders.models import Order
+        try:
+            order = Order.objects.select_related('pool').get(id=self.order_id)
+            if order.pool:
+                return list(
+                    order.pool.final_orders
+                    .exclude(id=self.order_id)
+                    .values_list('id', flat=True)
+                )
+        except Order.DoesNotExist:
+            pass
+        return []
+
+    async def _broadcast_to_pool_siblings(self, lat, lng):
+        sibling_ids = await self._get_pool_sibling_order_ids()
+        for sid in sibling_ids:
+            group = f'order_{sid}'
+            await self.channel_layer.group_send(
+                group,
+                {
+                    'type': 'location_update',
+                    'order_id': str(sid),
+                    'lat': lat,
+                    'lng': lng,
+                }
+            )
 
     async def order_status_update(self, event):
         await self.send(text_data=json.dumps(event))
@@ -189,6 +221,9 @@ class UserConsumer(AsyncWebsocketConsumer):
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
     async def order_status_update(self, event):
+        await self.send(text_data=json.dumps(event))
+
+    async def notification(self, event):
         await self.send(text_data=json.dumps(event))
 
 class RidersPoolConsumer(AsyncWebsocketConsumer):

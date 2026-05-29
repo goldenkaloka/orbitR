@@ -90,16 +90,37 @@ class NotificationService:
         logger.info(f"🔔 SENDING PUSH TO USER {user_id}: {title} - {body}")
         
         # Save to database
+        notification_id = None
         try:
             from apps.core.models import Notification
-            Notification.objects.create(
+            notification = Notification.objects.create(
                 user_id=user_id,
                 title=title,
                 body=body,
                 data=data
             )
+            notification_id = str(notification.id)
         except Exception as e:
             logger.error(f"Failed to save notification to DB: {str(e)}")
+
+        # Broadcast notification event to user's WebSocket channel for real-time badge update
+        try:
+            from channels.layers import get_channel_layer
+            from asgiref.sync import async_to_sync
+            channel_layer = get_channel_layer()
+            if channel_layer:
+                async_to_sync(channel_layer.group_send)(
+                    f'user_{user_id}',
+                    {
+                        'type': 'notification',
+                        'id': notification_id,
+                        'title': title,
+                        'body': body,
+                        'data': data or {},
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Failed to broadcast notification to WS: {str(e)}")
 
         try:
             from apps.users.models import User
