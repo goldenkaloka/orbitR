@@ -48,7 +48,7 @@ class AirpayGateway(PaymentGateway):
             is_retry = kwargs.get('is_retry', False)
 
             # 1. Prepare Seamless Payload
-            sanitized_order_id = str(order_reference).replace('-', '')[:30]
+            sanitized_order_id = str(order_reference).replace('-', '')[:20]
             bank_code = kwargs.get('bank_code') or self._get_bank_code(phone)
             
             payload = {
