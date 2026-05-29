@@ -495,6 +495,55 @@ def expire_stale_assigned_orders_task():
         )
 
 
+@shared_task(
+    name='domain.services.dispatch_tasks.expire_stale_picked_orders_task',
+    acks_late=True,
+)
+def expire_stale_picked_orders_task():
+    """
+    Cancel orders stuck in PICKED state for more than 2 hours.
+    This handles cases where a driver picked up an order but never marked it
+    as delivered (e.g. app crash, lost device, or driver abandonment).
+
+    Uses CancelOrderService to properly free the driver and handle refunds.
+    """
+    from domain.services.order_services import CancelOrderService
+
+    cutoff = timezone.now() - timedelta(hours=2)
+
+    system_user, _ = User.objects.get_or_create(
+        username='system_dispatcher',
+        defaults={'role': 'admin', 'is_staff': True},
+    )
+
+    stale_orders = Order.objects.filter(
+        status='PICKED',
+        status_changed_at__lt=cutoff,
+    )
+
+    cancelled = 0
+    for order in stale_orders:
+        try:
+            CancelOrderService.execute(
+                order_id=str(order.id),
+                actor=system_user,
+                reason=(
+                    'Expired: Driver did not complete delivery within 2 hours '
+                    'of pickup.'
+                ),
+            )
+            cancelled += 1
+        except Exception as exc:
+            logger.error(
+                f"[PickedExpiry] Failed to cancel order {order.id}: {exc}"
+            )
+
+    if cancelled:
+        logger.info(
+            f"[PickedExpiry] Cancelled {cancelled} stale PICKED orders."
+        )
+
+
 @shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
 def retry_dispatch_task(order_id: str, attempt: int = 1):
     """

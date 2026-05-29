@@ -44,11 +44,32 @@ def on_order_delivered(event: OrderDelivered):
             # Standard Order
             payment = Payment.objects.get(payable_type='order', payable_id=event.aggregate_id)
             EventBus.publish(PaymentReleaseRequested(
-                aggregate_id=payment.id, 
-                payload={'order_id': str(event.aggregate_id)}
+                aggregate_id=payment.id,
+                payload={'order_id': str(order.id)}
             ))
-    except (Payment.DoesNotExist, Exception) as e:
+    except Exception as e:
         logger.error(f"Failed to trigger payment release for order {event.aggregate_id}: {str(e)}")
+
+    # 3. Complete pool if all its orders are delivered
+    if order.pool:
+        try:
+            pool = order.pool
+            if pool.status == 'DELIVERING':
+                total = pool.final_orders.count()
+                delivered = pool.final_orders.filter(status='DELIVERED').count()
+                if total > 0 and delivered == total:
+                    from domain.fsm.pool_fsm import PoolFSM
+                    from domain.events.types import PoolCompleted
+                    from django.db import transaction
+                    pool.status = PoolFSM.transition(pool.status, 'COMPLETED')
+                    pool.save(update_fields=['status'])
+                    transaction.on_commit(lambda: EventBus.publish(PoolCompleted(
+                        aggregate_id=pool.id,
+                        payload={'order_id': str(order.id)}
+                    )))
+                    logger.info(f"Pool {pool.id} transitioned DELIVERING -> COMPLETED (all {total} orders delivered)")
+        except Exception as e:
+            logger.error(f"Failed to complete pool for order {event.aggregate_id}: {str(e)}")
 
 
 def on_payment_release_requested(event: PaymentReleaseRequested):
@@ -359,8 +380,9 @@ def on_batch_offered(event):
 
 def on_batch_accepted(event):
     """Handle driver accepted batch - publish DriverAssigned for each order"""
-    from apps.orders.models import DeliveryBatch
+    from apps.orders.models import DeliveryBatch, OrderPool
     from domain.events.types import DriverAssigned
+    from domain.fsm.pool_fsm import PoolFSM
 
     try:
         batch = DeliveryBatch.objects.select_related('driver').get(id=event.aggregate_id)
@@ -371,6 +393,13 @@ def on_batch_accepted(event):
                     payload={'driver_id': str(batch.driver.id), 'batch_id': str(batch.id)}
                 ))
             logger.info(f"Batch {batch.id} accepted, published DriverAssigned for {batch.orders.count()} orders")
+
+            # Transition any source pools to DELIVERING
+            pools = OrderPool.objects.filter(batch=batch, status='DISPATCHING')
+            for pool in pools:
+                pool.status = PoolFSM.transition(pool.status, 'DELIVERING')
+                pool.save(update_fields=['status'])
+                logger.info(f"Pool {pool.id} transitioned DISPATCHING -> DELIVERING")
     except Exception as e:
         logger.error(f"Error in on_batch_accepted handler: {str(e)}")
 
