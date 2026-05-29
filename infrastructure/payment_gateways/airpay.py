@@ -45,10 +45,10 @@ class AirpayGateway(PaymentGateway):
             if not token:
                 return {'success': False, 'error': 'Failed to obtain Airpay authentication token'}
 
-            is_retry = kwargs.get('is_retry', False)
-
             # 1. Prepare Seamless Payload
-            sanitized_order_id = str(order_reference).replace('-', '')[:20]
+            # Airpay seamless requires a short numeric order_id — use millisecond timestamp
+            import time
+            order_id = str(int(time.time() * 1000000))[-15:]
             bank_code = kwargs.get('bank_code') or self._get_bank_code(phone)
             
             payload = {
@@ -56,7 +56,7 @@ class AirpayGateway(PaymentGateway):
                 'buyer_phone': phone,
                 'buyer_firstname': kwargs.get('buyer_firstname', 'Mwanachuo'),
                 'buyer_lastname': kwargs.get('buyer_lastname', 'User'),
-                'orderid': sanitized_order_id,
+                'orderid': order_id,
                 'amount': formatted_amount,
                 'channel': 'mmoney',
                 'chmod': 'mmoney',
