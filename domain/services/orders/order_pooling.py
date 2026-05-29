@@ -13,7 +13,7 @@ from apps.events.utils import broadcast_pool_status
 from domain.services.pricing_service import PricingService
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from domain.events.bus import EventBus
-from domain.events.types import PoolLocked, PoolPaid, PoolReady, PoolCompleted, PoolCancelled
+from domain.events.types import OrderCreated, PoolLocked, PoolPaid, PoolReady, PoolCompleted, PoolCancelled
 from domain.fsm.pool_fsm import PoolFSM, InvalidPoolTransitionError
 import h3
 
@@ -370,7 +370,7 @@ class PoolOrderService:
                 pool=pool,
                 is_pool_order=True,
                 is_paid=True,
-                status='PENDING',
+                status='CREATED',
                 items_subtotal=items_subtotal,
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,
