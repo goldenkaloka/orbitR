@@ -109,6 +109,7 @@ class OrderSerializer(serializers.ModelSerializer):
     original_delivery_fee = serializers.SerializerMethodField()
     discount_amount = serializers.SerializerMethodField()
     route_sequence = serializers.ReadOnlyField()
+    pool_id = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -119,7 +120,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch', 'route_sequence'
+            'batch', 'route_sequence', 'is_pool_order', 'pool_id'
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
@@ -141,6 +142,9 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
+
+    def get_pool_id(self, obj):
+        return str(obj.pool_id) if obj.pool_id else None
 
     def get_batch(self, obj):
         if not obj.batch:

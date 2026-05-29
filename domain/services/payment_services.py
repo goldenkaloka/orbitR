@@ -205,11 +205,19 @@ class CompletePaymentService:
         )
         
         from apps.events.utils import broadcast_pool_status
-        broadcast_pool_status(str(pool.id), pool.status, message=f"{member.user.username} has paid their share!")
+        _pid = str(pool.id)
+        _pstatus = pool.status
+        _username = member.user.username
 
-        if not pool.members.exclude(status='PAID').exists():
-            from domain.services.order_services import PoolOrderService
-            PoolOrderService.finalize_pool(pool.id)
+        all_paid = not pool.members.exclude(status='PAID').exists()
+        _pool_id = str(pool.id)
+
+        transaction.on_commit(lambda: broadcast_pool_status(
+            _pid, _pstatus, message=f"{_username} has paid their share!"
+        ))
+
+        if all_paid:
+            transaction.on_commit(lambda pid=_pool_id: PoolOrderService.finalize_pool(pid))
 
     @staticmethod
     def _handle_marketplace_payment(payment):
