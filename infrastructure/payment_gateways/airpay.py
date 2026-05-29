@@ -90,7 +90,7 @@ class AirpayGateway(PaymentGateway):
             def handle_token_failure(reason):
                 logger.warning(f"Airpay token validation failed ({reason}). Clearing cache and retrying...")
                 cache.delete(f"airpay_token_{self.mercid}")
-                if not is_retry:
+                if not kwargs.get('is_retry'):
                     kwargs['is_retry'] = True
                     return self.collect(amount, phone, order_reference, **kwargs)
                 return {'success': False, 'error': 'Access token validation failed. Please try again.'}
