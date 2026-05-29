@@ -497,17 +497,22 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'])
     def confirm(self, request, pk=None):
+        import logging
+        _log = logging.getLogger(__name__)
         try:
             # Security: Manual check if restaurant owner
             order = Order.objects.get(id=pk)
             if order.restaurant.owner != request.user:
                 return Response({"error": "Not authorized to confirm this order"}, status=403)
                 
+            _log.warning("CONFIRM_DEBUG: order=%s status=%s is_paid=%s", pk, order.status, order.is_paid)
             order = ConfirmOrderService.execute(pk, request.user)
             return Response(OrderSerializer(order).data)
         except (InvalidStateTransitionError, PermissionError) as e:
+            _log.warning("CONFIRM_DEBUG error: %s", str(e))
             return Response({"error": str(e)}, status=403 if isinstance(e, PermissionError) else 400)
         except Exception as e:
+            _log.warning("CONFIRM_DEBUG unexpected error: %s", str(e))
             return Response({"error": str(e)}, status=500)
 
     @action(detail=True, methods=['POST'], url_path='start-preparing')

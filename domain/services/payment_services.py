@@ -217,6 +217,7 @@ class CompletePaymentService:
         ))
 
         if all_paid:
+            from domain.services.order_services import PoolOrderService
             transaction.on_commit(lambda pid=_pool_id: PoolOrderService.finalize_pool(pid))
 
     @staticmethod
