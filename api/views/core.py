@@ -284,16 +284,17 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
         restaurant_batches = []
         for batch in batches:
-            restaurant_orders = batch.orders.filter(restaurant_id=restaurant.id)
-            if restaurant_orders.exists():
+            all_orders = list(batch.orders.all())
+            restaurant_orders = [o for o in all_orders if o.restaurant_id == restaurant.id]
+            if restaurant_orders:
                 restaurant_batches.append({
                     'batch_id': str(batch.id),
                     'status': batch.status,
                     'waiting_since': batch.waiting_since.isoformat() if batch.waiting_since else None,
                     'timeout_at': (batch.waiting_since + timedelta(minutes=timeout_minutes)).isoformat() if batch.waiting_since else None,
-                    'order_count': batch.orders.count(),
-                    'restaurant_order_count': restaurant_orders.count(),
-                    'total_value': float(sum(o.total_amount for o in batch.orders.all())),
+                    'order_count': len(all_orders),
+                    'restaurant_order_count': len(restaurant_orders),
+                    'total_value': float(sum(o.total_amount for o in all_orders)),
                     'has_temp_driver_pending': True
                 })
 
@@ -318,8 +319,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             'restaurant', 
             'restaurant__owner', 
             'driver', 
-            'driver__user'
-        ).prefetch_related('items', 'items__food').order_by('-created_at')
+            'driver__user',
+            'batch',
+        ).prefetch_related(
+            'items', 'items__food',
+            'pool__members',
+            'pool__members__user',
+        ).order_by('-created_at')
         
         if user.role == 'customer':
             return queryset.filter(customer=user)
@@ -413,45 +419,39 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['GET'], url_path='available-jobs')
     def available_jobs(self, request):
-        # Orders that are READY, PAID, and don't have a driver assigned
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
-        
-        # RESTORED: Filter by driver's current H3 cell if available
+
         try:
             driver = request.user.driver_profile
-            if driver.h3_index:
-                # Show jobs in driver's cell and immediate neighbors
-                neighbor_cells = get_neighbors(driver.h3_index, 1)
-                if neighbor_cells:
-                    queryset = Order.objects.filter(h3_index__in=neighbor_cells)
-                else:
-                    queryset = Order.objects.all()
-            else:
-                queryset = Order.objects.all()
+            h3_cell = driver.h3_index if driver else None
         except Driver.DoesNotExist:
-            queryset = Order.objects.all()
+            h3_cell = None
 
-        orders = queryset.select_related(
-            'restaurant', 
-            'restaurant__owner', 
-            'customer'
-        ).prefetch_related('items', 'items__food').filter(
-            status='READY', 
-            is_paid=True, 
+        # Cache per driver zone with 15s TTL — drivers poll this frequently
+        cache_key = f"available_jobs:{h3_cell or 'none'}:{limit}:{offset}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+
+        if h3_cell:
+            neighbor_cells = get_neighbors(h3_cell, 1)
+            zone_filter = {'h3_index__in': neighbor_cells} if neighbor_cells else {}
+        else:
+            zone_filter = {}
+
+        orders = Order.objects.filter(
+            **zone_filter,
+            status='READY',
+            is_paid=True,
             driver__isnull=True,
-        ).order_by('-created_at')[offset:offset+limit]
-        
-        driver_status = None
-        try:
-            driver_status = request.user.driver_profile.status
-        except Exception:
-            pass
-        logger.info(f"Available jobs: {len(orders)} orders found for driver (status={driver_status})")
-        for o in orders:
-            logger.info(f"  Order {o.id}: batch={o.batch_id}, h3_index={o.h3_index}, restaurant={o.restaurant_id}, driver={o.driver_id}")
-        
-        return Response(OrderSerializer(orders, many=True).data)
+        ).select_related(
+            'restaurant', 'restaurant__owner', 'customer',
+        ).prefetch_related('items', 'items__food').order_by('-created_at')[offset:offset + limit]
+
+        data = OrderSerializer(orders, many=True).data
+        cache.set(cache_key, data, 15)
+        return Response(data)
 
     @action(detail=True, methods=['POST'], url_path='claim-job')
     def claim_job(self, request, pk=None):

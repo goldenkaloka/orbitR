@@ -597,6 +597,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.orders.tasks.dispute_sla_check',
         'schedule': crontab(minute='*/5'),
     },
+    'cleanup-stale-idempotency-keys': {
+        'task': 'apps.orders.tasks.cleanup_stale_idempotency_keys',
+        'schedule': crontab(minute=0, hour='*'),
+    },
 }
 
 PREPARING_ORDER_TIMEOUT_MINUTES = config('PREPARING_ORDER_TIMEOUT_MINUTES', default=45, cast=int)

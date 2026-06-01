@@ -43,3 +43,43 @@ def clear_stale_heartbeats():
     """
     Driver.objects.filter(status='OFFLINE').update(last_heartbeat=None)
     return "Cleared stale heartbeats for offline drivers"
+
+
+@shared_task(acks_late=True, max_retries=3, default_retry_delay=5)
+def broadcast_driver_location(order_id: str, lat: float, lng: float, heading: float):
+    """
+    Offloads WebSocket broadcast + push notification for driver location updates
+    to Celery so the request-response cycle is not blocked.
+    """
+    from apps.events.utils import broadcast_order_location
+    from infrastructure.notifications.service import NotificationService
+    from django.core.cache import cache
+    from apps.orders.models import Order
+    from django.contrib.gis.geos import Point
+    # 1. WebSocket broadcast
+    broadcast_order_location(
+        order_id=order_id,
+        lat=lat,
+        lng=lng,
+        heading=heading,
+    )
+
+    # 2. Check proximity for "rider nearby" push notification
+    try:
+        order = Order.objects.get(id=order_id)
+        if order.status == 'PICKED' and order.delivery_location:
+            from apps.core.geo_utils import haversine_distance
+            rider_loc = Point(lng, lat, srid=4326)
+            dist_m = haversine_distance(order.delivery_location, rider_loc)
+            if dist_m < 20:
+                notif_cache_key = f"nearby_notif_{order.id}"
+                if not cache.get(notif_cache_key):
+                    NotificationService.send_push(
+                        user_id=str(order.customer.id),
+                        title="Rider Nearby! 🛵",
+                        body=f"Your rider is almost at your location. PIN: {order.delivery_otp}. Please get ready!",
+                        data={"order_id": str(order.id), "type": "rider_nearby"},
+                    )
+                    cache.set(notif_cache_key, True, 600)
+    except Order.DoesNotExist:
+        pass

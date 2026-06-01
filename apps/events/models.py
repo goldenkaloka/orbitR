@@ -9,5 +9,11 @@ class EventLog(models.Model):
     payload = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    class Meta:
+        indexes = [
+            models.Index(fields=['aggregate_type', 'aggregate_id', 'event_type']),
+            models.Index(fields=['aggregate_id']),
+        ]
+
     def __str__(self):
         return f"Event: {self.event_type} on {self.aggregate_type} ({self.aggregate_id})"

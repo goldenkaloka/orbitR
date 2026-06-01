@@ -1,6 +1,7 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.core.cache import cache
 from apps.geo.models import OperationalZone, ZoneH3Index
 from api.serializers.geo import OperationalZoneSerializer, OperationalZoneMinimalSerializer
 from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION, get_neighbors
@@ -20,39 +21,49 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         
         if not lat or not lng:
             return Response({'error': 'lat and lng are required'}, status=400)
-            
+
         try:
             h3_index = latlng_to_h3(lat, lng, ZONE_RESOLUTION)
-            print(f"🌍 RESOLVING ZONE FOR: Lat {lat}, Lng {lng} -> H3: {h3_index}")
-            
-            # Find the zone that contains this H3 cell
-            zone_index = ZoneH3Index.objects.filter(
-                h3_index=h3_index, 
-                zone__is_active=True
-            ).select_related('zone').first()
-            
-            if zone_index:
-                print(f"✅ FOUND DIRECT MATCH in Zone: {zone_index.zone.name}")
-                return Response(OperationalZoneMinimalSerializer(zone_index.zone).data)
-            
-            print(f"⚠️ NO DIRECT MATCH. Checking neighbors...")
-            # If not found, check neighboring cells (for edge cases near zone boundaries)
-            neighbor_h3_cells = get_neighbors(h3_index)
-            print(f"   Neighbors to check: {neighbor_h3_cells}")
-            
-            neighbor_zones = ZoneH3Index.objects.filter(
-                h3_index__in=neighbor_h3_cells,
-                zone__is_active=True
-            ).select_related('zone').first()
-            
-            if neighbor_zones:
-                print(f"✅ FOUND NEIGHBOR MATCH in Zone: {neighbor_zones.zone.name}")
-                return Response(OperationalZoneMinimalSerializer(neighbor_zones.zone).data)
-            
-            print(f"❌ COMPLETELY OUT OF BOUNDS: No zones found even in neighbors.")
-            return Response({'detail': 'No zone found for these coordinates'}, status=404)
         except (ValueError, TypeError):
             return Response({'error': 'Invalid lat or lng format'}, status=400)
+
+        cache_key = f"geo:zone_resolve:{h3_index}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
+
+        print(f"🌍 RESOLVING ZONE FOR: Lat {lat}, Lng {lng} -> H3: {h3_index}")
+        
+        # Find the zone that contains this H3 cell
+        zone_index = ZoneH3Index.objects.filter(
+            h3_index=h3_index, 
+            zone__is_active=True
+        ).select_related('zone').first()
+        
+        if zone_index:
+            print(f"✅ FOUND DIRECT MATCH in Zone: {zone_index.zone.name}")
+            data = OperationalZoneMinimalSerializer(zone_index.zone).data
+            cache.set(cache_key, data, 3600)
+            return Response(data)
+        
+        print(f"⚠️ NO DIRECT MATCH. Checking neighbors...")
+        neighbor_h3_cells = get_neighbors(h3_index)
+        print(f"   Neighbors to check: {neighbor_h3_cells}")
+        
+        neighbor_zones = ZoneH3Index.objects.filter(
+            h3_index__in=neighbor_h3_cells,
+            zone__is_active=True
+        ).select_related('zone').first()
+        
+        if neighbor_zones:
+            print(f"✅ FOUND NEIGHBOR MATCH in Zone: {neighbor_zones.zone.name}")
+            data = OperationalZoneMinimalSerializer(neighbor_zones.zone).data
+            cache.set(cache_key, data, 3600)
+            return Response(data)
+        
+        print(f"❌ COMPLETELY OUT OF BOUNDS: No zones found even in neighbors.")
+        cache.set(cache_key, {'detail': 'No zone found for these coordinates'}, 600)
+        return Response({'detail': 'No zone found for these coordinates'}, status=404)
 
     @action(detail=False, methods=['GET'])
     def autocomplete(self, request):
@@ -67,6 +78,11 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
+
+        cache_key = f"geo:autocomplete:{query}:{lat or ''}:{lng or ''}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
         
         token = "pk.eyJ1IjoiZ29sZGVua2Fsb2thIiwiYSI6ImNtbnI4OGxpbjAxYmMyb3F5YjV3dXRhOXUifQ.Ch12y0VZXfYo8j8HvFjz4g"
         
@@ -140,6 +156,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 import logging
                 logging.getLogger(__name__).error(f"Geocoding fallback also failed: {e}")
         
+        cache.set(cache_key, results, 3600)
         return Response(results)
 
     @action(detail=False, methods=['GET'])
@@ -153,6 +170,11 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         
         if not lat or not lng:
             return Response({'error': 'lat and lng are required'}, status=400)
+
+        cache_key = f"geo:reverse_geocode:{lat}:{lng}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response(cached)
             
         token = "pk.eyJ1IjoiZ29sZGVua2Fsb2thIiwiYSI6ImNtbnI4OGxpbjAxYmMyb3F5YjV3dXRhOXUifQ.Ch12y0VZXfYo8j8HvFjz4g"
         
@@ -220,4 +242,5 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 import logging
                 logging.getLogger(__name__).error(f"Geocoding reverse fallback also failed: {e}")
         
+        cache.set(cache_key, results, 3600)
         return Response(results)

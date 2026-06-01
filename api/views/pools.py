@@ -20,7 +20,11 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         return OrderPool.objects.filter(
             Q(initiator=user) | Q(members__user=user),
             status__in=['OPEN', 'LOCKED', 'PAID', 'READY', 'DISPATCHING', 'DELIVERING']
-        ).distinct().prefetch_related('members', 'members__user')
+        ).distinct().prefetch_related(
+            'members', 'members__user',
+            'restaurant__foods',
+            'final_orders',
+        )
 
     def create(self, request, *args, **kwargs):
         # UX Improvement: If user already has an open pool, just return it
@@ -190,6 +194,38 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=403)
         except Exception as e:
             return Response({'error': str(e)}, status=400)
+
+    @action(detail=False, methods=['GET'], url_path='nearby')
+    def nearby(self, request):
+        """Get active open pools within a 1.0 km radius of the user."""
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        
+        # Filter for open pools that haven't expired yet
+        from django.utils import timezone
+        queryset = OrderPool.objects.filter(status='OPEN', expires_at__gt=timezone.now()).prefetch_related(
+            'members', 'members__user',
+            'restaurant__foods',
+            'final_orders',
+        )
+        
+        if lat and lng:
+            from django.contrib.gis.geos import Point
+            from django.contrib.gis.db.models.functions import Distance
+            try:
+                user_location = Point(float(lng), float(lat), srid=4326)
+                # Filter for pools within 1.0 km proximity (1000 meters)
+                queryset = queryset.annotate(
+                    distance=Distance('delivery_location', user_location)
+                ).filter(distance__lte=1000).order_by('distance')
+            except (ValueError, TypeError):
+                return Response({'error': 'Invalid lat or lng'}, status=400)
+        else:
+            # Fallback to simple listing if coordinates not supplied
+            queryset = queryset.order_by('-created_at')[:20]
+            
+        serializer = OrderPoolSerializer(queryset, many=True, context={'request': request})
+        return Response(serializer.data)
 
 
 # Import models for the Q query

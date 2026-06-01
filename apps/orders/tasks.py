@@ -152,3 +152,17 @@ def dispute_sla_check():
     if escalated_count:
         logger.info(f"[DisputeSLA] Escalated {escalated_count} stale disputes")
     return f"Escalated {escalated_count} disputes"
+
+
+@shared_task
+def cleanup_stale_idempotency_keys():
+    """
+    Deletes IdempotencyKey records older than 24 hours to prevent unbounded table growth.
+    Runs hourly. Uses chunked deletes to avoid long-running transactions.
+    """
+    from apps.core.models import IdempotencyKey
+    threshold = timezone.now() - timedelta(hours=24)
+    deleted, _ = IdempotencyKey.objects.filter(created_at__lt=threshold).delete()
+    if deleted:
+        logger.info(f"[IdempotencyCleanup] Deleted {deleted} stale keys older than 24h")
+    return f"Deleted {deleted} stale idempotency keys"

@@ -202,13 +202,20 @@ class OrderSerializer(serializers.ModelSerializer):
         }
 
     def get_estimated_arrival_minutes(self, obj):
-        from domain.services.eta_service import ETAService
-        result = ETAService.calculate(obj)
+        result = self._get_cached_eta(obj)
         return result.get('total_minutes')
 
     def get_waiting_info(self, obj):
-        from domain.services.eta_service import ETAService
-        return ETAService.calculate(obj)
+        return self._get_cached_eta(obj)
+
+    def _get_cached_eta(self, obj):
+        if not hasattr(self, '_eta_cache'):
+            self._eta_cache = {}
+        order_id = str(obj.id)
+        if order_id not in self._eta_cache:
+            from domain.services.eta_service import ETAService
+            self._eta_cache[order_id] = ETAService.calculate(obj)
+        return self._eta_cache[order_id]
 
     def get_original_delivery_fee(self, obj):
         if obj.original_delivery_fee and obj.original_delivery_fee > 0:

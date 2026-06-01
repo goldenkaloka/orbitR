@@ -94,6 +94,33 @@ class VerifyOTPView(APIView):
         
         if not phone or not code:
             return Response({'error': 'Phone and code are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Rate limit: max 10 verify attempts per phone per 5 minutes
+        verify_rate_key = f"verify_rate_{phone}"
+        try:
+            attempts = cache.get(verify_rate_key, 0)
+            if attempts >= 10:
+                return Response(
+                    {'error': 'Too many verify attempts. Please wait a few minutes.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            cache.incr(verify_rate_key)
+        except (ValueError, TypeError):
+            cache.set(verify_rate_key, 1, 300)
+
+        # IP-based rate limit: max 20 verify attempts per IP per minute
+        ip = request.META.get('REMOTE_ADDR', '')
+        ip_rate_key = f"verify_ip_rate_{ip}"
+        try:
+            ip_attempts = cache.get(ip_rate_key, 0)
+            if ip_attempts >= 20:
+                return Response(
+                    {'error': 'Too many requests from this IP. Please slow down.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            cache.incr(ip_rate_key)
+        except (ValueError, TypeError):
+            cache.set(ip_rate_key, 1, 60)
             
         try:
             # Use select_for_update to lock the record
@@ -163,6 +190,19 @@ class RegisterView(APIView):
 
         if not phone or not code:
             return Response({'error': 'Phone and code are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Rate limit: max 5 register attempts per phone per 10 minutes
+        reg_rate_key = f"register_rate_{phone}"
+        try:
+            attempts = cache.get(reg_rate_key, 0)
+            if attempts >= 5:
+                return Response(
+                    {'error': 'Too many registration attempts. Please wait a while.'},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS
+                )
+            cache.incr(reg_rate_key)
+        except (ValueError, TypeError):
+            cache.set(reg_rate_key, 1, 600)
 
         if not username or not username.strip():
             return Response({'error': 'Username is required for registration'}, status=status.HTTP_400_BAD_REQUEST)

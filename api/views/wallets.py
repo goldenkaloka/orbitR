@@ -29,11 +29,12 @@ class WalletViewSet(viewsets.GenericViewSet):
     serializer_class = WalletSerializer
 
     def get_queryset(self):
-        return Wallet.objects.filter(user=self.request.user)
+        return Wallet.objects.filter(user=self.request.user).prefetch_related('transactions')
 
     @action(detail=False, methods=['GET'])
     def me(self, request):
         wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
         serializer = self.get_serializer(wallet)
         return Response(serializer.data)
 

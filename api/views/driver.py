@@ -12,7 +12,6 @@ from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.utils import timezone
 from apps.orders.models import Order
-from infrastructure.notifications.service import NotificationService
 import math
 
 class DriverViewSet(viewsets.ModelViewSet):
@@ -93,32 +92,15 @@ class DriverViewSet(viewsets.ModelViewSet):
 
         cache.set(cache_key, True, 10)
 
-        from apps.events.utils import broadcast_order_location
+        from apps.delivery.tasks import broadcast_driver_location
         active_orders = Order.objects.filter(driver=driver, status__in=['ASSIGNED', 'PICKED'])
         for order in active_orders:
-            broadcast_order_location(
+            broadcast_driver_location.delay(
                 order_id=str(order.id),
                 lat=lat_f,
                 lng=lng_f,
-                heading=request.data.get('heading', 0.0)
+                heading=request.data.get('heading', 0.0),
             )
-
-        from django.contrib.gis.measure import D
-        active_orders = Order.objects.filter(
-            driver=driver,
-            status='PICKED',
-            delivery_location__distance_lte=(new_loc, D(m=20))
-        )
-        for order in active_orders:
-            notif_cache_key = f"nearby_notif_{order.id}"
-            if not cache.get(notif_cache_key):
-                NotificationService.send_push(
-                    user_id=str(order.customer.id),
-                    title="Rider Nearby! 🛵",
-                    body=f"Your rider is almost at your location. PIN: {order.delivery_otp}. Please get ready!",
-                    data={"order_id": str(order.id), "type": "rider_nearby"}
-                )
-                cache.set(notif_cache_key, True, 600)
 
         return Response({'status': 'location updated'})
 
