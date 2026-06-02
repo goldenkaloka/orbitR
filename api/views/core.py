@@ -759,14 +759,22 @@ class DisputeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        qs = Dispute.objects.all()
         if user.role == 'customer':
-            return Dispute.objects.filter(raised_by=user)
-        elif user.role == 'admin':
-            return Dispute.objects.all()
-        return Dispute.objects.none()
+            qs = qs.filter(raised_by=user)
+        elif user.role != 'admin':
+            return Dispute.objects.none()
+
+        status = self.request.query_params.get('status')
+        if status:
+            qs = qs.filter(status=status)
+        return qs.select_related('order', 'raised_by', 'assigned_to', 'resolved_by')
 
     @action(detail=True, methods=['POST'])
     def resolve(self, request, pk=None):
+        if request.user.role != 'admin':
+            return Response({"error": "Only admins can resolve disputes"}, status=403)
+
         from domain.services.admin_services import DisputeResolutionService
 
         resolution = request.data.get('resolution')
