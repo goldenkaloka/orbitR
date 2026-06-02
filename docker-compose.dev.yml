@@ -15,6 +15,27 @@ services:
   backend:
     ports:
       - "8000:8000"
+    volumes:
+      - .:/app
+      - logs_data:/app/logs
     environment:
       - DEBUG=True
       - MINIO_EXTERNAL_URL=http://localhost:9000
+
+  celery-worker:
+    volumes:
+      - .:/app
+      - logs_data:/app/logs
+
+  celery-worker-payments:
+    volumes:
+      - .:/app
+      - logs_data:/app/logs
+
+  celery-beat:
+    volumes:
+      - .:/app
+      - logs_data:/app/logs
+
+volumes:
+  logs_data:

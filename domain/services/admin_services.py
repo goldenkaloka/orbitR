@@ -13,6 +13,7 @@ from domain.events.types import (
     OrderDisputed,
     OrderResolved,
 )
+from domain.fsm.payment_fsm import PaymentFSM
 from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
 from domain.fsm.payment_fsm import PaymentFSM
 
@@ -115,10 +116,12 @@ class DisputeOrderService:
                 category=category,
             )
 
-            # Hold payment if collected
-            Payment.objects.filter(
+            # Hold payment if collected — use FSM to validate transition
+            for payment in Payment.objects.filter(
                 payable_type='order', payable_id=order.id, status='COLLECTED'
-            ).update(status='ON_HOLD')
+            ):
+                payment.status = PaymentFSM.transition(payment.status, 'ON_HOLD')
+                payment.save(update_fields=['status'])
 
             EventBus.publish(OrderDisputed(
                 aggregate_id=order.id,
@@ -160,10 +163,12 @@ class DisputeResolutionService:
             order = Order.objects.select_for_update().get(id=dispute.order_id)
 
             if resolution == 'RESOLVED_DISMISSED':
-                # Release hold — payment goes back to vendor
-                Payment.objects.filter(
+                # Release hold — payment goes back to vendor via FSM
+                for payment in Payment.objects.filter(
                     payable_type='order', payable_id=order.id, status='ON_HOLD'
-                ).update(status='COLLECTED')
+                ):
+                    payment.status = PaymentFSM.transition(payment.status, 'COLLECTED')
+                    payment.save(update_fields=['status'])
                 order.status = OrderFSM.transition(order.status, 'RESOLVED')
                 order.save(update_fields=['status'])
                 EventBus.publish(OrderResolved(

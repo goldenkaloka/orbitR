@@ -107,13 +107,22 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
-    'PAGE_SIZE': 20
+    'PAGE_SIZE': 20,
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour',
+    },
 }
 
 from datetime import timedelta
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
 }
 
 # ---------------------------------------------------------------------------
@@ -623,22 +632,39 @@ LOGGING = {
     "formatters": {
         "default": {
             "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
-        }
+        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "default",
-        }
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": BASE_DIR / "logs" / "mwanachuo.log",
+            "maxBytes": 10485760,
+            "backupCount": 5,
+            "formatter": "default",
+        },
     },
     "loggers": {
+        "django": {
+            "handlers": ["console", "file"],
+            "level": config("DJANGO_LOG_LEVEL", default="INFO"),
+            "propagate": False,
+        },
+        "django.request": {
+            "handlers": ["console", "file"],
+            "level": "ERROR",
+            "propagate": False,
+        },
         "perf.request": {
-            "handlers": ["console"],
+            "handlers": ["console", "file"],
             "level": config("PERF_REQUEST_LOG_LEVEL", default="WARNING"),
             "propagate": False,
         },
         "perf.celery": {
-            "handlers": ["console"],
+            "handlers": ["console", "file"],
             "level": config("PERF_CELERY_LOG_LEVEL", default="INFO"),
             "propagate": False,
         },

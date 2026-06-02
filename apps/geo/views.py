@@ -25,7 +25,7 @@ class ZonesGeoJSON(View):
                 
             try:
                 boundary_geojson = json.loads(zone.boundary.geojson)
-            except:
+            except json.JSONDecodeError:
                 boundary_geojson = None
                 
             if not boundary_geojson:

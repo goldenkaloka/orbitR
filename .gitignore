@@ -159,7 +159,11 @@ Thumbs.db
 *.swp
 *.swo
 
+# Docker
+.dockerignore
+
 # Project specific
+logs/
 brain/
 scratch/
 restaurant-images/

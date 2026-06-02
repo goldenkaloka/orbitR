@@ -672,7 +672,7 @@ def on_order_disputed(event):
             body=f"Order #{str(order.id)[:8]} has been disputed by the customer.",
             data={"order_id": str(order.id), "type": "dispute_raised"},
         )
-        if order.driver:
+        if order.driver and order.driver.user:
             NotificationService.send_push(
                 user_id=str(order.driver.user.id),
                 title="Order Disputed",
