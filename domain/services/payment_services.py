@@ -171,12 +171,14 @@ class CompletePaymentService:
 
     @staticmethod
     def _handle_order_payment(payment):
-        order = Order.objects.get(id=payment.payable_id)
-        order.is_paid = True
         from domain.fsm.order_fsm import OrderFSM
+        from domain.services.orders.order_placement import ConfirmOrderService
+
+        order = Order.objects.select_for_update().get(id=payment.payable_id)
+        order.is_paid = True
         order.status = OrderFSM.transition(order.status, 'CREATED')
         order.save(update_fields=['is_paid', 'status'])
-        
+
         Transaction.objects.create(
             payment=payment,
             from_wallet=order.customer,
@@ -185,6 +187,10 @@ class CompletePaymentService:
             transaction_type='customer_to_platform',
             status='COMPLETED'
         )
+
+        # Confirm synchronously so the order is reflected immediately,
+        # not waiting on Celery event dispatch
+        ConfirmOrderService.execute(order.id, order.customer)
 
     @staticmethod
     def _handle_pool_payment(payment):
