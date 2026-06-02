@@ -81,8 +81,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -o /dev/null -s -w '%{http_code}' http://127.0.0.1:8000/admin/login/ | grep -qE '(200|301|302)'"]
-      interval: 20s
+      test: ["CMD-SHELL", "curl -f -s http://127.0.0.1:8000/health/ || exit 1"]
+      interval: 30s
       timeout: 10s
       retries: 5
       start_period: 60s
