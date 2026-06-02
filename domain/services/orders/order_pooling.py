@@ -10,6 +10,7 @@ from apps.products.models import Food
 from apps.restaurants.models import Restaurant
 from apps.geo.models import ZoneH3Index
 from apps.events.utils import broadcast_pool_status
+from apps.delivery.tasks import notify_nearby_pool_created
 from domain.services.pricing_service import PricingService
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from domain.events.bus import EventBus
@@ -107,6 +108,7 @@ class PoolOrderService:
 
         if pool:
             broadcast_pool_status(str(pool.id), 'OPEN')
+            notify_nearby_pool_created.delay(str(pool.id), restaurant.name)
         return pool
 
     @staticmethod

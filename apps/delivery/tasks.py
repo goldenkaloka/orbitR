@@ -83,3 +83,69 @@ def broadcast_driver_location(order_id: str, lat: float, lng: float, heading: fl
                     cache.set(notif_cache_key, True, 600)
     except Order.DoesNotExist:
         pass
+
+
+@shared_task(acks_late=True, max_retries=2, default_retry_delay=10)
+def notify_nearby_pool_created(pool_id: str, restaurant_name: str):
+    """
+    Finds users with active order/pool activity within 1 km of the new pool
+    and sends them a push notification so they can discover and join.
+    """
+    from apps.orders.models import OrderPool, Order
+    from infrastructure.notifications.service import NotificationService
+    from django.contrib.gis.measure import D
+
+    try:
+        pool = OrderPool.objects.get(id=pool_id)
+    except OrderPool.DoesNotExist:
+        logger.warning(f"[NearbyPoolNotify] Pool {pool_id} not found")
+        return f"Pool {pool_id} not found"
+
+    # Active pools within 1 km
+    nearby_pools = OrderPool.objects.filter(
+        status__in=['OPEN', 'LOCKED', 'PAID', 'READY'],
+        delivery_location__distance_lte=(pool.delivery_location, D(km=1)),
+    ).exclude(id=pool.id).exclude(initiator=pool.initiator)
+
+    user_ids: set[str] = set()
+    for p in nearby_pools:
+        user_ids.add(str(p.initiator_id))
+        for m in p.members.select_related('user'):
+            user_ids.add(str(m.user_id))
+
+    # Active orders within 1 km
+    nearby_orders = Order.objects.filter(
+        status__in=['PENDING_PAYMENT', 'PAID', 'PREPARING', 'READY', 'DISPATCHING', 'DELIVERING'],
+        delivery_location__distance_lte=(pool.delivery_location, D(km=1)),
+    )
+    for o in nearby_orders:
+        user_ids.add(str(o.customer_id))
+
+    # Exclude initiator and current members of the new pool
+    for m in pool.members.all():
+        user_ids.discard(str(m.user_id))
+    user_ids.discard(str(pool.initiator_id))
+
+    if not user_ids:
+        logger.info(f"[NearbyPoolNotify] No nearby users to notify for pool {pool_id}")
+        return f"No users to notify"
+
+    sent = 0
+    for uid in user_ids:
+        try:
+            NotificationService.send_push(
+                user_id=uid,
+                title="New Group Order Nearby!",
+                body=f"{restaurant_name} has a group order near you. Tap to join!",
+                data={
+                    'type': 'new_nearby_pool',
+                    'pool_id': pool_id,
+                    'invite_code': pool.invite_code,
+                },
+            )
+            sent += 1
+        except Exception as e:
+            logger.error(f"[NearbyPoolNotify] Failed to notify user {uid}: {e}")
+
+    logger.info(f"[NearbyPoolNotify] Notified {sent}/{len(user_ids)} users about pool {pool_id}")
+    return f"Notified {sent} users"
