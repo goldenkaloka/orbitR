@@ -626,6 +626,13 @@ CHANNEL_LAYERS = {
 
 PERF_SLOW_REQUEST_MS = config("PERF_SLOW_REQUEST_MS", default=700, cast=int)
 
+# Ensure the logs directory exists before the logging config references it.
+# Without this, Django fails to start on a fresh deployment where the directory
+# hasn't been created yet (RotatingFileHandler can't create intermediate dirs).
+import os as _os
+_LOG_DIR = BASE_DIR / "logs"
+_os.makedirs(_LOG_DIR, exist_ok=True)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
