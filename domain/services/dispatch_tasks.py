@@ -138,6 +138,14 @@ def expire_unassigned_orders_task():
 
     # Fix #15: fetch AND cancel inside the same transaction while locks are held
     with transaction.atomic():
+        # Build the exclusion set using a subquery to avoid a LEFT OUTER JOIN
+        # on the nullable batch FK. Postgres refuses SELECT FOR UPDATE on the
+        # nullable side of an outer join, which is what .exclude(batch__status__in=[...])
+        # generates. Fetching the IDs separately avoids that entirely.
+        active_batch_order_ids = Order.objects.filter(
+            batch__status__in=['OFFERED', 'CREATED', 'WAITING_TEMP_DRIVER']
+        ).values_list('id', flat=True)
+
         stale_orders = list(
             Order.objects.select_for_update(skip_locked=True)
             .filter(
@@ -147,11 +155,8 @@ def expire_unassigned_orders_task():
             .filter(
                 Q(ready_at__lt=cutoff) | Q(ready_at__isnull=True, created_at__lt=cutoff)
             )
-            # In the new design, orders stay READY during the offer window.
-            # Exclude orders whose batch is actively being dispatched or escalated
-            # — those batches have their own lifecycle managed by the dispatch/expiry
-            # system and individual order cancellation would orphan the batch.
-            .exclude(batch__status__in=['OFFERED', 'CREATED', 'WAITING_TEMP_DRIVER'])
+            # Exclude via subquery — no LEFT JOIN, safe with SELECT FOR UPDATE
+            .exclude(id__in=active_batch_order_ids)
         )
 
         if not stale_orders:

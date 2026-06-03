@@ -99,7 +99,10 @@ class OrderSerializer(serializers.ModelSerializer):
     restaurant_longitude = serializers.SerializerMethodField()
     delivery_latitude = serializers.SerializerMethodField()
     delivery_longitude = serializers.SerializerMethodField()
-    
+    # Pre-fetched route geometry embedded in the order response so the client
+    # never needs a second HTTP round-trip to Mapbox Directions on page open.
+    route_geometry = serializers.SerializerMethodField()
+
     rider_name = serializers.ReadOnlyField(source='driver.user.username')
     rider_phone = serializers.ReadOnlyField(source='driver.user.phone')
     customer_name = serializers.ReadOnlyField(source='customer.username')
@@ -121,7 +124,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch', 'route_sequence', 'is_pool_order', 'pool_id'
+            'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
@@ -139,6 +142,62 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_delivery_longitude(self, obj):
         return obj.delivery_location.x if obj.delivery_location else None
+
+    def get_route_geometry(self, obj):
+        """
+        Returns a pre-fetched [[lng, lat], ...] polyline for the static
+        restaurant → delivery route, cached in Redis for 2 hours.
+
+        The client uses this to draw the route instantly on map load with
+        zero extra HTTP calls. Falls back to None gracefully — the client
+        will fetch from Mapbox Directions API as a fallback.
+        """
+        from django.core.cache import cache
+        from apps.core.cache_keys import stable_cache_key
+
+        res = obj.restaurant
+        if not res or not res.geo_location or not obj.delivery_location:
+            return None
+
+        res_lng = round(res.geo_location.x, 6)
+        res_lat = round(res.geo_location.y, 6)
+        dest_lng = round(obj.delivery_location.x, 6)
+        dest_lat = round(obj.delivery_location.y, 6)
+
+        cache_key = stable_cache_key('route_geom', {
+            'from': [res_lng, res_lat],
+            'to': [dest_lng, dest_lat],
+        })
+
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Fetch from Mapbox Directions API synchronously.
+        # This path only runs on cache miss (new unique route).
+        import os, requests as req_lib
+        token = os.environ.get('MAPBOX_TOKEN', '')
+        if not token:
+            return None
+
+        try:
+            url = (
+                f"https://api.mapbox.com/directions/v5/mapbox/driving/"
+                f"{res_lng},{res_lat};{dest_lng},{dest_lat}"
+                f"?geometries=geojson&overview=full&access_token={token}"
+            )
+            resp = req_lib.get(url, timeout=3)
+            if resp.status_code != 200:
+                return None
+            routes = resp.json().get('routes', [])
+            if not routes:
+                return None
+            coords = routes[0]['geometry']['coordinates']  # [[lng, lat], ...]
+            # Cache for 2 hours — restaurant/delivery coords don't change per order
+            cache.set(cache_key, coords, 60 * 60 * 2)
+            return coords
+        except Exception:
+            return None
 
 
     def get_restaurant_name(self, obj):
