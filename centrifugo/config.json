@@ -1,14 +1,22 @@
 {
-  "engine": "redis",
-  "redis_address": "redis://:${REDIS_PASSWORD}@redis:6379/2",
+  "engine": {
+    "type": "redis",
+    "redis": {
+      "address": "redis://:${REDIS_PASSWORD}@redis:6379/2"
+    }
+  },
   "token_hmac_secret_key": "${CENTRIFUGO_HMAC_SECRET}",
   "api_key": "${CENTRIFUGO_API_KEY}",
-  "admin": true,
-  "admin_password": "${CENTRIFUGO_ADMIN_PASSWORD}",
-  "admin_secret": "${CENTRIFUGO_ADMIN_SECRET}",
-  "proxy_subscribe_endpoint": "http://backend:8000/api/ws-subscribe-check/",
-  "proxy_subscribe_timeout": "3s",
-  "proxy_subscribe_secret": "${CENTRIFUGO_PROXY_SECRET}",
+  "admin": {
+    "enabled": true,
+    "password": "${CENTRIFUGO_ADMIN_PASSWORD}",
+    "secret": "${CENTRIFUGO_ADMIN_SECRET}"
+  },
+  "proxy": {
+    "subscribe_endpoint": "http://backend:8000/api/ws-subscribe-check/",
+    "subscribe_timeout": "3s",
+    "subscribe_secret": "${CENTRIFUGO_PROXY_SECRET}"
+  },
   "namespaces": [
     {
       "name": "orders",
