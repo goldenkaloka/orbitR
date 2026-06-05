@@ -1,10 +1,13 @@
 #!/bin/sh
 # Placed in /docker-entrypoint.d/ — runs before nginx starts.
-# Generates a self-signed certificate if the Let's Encrypt cert doesn't exist yet.
+# Creates required directories and generates a self-signed certificate
+# if the Let's Encrypt cert doesn't exist yet.
 # This allows nginx to start on first boot before certbot has run.
 
 DOMAIN="api.mwanachuoshop.com"
 CERT_PATH="/etc/letsencrypt/live/$DOMAIN"
+
+mkdir -p /var/www/certbot
 
 if [ ! -f "$CERT_PATH/fullchain.pem" ]; then
     echo "[init-ssl] No SSL certificate found for $DOMAIN. Generating self-signed cert for first boot..."
