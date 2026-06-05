@@ -1,0 +1,64 @@
+{
+  "engine": "redis",
+  "redis_address": "redis://:${REDIS_PASSWORD}@redis:6379/2",
+  "token_hmac_secret_key": "${CENTRIFUGO_HMAC_SECRET}",
+  "api_key": "${CENTRIFUGO_API_KEY}",
+  "admin": true,
+  "admin_password": "${CENTRIFUGO_ADMIN_PASSWORD}",
+  "admin_secret": "${CENTRIFUGO_ADMIN_SECRET}",
+  "proxy_subscribe_endpoint": "http://backend:8000/api/ws-subscribe-check/",
+  "proxy_subscribe_timeout": "3s",
+  "proxy_subscribe_secret": "${CENTRIFUGO_PROXY_SECRET}",
+  "namespaces": [
+    {
+      "name": "orders",
+      "history_size": 50,
+      "history_ttl": "300s",
+      "presence": true,
+      "join_leave": true,
+      "recover": true,
+      "protected": true
+    },
+    {
+      "name": "pools",
+      "history_size": 50,
+      "history_ttl": "300s",
+      "presence": true,
+      "join_leave": true,
+      "recover": true,
+      "protected": true
+    },
+    {
+      "name": "users",
+      "history_size": 10,
+      "history_ttl": "120s",
+      "presence": false,
+      "recover": true,
+      "protected": true
+    },
+    {
+      "name": "vendors",
+      "history_size": 10,
+      "history_ttl": "120s",
+      "presence": false,
+      "recover": true,
+      "protected": true
+    },
+    {
+      "name": "riders",
+      "history_size": 10,
+      "history_ttl": "120s",
+      "presence": true,
+      "recover": true,
+      "protected": true
+    },
+    {
+      "name": "riders_global",
+      "history_size": 20,
+      "history_ttl": "300s",
+      "presence": true,
+      "recover": true,
+      "protected": true
+    }
+  ]
+}

@@ -105,6 +105,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
     rider_name = serializers.ReadOnlyField(source='driver.user.username')
     rider_phone = serializers.ReadOnlyField(source='driver.user.phone')
+    rider_id = serializers.ReadOnlyField(source='driver.user_id')
     customer_name = serializers.ReadOnlyField(source='customer.username')
     customer_phone = serializers.ReadOnlyField(source='customer.phone')
     
@@ -123,7 +124,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
-            'notes', 'rider_name', 'rider_phone', 'created_at', 'delivery_otp', 'group_breakdown',
+            'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
             'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry',
         ]
 

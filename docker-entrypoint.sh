@@ -32,7 +32,7 @@ esac
 
 # Collect static files only for web server processes (not celery, not one-off manage.py commands)
 if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
-  if echo "$*" | grep -qE 'daphne|gunicorn|uvicorn|runserver'; then
+  if echo "$*" | grep -qE 'gunicorn|uvicorn|runserver'; then
     echo "Collecting static files..."
     python manage.py collectstatic --noinput 2>&1
   fi

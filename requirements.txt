@@ -19,10 +19,7 @@ django-filter==25.1
 drf-spectacular==0.28.0
 
 # Async & Realtime
-channels==4.3.2
-channels-redis==4.3.0
-daphne==4.2.1
-uvicorn==0.40.0
+httpx==0.28.1
 
 # Background Tasks (Celery)
 celery==5.4.0

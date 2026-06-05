@@ -11,11 +11,12 @@ from api.views.admin import AdminViewSet
 from api.views.reviews import ReviewViewSet
 from api.views.pools import PoolOrderViewSet
 from api.views.payments import AirpayWebhookView, InitiatePaymentView
-from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView
+from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView, WsTicketView
 from api.views.marketplace import MarketplaceProductViewSet, MarketplaceCategoryViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.pricing import PricingPolicyViewSet, ZonePricingTierViewSet, DeliveryFeeLogViewSet
 from api.views.batches import BatchViewSet
+from api.views.subscribe_check import ws_subscribe_check
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
@@ -43,7 +44,9 @@ urlpatterns = router.urls + [
     path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/me/', MeView.as_view(), name='auth-me'),
+    path('auth/ws-ticket/', WsTicketView.as_view(), name='ws-ticket'),
     path('payments/airpay/callback/', AirpayWebhookView.as_view(), name='airpay-callback'),
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
     path('search/', UniversalSearchView.as_view(), name='universal-search'),
+    path('ws-subscribe-check/', ws_subscribe_check, name='ws-subscribe-check'),
 ]

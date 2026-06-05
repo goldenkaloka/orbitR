@@ -66,7 +66,6 @@ INSTALLED_APPS = [
     'unfold.contrib.forms',
     'unfold.contrib.inlines',
 
-    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -79,8 +78,6 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
-    'channels',
-
     # Local Apps
     'apps.users',
     'apps.core',
@@ -191,7 +188,6 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'config.wsgi.application'
-ASGI_APPLICATION = 'config.asgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.0/ref/settings/#databases
@@ -615,14 +611,10 @@ CELERY_BEAT_SCHEDULE = {
 PREPARING_ORDER_TIMEOUT_MINUTES = config('PREPARING_ORDER_TIMEOUT_MINUTES', default=45, cast=int)
 CONFIRMED_TO_PREPARING_GRACE_MINUTES = config('CONFIRMED_TO_PREPARING_GRACE_MINUTES', default=20, cast=int)
 
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [config('REDIS_URL', default='redis://127.0.0.1:6379/1')],
-        },
-    },
-}
+CENTRIFUGO_API_URL = config('CENTRIFUGO_API_URL', default='http://localhost:8000')
+CENTRIFUGO_API_KEY = config('CENTRIFUGO_API_KEY', default='')
+CENTRIFUGO_HMAC_SECRET = config('CENTRIFUGO_HMAC_SECRET', default='')
+CENTRIFUGO_PROXY_SECRET = config('CENTRIFUGO_PROXY_SECRET', default='')
 
 PERF_SLOW_REQUEST_MS = config("PERF_SLOW_REQUEST_MS", default=700, cast=int)
 

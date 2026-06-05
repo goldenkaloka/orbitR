@@ -1,6 +1,7 @@
 import random
 import uuid
 import re
+import secrets
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -260,6 +261,29 @@ class RegisterView(APIView):
 
         except OTPCode.DoesNotExist:
             return Response({'error': 'Invalid OTP or phone'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class WsTicketView(APIView):
+    """
+    Issues credentials for WebSocket connections.
+
+    Returns both a legacy Channels ticket (for backward compatibility)
+    and a Centrifugo JWT token (for new Centrifugo-powered clients).
+
+    Flow:
+        POST /auth/ws-ticket/          (Authorization: Bearer <access_token>)
+        ← { "token": "<centrifugo_jwt>", "ticket": "<opaque_32_byte_hex>", "expires_in": 3600 }
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        from apps.events.centrifugo import generate_connection_token
+
+        token = generate_connection_token(str(request.user.id))
+        return Response({
+            'token': token,
+            'expires_in': 3600,
+        })
 
 
 class MeView(APIView):

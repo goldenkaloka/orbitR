@@ -103,22 +103,19 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Failed to save notification to DB: {str(e)}")
 
-        # Broadcast notification event to user's WebSocket channel for real-time badge update
+        # Broadcast notification event to user's Centrifugo channel for real-time badge update
         try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
-            channel_layer = get_channel_layer()
-            if channel_layer:
-                async_to_sync(channel_layer.group_send)(
-                    f'user_{user_id}',
-                    {
-                        'type': 'notification',
-                        'id': notification_id,
-                        'title': title,
-                        'body': body,
-                        'data': data or {},
-                    }
-                )
+            from apps.events.tasks import centrifugo_publish
+            centrifugo_publish.delay(
+                f'users:{user_id}',
+                {
+                    'type': 'notification',
+                    'id': notification_id,
+                    'title': title,
+                    'body': body,
+                    'data': data or {},
+                }
+            )
         except Exception as e:
             logger.error(f"Failed to broadcast notification to WS: {str(e)}")
 
