@@ -2,20 +2,20 @@
   "engine": {
     "type": "redis",
     "redis": {
-      "address": "redis://:${REDIS_PASSWORD}@redis:6379/2"
+      "address": ""
     }
   },
-  "token_hmac_secret_key": "${CENTRIFUGO_HMAC_SECRET}",
-  "api_key": "${CENTRIFUGO_API_KEY}",
+  "token_hmac_secret_key": "",
+  "api_key": "",
   "admin": {
     "enabled": true,
-    "password": "${CENTRIFUGO_ADMIN_PASSWORD}",
-    "secret": "${CENTRIFUGO_ADMIN_SECRET}"
+    "password": "",
+    "secret": ""
   },
   "proxy": {
     "subscribe_endpoint": "http://backend:8000/api/ws-subscribe-check/",
     "subscribe_timeout": "3s",
-    "subscribe_secret": "${CENTRIFUGO_PROXY_SECRET}"
+    "subscribe_secret": ""
   },
   "namespaces": [
     {
