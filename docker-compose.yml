@@ -152,6 +152,32 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/www:/var/www:ro
+      - ./nginx/init-ssl.sh:/docker-entrypoint.d/init-ssl.sh:ro
+      - certbot_www:/var/www/certbot
+    depends_on:
+      backend:
+        condition: service_started
+      centrifugo:
+        condition: service_started
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot_www:/var/www/certbot
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    entrypoint: >
+      /bin/sh -c "trap exit TERM; while :; do sleep 12h & wait \$\$!; certbot renew; done"
+
 volumes:
   postgres_data:
   minio_data:
+  certbot_www:
