@@ -5,68 +5,89 @@
       "address": ""
     }
   },
-  "token_hmac_secret_key": "",
-  "api_key": "",
+  "client": {
+    "token": {
+      "hmac_secret_key": ""
+    },
+    "allowed_origins": [
+      "https://mwanachuoshop.com",
+      "https://api.mwanachuoshop.com"
+    ]
+  },
+  "http_api": {
+    "key": ""
+  },
   "admin": {
     "enabled": true,
     "password": "",
     "secret": ""
   },
-  "proxy": {
-    "subscribe_endpoint": "http://backend:8000/api/ws-subscribe-check/",
-    "subscribe_timeout": "3s",
-    "subscribe_secret": ""
+  "channel": {
+    "proxy": {
+      "subscribe": {
+        "endpoint": "http://backend:8000/api/ws-subscribe-check/",
+        "timeout": "3s",
+        "http": {
+          "static_headers": {
+            "X-Centrifugo-Proxy-Secret": "${CENTRIFUGO_VAR_PROXY_SECRET}"
+          }
+        }
+      }
+    },
+    "namespaces": [
+      {
+        "name": "orders",
+        "history_size": 50,
+        "history_ttl": "300s",
+        "presence": true,
+        "join_leave": true,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "pools",
+        "history_size": 50,
+        "history_ttl": "300s",
+        "presence": true,
+        "join_leave": true,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "users",
+        "history_size": 10,
+        "history_ttl": "120s",
+        "presence": false,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "vendors",
+        "history_size": 10,
+        "history_ttl": "120s",
+        "presence": false,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "riders",
+        "history_size": 10,
+        "history_ttl": "120s",
+        "presence": true,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "riders_global",
+        "history_size": 20,
+        "history_ttl": "300s",
+        "presence": true,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      }
+    ]
   },
-  "namespaces": [
-    {
-      "name": "orders",
-      "history_size": 50,
-      "history_ttl": "300s",
-      "presence": true,
-      "join_leave": true,
-      "recover": true,
-      "protected": true
-    },
-    {
-      "name": "pools",
-      "history_size": 50,
-      "history_ttl": "300s",
-      "presence": true,
-      "join_leave": true,
-      "recover": true,
-      "protected": true
-    },
-    {
-      "name": "users",
-      "history_size": 10,
-      "history_ttl": "120s",
-      "presence": false,
-      "recover": true,
-      "protected": true
-    },
-    {
-      "name": "vendors",
-      "history_size": 10,
-      "history_ttl": "120s",
-      "presence": false,
-      "recover": true,
-      "protected": true
-    },
-    {
-      "name": "riders",
-      "history_size": 10,
-      "history_ttl": "120s",
-      "presence": true,
-      "recover": true,
-      "protected": true
-    },
-    {
-      "name": "riders_global",
-      "history_size": 20,
-      "history_ttl": "300s",
-      "presence": true,
-      "recover": true,
-      "protected": true
-    }
-  ]
+  "health": {
+    "enabled": true
+  }
 }
