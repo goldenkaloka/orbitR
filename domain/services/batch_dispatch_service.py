@@ -296,6 +296,19 @@ class BatchDispatchService:
             except Exception as exc:
                 logger.warning(f"[Dispatch] Failed to push offer notification to driver {driver.id}: {exc}")
 
+            # Notify driver via WebSocket for real-time dashboard refresh
+            from apps.events.tasks import centrifugo_publish
+            try:
+                centrifugo_publish.delay(
+                    f'riders:{driver.user_id}',
+                    {
+                        'type': 'batch_offer_ping',
+                        'batch_id': str(batch.id),
+                    }
+                )
+            except Exception as exc:
+                logger.warning(f"[Dispatch] Failed to publish offer ping to rider channel: {exc}")
+
             # Broadcast the status to each order's channel for the tracking UI
             order_id_strs = [str(order.id) for order in batch.orders.all()]
             for oid in order_id_strs:

@@ -97,8 +97,12 @@ class AssignBatchService:
                 logger.info(f"Batch {batch_id} is WAITING_TEMP_DRIVER — returning for fallback.")
                 return batch
 
-            if batch.status != 'CREATED':
+            if batch.status not in ('CREATED', 'OFFERED'):
                 logger.warning(f"Batch {batch_id} is in {batch.status} state, cannot assign.")
+                return batch
+
+            if batch.status == 'OFFERED' and str(batch.driver_id) != str(driver_id):
+                logger.warning(f"Batch {batch_id} is offered to another driver, cannot assign.")
                 return batch
 
             driver = Driver.objects.select_for_update().get(id=driver_id)

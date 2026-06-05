@@ -425,11 +425,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             driver = request.user.driver_profile
             h3_cell = driver.h3_index if driver else None
-        except Driver.DoesNotExist:
+            driver_id = str(driver.id) if driver else 'none'
+        except Exception:
+            driver = None
             h3_cell = None
+            driver_id = 'none'
 
-        # Cache per driver zone with 15s TTL — drivers poll this frequently
-        cache_key = f"available_jobs:{h3_cell or 'none'}:{limit}:{offset}"
+        # Cache per driver and zone with 15s TTL — drivers poll this frequently
+        cache_key = f"available_jobs:{driver_id}:{h3_cell or 'none'}:{limit}:{offset}"
         cached = cache.get(cache_key)
         if cached:
             return Response(cached)
@@ -440,11 +443,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         else:
             zone_filter = {}
 
+        from django.db.models import Q
+        # Exclude batches that are offered to other drivers.
+        exclude_filter = Q(batch__status='OFFERED')
+        if driver:
+            exclude_filter &= ~Q(batch__driver=driver)
+
         orders = Order.objects.filter(
             **zone_filter,
             status='READY',
             is_paid=True,
             driver__isnull=True,
+        ).exclude(
+            exclude_filter
         ).select_related(
             'restaurant', 'restaurant__owner', 'customer',
         ).prefetch_related('items', 'items__food').order_by('-created_at')[offset:offset + limit]
