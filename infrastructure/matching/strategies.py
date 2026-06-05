@@ -68,55 +68,59 @@ class PostgisRadiusStrategy(LocationMatcher):
     def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=15, restaurant_id=None):
         """
         Primary strategy: Spatial query with weighted scoring and row-level locking.
+
+        select_for_update() is applied AFTER annotation to avoid the PostgreSQL
+        restriction that forbids FOR UPDATE with GROUP BY. We first find candidates
+        without a lock, then lock only the chosen driver's row.
         """
         from django.utils import timezone
         from datetime import timedelta
         threshold = timezone.now() - timedelta(minutes=5)
         restaurant_point = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
 
-        with transaction.atomic():
-            drivers = Driver.objects.select_for_update(skip_locked=True).filter(
-                status='AVAILABLE',
-                location__dwithin=(restaurant_point, D(km=max_radius_km)),
-                last_heartbeat__gte=threshold
-            ).filter(
-                # Affinity Rule: If temp, must match restaurant. If permanent, any restaurant.
-                Q(driver_type='permanent') | Q(assigned_by_id=restaurant_id)
-            ).annotate(
-                distance_meters=Distance('location', restaurant_point),
-                active_count=Count('assignments', filter=Q(assignments__delivered_at__isnull=True))
-            ).filter(
-                active_count__lt=F('max_active_orders')
+        # Step 1 — Find candidates WITHOUT a lock (annotation uses GROUP BY internally)
+        candidates = Driver.objects.filter(
+            status='AVAILABLE',
+            location__dwithin=(restaurant_point, D(km=max_radius_km)),
+            last_heartbeat__gte=threshold,
+        ).filter(
+            Q(driver_type='permanent') | Q(assigned_by_id=restaurant_id)
+        ).annotate(
+            distance_meters=Distance('location', restaurant_point),
+            active_count=Count('assignments', filter=Q(assignments__delivered_at__isnull=True)),
+        ).filter(
+            active_count__lt=F('max_active_orders')
+        )
+
+        if not candidates.exists():
+            return None
+
+        # Step 2 — Score candidates in Python (no extra DB round-trip)
+        best_driver = None
+        min_score = float('inf')
+
+        for driver in candidates:
+            rating_penalty = 5.0 - float(driver.rating)
+            dist_km = driver.distance_meters.km if driver.distance_meters else max_radius_km
+            score = (
+                float(dist_km) * 0.2 +
+                rating_penalty * 0.2 +
+                float(driver.active_count) * 0.6
             )
+            if score < min_score:
+                min_score = score
+                best_driver = driver
 
-            if not drivers.exists():
-                return None
+        if best_driver is None:
+            return None
 
-            # 2. Weighted Scoring (Load-balanced)
-            # Factors: Distance (20%), Rating (20%), Load (60%)
-            best_driver = None
-            min_score = float('inf')
-
-            for driver in drivers:
-                # Rating Penalty: Higher rating = Lower penalty (0.0 penalty for 5.0 rating)
-                rating_penalty = 5.0 - float(driver.rating)
-                
-                # Distance Factor (km)
-                # distance_meters.m returns the value in meters from PostGIS geography
-                dist_km = driver.distance_meters.km if driver.distance_meters else max_radius_km
-
-                # Formula: Load-heavy to ensure busy drivers are deprioritized
-                # score = (Dist * 0.2) + (RatingPenalty * 0.2) + (ActiveOrders * 0.6)
-                # Goal: Minimize the score.
-                score = (
-                    float(dist_km) * 0.2 +
-                    rating_penalty * 0.2 +
-                    float(driver.active_count) * 0.6
-                )
-                
-                if score < min_score:
-                    min_score = score
-                    best_driver = driver
-
-            return best_driver
+        # Step 3 — Lock just the chosen driver's row before returning
+        with transaction.atomic():
+            locked = Driver.objects.select_for_update(
+                skip_locked=True
+            ).filter(
+                pk=best_driver.pk,
+                status='AVAILABLE',  # re-check status under lock
+            ).first()
+            return locked
 

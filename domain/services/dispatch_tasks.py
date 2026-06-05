@@ -46,19 +46,31 @@ def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
     """
     Dispatch a batch to a driver. Self-retrying with exponential backoff.
 
-    Fix #4: Uses Celery's built-in self.retry() instead of manual apply_async
-    scheduling, which previously caused retry storms when exceptions occurred
-    without incrementing the attempt counter.
+    Uses a Redis lock to prevent duplicate concurrent executions of the same
+    batch dispatch — acks_late + retries can cause fanout on worker restarts.
     """
     from domain.services.batch_dispatch_service import BatchDispatchService
+
+    # Deduplication lock — only one worker may dispatch a given batch at a time.
+    # TTL is generous (10 min) so it outlives the longest retry delay (600s).
+    lock_key = f'dispatch_batch_lock:{batch_id}'
+    lock_ttl = 660  # seconds
+
+    # Try to acquire the lock. If another worker holds it, skip silently.
+    acquired = cache.add(lock_key, self.request.id, lock_ttl)
+    if not acquired:
+        # Another worker is already handling this batch — nothing to do.
+        return
 
     try:
         result = BatchDispatchService.dispatch_batch(str(batch_id))
         if result:
             logger.info(f"[dispatch_batch_task] Batch {batch_id} dispatched successfully")
+            cache.delete(lock_key)
             return
 
-        # No driver found — schedule next attempt via Celery's retry mechanism
+        # No driver found — release lock and schedule next attempt
+        cache.delete(lock_key)
         delay = BATCH_DISPATCH_RETRY_DELAYS.get(self.request.retries, 60)
         logger.info(
             f"[dispatch_batch_task] No driver for batch {batch_id}. "
@@ -67,6 +79,7 @@ def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
         raise self.retry(countdown=delay)
 
     except self.MaxRetriesExceededError:
+        cache.delete(lock_key)
         logger.error(
             f"[dispatch_batch_task] Batch {batch_id} exhausted all retries — "
             "escalating to WAITING_TEMP_DRIVER"
@@ -86,8 +99,7 @@ def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
             logger.error(f"Failed to escalate batch {batch_id} on retry exhaustion: {e}")
 
     except Exception as exc:
-        # Only retry on transient errors (DB, network). Do NOT retry on
-        # BatchFSMError or ValueError — those are permanent failures.
+        cache.delete(lock_key)
         from domain.services.batch_fsm import BatchFSMError
         if isinstance(exc, (BatchFSMError, ValueError)):
             logger.error(
