@@ -9,7 +9,11 @@ CERT_PATH="/etc/letsencrypt/live/$DOMAIN"
 
 mkdir -p /var/www/certbot
 
-if [ ! -f "$CERT_PATH/fullchain.pem" ]; then
+if [ -d "/etc/letsencrypt/archive" ] || [ -f "/etc/letsencrypt/renewal/$DOMAIN.conf" ]; then
+    echo "[init-ssl] Let's Encrypt certificates found. Skipping self-signed."
+elif [ -f "$CERT_PATH/fullchain.pem" ]; then
+    echo "[init-ssl] SSL certificate already exists at $CERT_PATH. Skipping."
+else
     echo "[init-ssl] No SSL certificate found for $DOMAIN. Generating self-signed cert for first boot..."
     mkdir -p "$CERT_PATH"
     apk add --no-cache openssl > /dev/null 2>&1 || true
@@ -19,6 +23,4 @@ if [ ! -f "$CERT_PATH/fullchain.pem" ]; then
         -subj "/CN=$DOMAIN" 2>/dev/null
     echo "[init-ssl] Self-signed certificate created. Nginx will start."
     echo "[init-ssl] Run certbot to replace with a real certificate."
-else
-    echo "[init-ssl] SSL certificate already exists at $CERT_PATH. Skipping."
 fi
