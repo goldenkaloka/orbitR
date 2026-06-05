@@ -73,7 +73,7 @@ services:
       "
 
   centrifugo:
-    image: centrifugo/centrifugo:latest
+    image: centrifugo/centrifugo:v6.8.1
     command: centrifugo -c /centrifugo/config.json
     volumes:
       - ./centrifugo:/centrifugo:ro
@@ -154,14 +154,13 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: nginx:1.27-alpine
+    build: ./nginx
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/www:/var/www
-      - ./nginx/init-ssl.sh:/docker-entrypoint.d/init-ssl.sh
       - ./nginx/letsencrypt:/etc/letsencrypt
     depends_on:
       backend:

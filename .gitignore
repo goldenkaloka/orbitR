@@ -163,6 +163,7 @@ Thumbs.db
 .dockerignore
 
 # Project specific
+nginx/letsencrypt/
 logs/
 brain/
 scratch/
