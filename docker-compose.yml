@@ -161,6 +161,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./nginx/www:/var/www
       - ./nginx/init-ssl.sh:/docker-entrypoint.d/init-ssl.sh
+      - letsencrypt_data:/etc/letsencrypt
     depends_on:
       backend:
         condition: service_started
@@ -175,7 +176,9 @@ services:
     volumes:
       - ./nginx/www:/var/www
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - letsencrypt_data:/etc/letsencrypt
 
 volumes:
   postgres_data:
   minio_data:
+  letsencrypt_data:
