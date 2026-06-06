@@ -21,6 +21,9 @@ from domain.events.bus import EventBus
 from domain.events.types import BatchOffered, BatchAccepted, BatchDeclined, BatchExpired
 from domain.services.batch_fsm import BatchFSM, BatchFSMError
 from domain.services.driver_free_service import DriverFreeService
+from infrastructure.notifications.messages import (
+    admin_no_drivers, vendor_need_driver, driver_new_offer, delivery_delayed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +59,11 @@ def notify_no_drivers_available(batch_id, attempt_count: int):
     admin_uid = getattr(settings, 'ADMIN_NOTIFICATION_USER_ID', None)
     if admin_uid:
         try:
+            nd_title, nd_body = admin_no_drivers(batch_id[:8])
             NotificationService.send_push(
                 user_id=str(admin_uid),
-                title="No Drivers Available!",
-                body=(
-                    f"Batch {batch_id} cannot find drivers after "
-                    f"{attempt_count} attempts. Manual intervention required."
-                ),
+                title=nd_title,
+                body=nd_body,
                 data={"batch_id": str(batch_id), "type": "no_drivers_alert"},
             )
         except Exception as exc:
@@ -129,13 +130,11 @@ def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
             return
         cache.set(key, True, timeout=1800)
 
+        vn_title, vn_body = vendor_need_driver(order_count)
         NotificationService.send_push(
             user_id=str(restaurant.owner.id),
-            title="Need Driver! 🚗",
-            body=(
-                f"You have {order_count} order(s) waiting for delivery. "
-                "Register a temp driver to deliver them!"
-            ),
+            title=vn_title,
+            body=vn_body,
             data={
                 "batch_id": str(batch_id),
                 "restaurant_id": str(restaurant_id),
@@ -282,10 +281,11 @@ class BatchDispatchService:
             # Notify driver via push (order.driver is not set during offer window)
             from infrastructure.notifications.service import NotificationService
             try:
+                dn_title, dn_body = driver_new_offer(order_count, f"{payout_val:.0f}")
                 NotificationService.send_push(
                     user_id=str(driver.user_id),
-                    title="New Delivery Offer!",
-                    body=f"{order_count} order(s) ready. Payout: TSh {payout_val}",
+                    title=dn_title,
+                    body=dn_body,
                     data={
                         'type': 'batch_offer',
                         'batch_id': str(batch.id),
@@ -539,13 +539,11 @@ def _notify_all_parties_on_delay(batch):
         # Notify customer
         try:
             from infrastructure.notifications.service import NotificationService
+            dd_title, dd_body = delivery_delayed(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Delivery Delayed ⏳",
-                body=(
-                    "We're finding a driver for your order. "
-                    "You'll be notified once one is assigned."
-                ),
+                title=dd_title,
+                body=dd_body,
                 data={"order_id": str(order.id), "type": "delivery_delayed"},
             )
             broadcast_order_status(

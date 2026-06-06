@@ -47,10 +47,12 @@ def broadcast_order_status(order_id, status, message="Status updated"):
 
         if status == 'OFFERED' and order.driver:
             from infrastructure.notifications.service import NotificationService
+            from infrastructure.notifications.messages import single_order_offered
+            so_title, so_body = single_order_offered(order.restaurant.name)
             NotificationService.send_push(
                 user_id=str(order.driver.user_id),
-                title="New Delivery Order!",
-                body=f"Order from {order.restaurant.name} is ready for pickup.",
+                title=so_title,
+                body=so_body,
                 data={
                     'type': 'new_order',
                     'order_id': str(order_id),

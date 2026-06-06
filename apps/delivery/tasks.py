@@ -74,10 +74,12 @@ def broadcast_driver_location(order_id: str, lat: float, lng: float, heading: fl
             if dist_m < 20:
                 notif_cache_key = f"nearby_notif_{order.id}"
                 if not cache.get(notif_cache_key):
+                    from infrastructure.notifications.messages import rider_nearby
+                    rn_title, rn_body = rider_nearby(order.delivery_otp or '####')
                     NotificationService.send_push(
                         user_id=str(order.customer.id),
-                        title="Rider Nearby! 🛵",
-                        body=f"Your rider is almost at your location. PIN: {order.delivery_otp}. Please get ready!",
+                        title=rn_title,
+                        body=rn_body,
                         data={"order_id": str(order.id), "type": "rider_nearby"},
                     )
                     cache.set(notif_cache_key, True, 600)
@@ -133,10 +135,12 @@ def notify_nearby_pool_created(pool_id: str, restaurant_name: str):
     sent = 0
     for uid in user_ids:
         try:
+            from infrastructure.notifications.messages import new_nearby_pool
+            np_title, np_body = new_nearby_pool(restaurant_name)
             NotificationService.send_push(
                 user_id=uid,
-                title="New Group Order Nearby!",
-                body=f"{restaurant_name} has a group order near you. Tap to join!",
+                title=np_title,
+                body=np_body,
                 data={
                     'type': 'new_nearby_pool',
                     'pool_id': pool_id,

@@ -9,6 +9,7 @@ from django.contrib.auth import get_user_model
 
 from apps.orders.models import Order
 from domain.services.order_services import CancelOrderService, DispatchService
+from infrastructure.notifications.messages import vendor_order_overdue, order_cancelled_restaurant_delay
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -404,14 +405,11 @@ def expire_stale_preparing_orders_task():
 
     for order in stale_confirmed:
         try:
+            vo_title, vo_body = vendor_order_overdue(str(order.id)[:8], confirmed_grace)
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
-                title="Order Overdue — Starting Preparation",
-                body=(
-                    f"Order #{str(order.id)[:8]} has been in CONFIRMED for "
-                    f"over {confirmed_grace} min. It has been auto-marked as PREPARING. "
-                    f"Please start cooking immediately."
-                ),
+                title=vo_title,
+                body=vo_body,
                 data={"order_id": str(order.id), "type": "order_overdue"}
             )
             NotificationService.send_sms(
@@ -447,14 +445,11 @@ def expire_stale_preparing_orders_task():
     for order_id in cancelled_ids:
         try:
             order = Order.objects.select_related('customer').get(id=order_id)
+            ocr_title, ocr_body = order_cancelled_restaurant_delay(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Order Cancelled — Restaurant Delay",
-                body=(
-                    f"Your order #{str(order.id)[:8]} was cancelled because the restaurant "
-                    f"did not start preparation within {preparing_timeout} minutes. "
-                    f"A full refund is being processed."
-                ),
+                title=ocr_title,
+                body=ocr_body,
                 data={"order_id": str(order.id), "type": "order_cancelled_timeout"}
             )
             NotificationService.send_sms(

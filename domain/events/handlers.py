@@ -2,6 +2,16 @@ from domain.events.bus import EventBus
 from apps.payments.models import Payment
 from domain.services.payment_services import ReleasePaymentService
 from infrastructure.notifications.service import NotificationService
+from infrastructure.notifications.messages import (
+    order_drafted, order_confirmed, order_preparing, order_ready,
+    driver_assigned, order_picked, order_delivered, order_cancelled_customer,
+    refund_processed, vendor_new_order, vendor_new_group_order,
+    vendor_funds_received, vendor_dispute_raised, vendor_dispute_resolved,
+    vendor_batch_delivering, driver_earning_credited, driver_dispute_raised,
+    driver_dispute_resolved, pool_locked, pool_paid, pool_cancelled,
+    pool_completed, dispute_raised_customer, dispute_resolved_customer,
+    admin_pool_cancelled_batch_transit, admin_new_dispute,
+)
 from domain.events.types import (
     OrderDelivered, PaymentReleaseRequested, PaymentCollected,
     PaymentInitiated, PaymentDisbursed, PaymentRefunded, OrderConfirmed,
@@ -20,10 +30,11 @@ def on_order_delivered(event: OrderDelivered):
     try:
         order = Order.objects.select_related('customer').get(id=event.aggregate_id)
         # 1. Notify Customer
+        title, body = order_delivered(str(order.id)[:8])
         NotificationService.send_push(
             user_id=str(order.customer.id),
-            title="Delivery Complete",
-            body=f"Your order {event.aggregate_id} has been delivered. Enjoy!",
+            title=title,
+            body=body,
             data={"order_id": str(order.id), "type": "delivery_complete"}
         )
     except Order.DoesNotExist:
@@ -180,18 +191,20 @@ def on_payment_disbursed(event: PaymentDisbursed):
                 
         order = Order.objects.select_related('restaurant__owner', 'driver__user').get(id=order_id)
         # Notify Restaurant
+        v_title, v_body = vendor_funds_received(str(order.id)[:8])
         NotificationService.send_push(
             user_id=str(order.restaurant.owner.id),
-            title="Funds Received",
-            body=f"Payment for order {order_id} has been added to your wallet.",
+            title=v_title,
+            body=v_body,
             data={"order_id": str(order.id), "type": "payment_received"}
         )
         # Notify Driver if any
         if order.driver:
+            d_title, d_body = driver_earning_credited(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.driver.user.id),
-                title="Delivery Earning",
-                body=f"Earning for delivery {order_id} has been credited.",
+                title=d_title,
+                body=d_body,
                 data={"order_id": str(order.id), "type": "payout_received"}
             )
     except Order.DoesNotExist:
@@ -208,10 +221,11 @@ def on_payment_refunded(event: PaymentRefunded):
     from apps.orders.models import Order
     try:
         order = Order.objects.select_related('customer').get(id=order_id)
+        r_title, r_body = refund_processed(str(order.id)[:8])
         NotificationService.send_push(
             user_id=str(order.customer.id),
-            title="Refund Successful",
-            body=f"A refund for your cancelled order {order_id} has been processed.",
+            title=r_title,
+            body=r_body,
             data={"order_id": str(order.id), "type": "refund_processed"}
         )
     except Order.DoesNotExist:
@@ -250,15 +264,16 @@ def on_order_event(event):
         order = Order.objects.select_related('customer', 'restaurant__owner', 'driver__user').get(id=event.aggregate_id)
         
         # Map event types to user-friendly messages (Now safe to use 'order' object)
+        short_id = str(order.id)[:8]
         messages = {
-            'OrderCreated': "Order placed successfully!",
-            'OrderConfirmed': "Payment received! Restaurant is notified.",
-            'OrderPreparing': "Restaurant has started preparing your food! ",
-            'FoodReady': "Food is ready for pickup! ",
-            'DriverAssigned': "A rider is on the way to pick up your food.",
-            'OrderPicked': f"Rider has picked up your order! Your Delivery PIN: {getattr(order, 'delivery_otp', '####')}",
-            'OrderDelivered': "Order delivered! Enjoy your meal ",
-            'OrderCancelled': "Order has been cancelled. 🛑",
+            'OrderCreated': order_drafted(short_id)[1],
+            'OrderConfirmed': order_confirmed(short_id)[1],
+            'OrderPreparing': order_preparing(short_id)[1],
+            'FoodReady': order_ready(short_id)[1],
+            'DriverAssigned': driver_assigned(short_id)[1],
+            'OrderPicked': f"{order_picked(short_id)[1]} PIN: {getattr(order, 'delivery_otp', '####')}",
+            'OrderDelivered': order_delivered(short_id)[1],
+            'OrderCancelled': order_cancelled_customer(short_id)[1],
         }
         
         status_msg = messages.get(event.event_type, f"Order status: {event.event_type}")
@@ -275,22 +290,24 @@ def on_order_event(event):
         if event.event_type == 'OrderCreated':
             # Notify customer that order is pending payment
             if not event.payload.get('is_pool'):
+                oc_title, oc_body = order_drafted(short_id)
                 NotificationService.send_push(
                     user_id=str(order.customer.id),
-                    title="Order Drafted",
-                    body="Complete your payment to send the order to the restaurant.",
+                    title=oc_title,
+                    body=oc_body,
                     data=extra_data
                 )
         elif event.event_type == 'OrderConfirmed':
             # 1. Notify Customer
+            co_title, co_body = order_confirmed(short_id)
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Order Confirmed",
-                body=status_msg,
+                title=co_title,
+                body=co_body,
                 data=extra_data
             )
             # 2. Notify Vendor (Now only after payment) — with action buttons
-            short_id = str(order.id).split('-')[0]
+            vendor_short_id = str(order.id).split('-')[0]
             is_group = bool(order.group_breakdown)
             items_count = sum(
                 item.get('quantity', 0) for member in (order.group_breakdown or [])
@@ -300,15 +317,19 @@ def on_order_event(event):
             vendor_data = {
                     **extra_data,
                     'type': 'vendor_order',
-                    'order_short_id': short_id,
+                    'order_short_id': vendor_short_id,
                     'items_count': items_count,
                     'is_group': is_group,
                     'restaurant_name': order.restaurant.name,
                 }
+            v_title, v_body = (
+                vendor_new_group_order(vendor_short_id, items_count)
+                if is_group else vendor_new_order(vendor_short_id, items_count)
+            )
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
-                title="New Group Order!" if is_group else "New Order!",
-                body=f"You have a new paid order: #{short_id} ({items_count} item(s))",
+                title=v_title,
+                body=v_body,
                 data=vendor_data,
             )
             # 3. SMS Notification to Vendor (Detailed for Group Orders)
@@ -327,16 +348,23 @@ def on_order_event(event):
             NotificationService.send_sms(vendor_phone, sms_text)
 
         elif event.event_type in ['OrderPreparing', 'FoodReady', 'DriverAssigned', 'OrderPicked']:
+            msg_title = {
+                'OrderPreparing': order_preparing(short_id)[0],
+                'FoodReady': order_ready(short_id)[0],
+                'DriverAssigned': driver_assigned(short_id)[0],
+                'OrderPicked': order_picked(short_id)[0],
+            }[event.event_type]
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Order Update",
+                title=msg_title,
                 body=status_msg,
                 data=extra_data
             )
         elif event.event_type == 'OrderCancelled':
+            cc_title, _ = order_cancelled_customer(short_id)
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Order Cancelled",
+                title=cc_title,
                 body=status_msg,
                 data=extra_data
             )
@@ -543,10 +571,12 @@ def notify_other_restaurants_in_batch(batch_id, batch, assigned_restaurant_id):
                 restaurant = Restaurant.objects.get(id=rest_id)
                 if restaurant.owner:
                     from infrastructure.notifications.service import NotificationService
+                    from infrastructure.notifications.messages import vendor_batch_delivering
+                    vb_title, vb_body = vendor_batch_delivering(batch_id[:8])
                     NotificationService.send_push(
                         user_id=str(restaurant.owner.id),
-                        title="Orders Being Delivered! 🚗",
-                        body=f"Your orders in batch {batch_id[:8]}... are now being delivered by a driver.",
+                        title=vb_title,
+                        body=vb_body,
                         data={"batch_id": str(batch_id), "type": "batch_delivering"}
                     )
             except Exception as e:
@@ -561,13 +591,13 @@ def on_pool_locked(event):
     try:
         from apps.orders.models import OrderPool
         pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        pl_title, pl_body = pool_locked(pool.restaurant.name)
         for member in pool.members.all():
             if member.user_id:
                 NotificationService.send_push(
                     user_id=str(member.user_id),
-                    title="Pool Locked — Time to Pay!",
-                    body=f"Your group order at {pool.restaurant.name} is locked. "
-                         f"Please complete payment before it expires.",
+                    title=pl_title,
+                    body=pl_body,
                     data={'pool_id': str(pool_id), 'type': 'pool_locked'},
                 )
     except Exception as e:
@@ -580,13 +610,13 @@ def on_pool_paid(event):
     try:
         from apps.orders.models import OrderPool
         pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        pp_title, pp_body = pool_paid(pool.restaurant.name)
         for member in pool.members.all():
             if member.user_id:
                 NotificationService.send_push(
                     user_id=str(member.user_id),
-                    title="Pool Paid! 🎉",
-                    body=f"Your group order at {pool.restaurant.name} has been fully paid "
-                         f"and the restaurant is preparing your food.",
+                    title=pp_title,
+                    body=pp_body,
                     data={'pool_id': str(pool_id), 'type': 'pool_paid'},
                 )
     except Exception as e:
@@ -606,12 +636,13 @@ def on_pool_cancelled(event):
     try:
         from apps.orders.models import OrderPool
         pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        pc_title, pc_body = pool_cancelled(pool.restaurant.name)
         for member in pool.members.all():
             if member.user_id and str(member.user_id) != actor_id:
                 NotificationService.send_push(
                     user_id=str(member.user_id),
-                    title="Pool Cancelled",
-                    body=f"The group order at {pool.restaurant.name} has been cancelled.",
+                    title=pc_title,
+                    body=pc_body,
                     data={'pool_id': str(pool_id), 'type': 'pool_cancelled'},
                 )
     except Exception as e:
@@ -630,13 +661,12 @@ def on_pool_cancelled(event):
                 f"[PoolCancelled] Pool {pool_id} cancelled but batch {batch_id} "
                 f"has active orders — manual intervention required."
             )
+            apt_title, apt_body = admin_pool_cancelled_batch_transit(
+                str(pool_id)[:8], str(batch_id)[:8], batch.status
+            )
             NotificationService.notify_admins(
-                title="Pool Cancelled — Batch In Transit ⚠️",
-                body=(
-                    f"Pool {str(pool_id)[:8]}... was cancelled but its batch "
-                    f"{str(batch_id)[:8]}... is already '{batch.status}'. "
-                    f"Manual intervention required."
-                ),
+                title=apt_title,
+                body=apt_body,
                 data={
                     'pool_id': str(pool_id),
                     'batch_id': str(batch_id),
@@ -653,12 +683,13 @@ def on_pool_completed(event):
     try:
         from apps.orders.models import OrderPool
         pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
+        pco_title, pco_body = pool_completed(pool.restaurant.name)
         for member in pool.members.all():
             if member.user_id:
                 NotificationService.send_push(
                     user_id=str(member.user_id),
-                    title="Pool Complete! 🎉",
-                    body="All orders in your group delivery have been completed. Enjoy your meal!",
+                    title=pco_title,
+                    body=pco_body,
                     data={'pool_id': str(pool_id), 'type': 'pool_completed'},
                 )
     except Exception as e:
@@ -679,29 +710,33 @@ def on_order_disputed(event):
             message="A dispute has been raised on this order",
         )
 
+        dc_title, dc_body = dispute_raised_customer()
         NotificationService.send_push(
             user_id=str(order.customer.id),
-            title="Dispute Received",
-            body="We're reviewing your dispute. We'll get back to you shortly.",
+            title=dc_title,
+            body=dc_body,
             data={"order_id": str(order.id), "type": "dispute_raised"},
         )
+        vd_title, vd_body = vendor_dispute_raised(str(order.id)[:8])
         NotificationService.send_push(
             user_id=str(order.restaurant.owner.id),
-            title="Order Disputed",
-            body=f"Order #{str(order.id)[:8]} has been disputed by the customer.",
+            title=vd_title,
+            body=vd_body,
             data={"order_id": str(order.id), "type": "dispute_raised"},
         )
         if order.driver and order.driver.user:
+            dd_title, dd_body = driver_dispute_raised(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.driver.user.id),
-                title="Order Disputed",
-                body=f"A dispute has been raised on order #{str(order.id)[:8]}. Payout held until resolved.",
+                title=dd_title,
+                body=dd_body,
                 data={"order_id": str(order.id), "type": "dispute_raised"},
             )
 
+        ad_title, ad_body = admin_new_dispute(str(order.id)[:8], order.customer.username)
         NotificationService.notify_admins(
-            title="New Dispute",
-            body=f"Order #{str(order_id)[:8]} has been disputed by {order.customer.username}.",
+            title=ad_title,
+            body=ad_body,
             data={"order_id": str(order_id), "type": "new_dispute"},
         )
     except Order.DoesNotExist:
@@ -723,16 +758,20 @@ def on_order_resolved(event):
             message=f"Dispute resolved: {resolution}",
         )
 
-        NotificationService.send_push(
-            user_id=str(order.customer.id),
-            title="Dispute Resolved",
-            body=f"Your dispute has been resolved: {resolution.replace('RESOLVED_', '').replace('_', ' ').title()}",
-            data={"order_id": str(order.id), "type": "dispute_resolved"},
+        drc_title, drc_body = dispute_resolved_customer(
+            resolution.replace('RESOLVED_', '').replace('_', ' ').title()
         )
         NotificationService.send_push(
+            user_id=str(order.customer.id),
+            title=drc_title,
+            body=drc_body,
+            data={"order_id": str(order.id), "type": "dispute_resolved"},
+        )
+        vdr_title, vdr_body = vendor_dispute_resolved(str(order.id)[:8])
+        NotificationService.send_push(
             user_id=str(order.restaurant.owner.id),
-            title="Dispute Resolved",
-            body=f"The dispute on order #{str(order.id)[:8]} has been resolved.",
+            title=vdr_title,
+            body=vdr_body,
             data={"order_id": str(order.id), "type": "dispute_resolved"},
         )
     except Order.DoesNotExist:

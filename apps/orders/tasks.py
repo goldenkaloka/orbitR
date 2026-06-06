@@ -51,10 +51,12 @@ def cleanup_unpaid_orders():
     for order in cancelled_orders:
         try:
             from infrastructure.notifications.service import NotificationService
+            from infrastructure.notifications.messages import order_expired_unpaid
+            eu_title, eu_body = order_expired_unpaid(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.customer.id),
-                title="Order Expired — Payment Not Received",
-                body=f"Your order #{str(order.id)[:8]} has expired because payment was not completed within 30 minutes.",
+                title=eu_title,
+                body=eu_body,
                 data={"order_id": str(order.id), "type": "order_expired_unpaid"}
             )
         except Exception as e:
@@ -129,9 +131,11 @@ def dispute_sla_check():
                         d.save(update_fields=['status', 'escalated_at'])
                         escalated_count += 1
                         from infrastructure.notifications.service import NotificationService
+                        from infrastructure.notifications.messages import dispute_escalated_admin
+                        de_title, de_body = dispute_escalated_admin(str(d.id)[:8], 'PENDING > 1h')
                         NotificationService.notify_admins(
-                            title="Dispute Escalated ⏰",
-                            body=f"Dispute {d.id} has been auto-escalated (PENDING > 1h).",
+                            title=de_title,
+                            body=de_body,
                             data={"dispute_id": str(d.id), "type": "dispute_escalated"},
                         )
                     elif d.status == 'INVESTIGATING' and d.created_at < investigating_cutoff:
@@ -139,9 +143,10 @@ def dispute_sla_check():
                         d.escalated_at = now
                         d.save(update_fields=['status', 'escalated_at'])
                         escalated_count += 1
+                        de_title, de_body = dispute_escalated_admin(str(d.id)[:8], 'INVESTIGATING > 24h')
                         NotificationService.notify_admins(
-                            title="Dispute Escalated ⏰",
-                            body=f"Dispute {d.id} has been auto-escalated (INVESTIGATING > 24h).",
+                            title=de_title,
+                            body=de_body,
                             data={"dispute_id": str(d.id), "type": "dispute_escalated"},
                         )
             except Dispute.DoesNotExist:
