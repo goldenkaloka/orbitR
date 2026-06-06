@@ -507,6 +507,11 @@ def on_temp_driver_registered(event):
 
             notify_other_restaurants_in_batch(batch.id, batch, restaurant_id)
 
+            from apps.events.utils import broadcast_order_status
+            for order in batch.orders.all():
+                broadcast_order_status(str(order.id), 'ASSIGNED',
+                    message=f"Order assigned to driver {driver_id}")
+
             logger.info(f"Successfully assigned temp driver {driver_id} to batch {batch.id}")
 
             from domain.events.types import BatchAccepted
