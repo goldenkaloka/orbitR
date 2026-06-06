@@ -2,12 +2,14 @@ from domain.fsm.order_fsm import InvalidStateTransitionError
 
 class DriverFSM:
     STATES = [
+        'ONLINE',
         'OFFLINE',
         'AVAILABLE',
         'DELIVERING'
     ]
 
     ALLOWED_TRANSITIONS = {
+        'ONLINE': ['AVAILABLE', 'DELIVERING', 'OFFLINE', 'ONLINE'],
         'OFFLINE': ['AVAILABLE', 'OFFLINE'],
         'AVAILABLE': ['OFFLINE', 'DELIVERING', 'AVAILABLE'],
         'DELIVERING': ['AVAILABLE', 'DELIVERING']
