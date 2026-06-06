@@ -12,12 +12,14 @@ class DispatchService:
     """
     Legacy single-order dispatch (fallback for non-h3-indexed orders).
 
-    In the Phase 2 design, orders are never set to OFFERED individually.
-    When a driver is found, the order is assigned directly via AssignDriverService.
+    Locking is split into two short transactions to avoid the PostgreSQL
+    restriction forbidding FOR UPDATE with GROUP BY (the driver matcher
+    uses annotated queries with Count() which generate GROUP BY).
     """
 
     @staticmethod
     def execute(order_id, is_retry=False, radius_km=15):
+        # Phase 1 — Lock and validate the order, release lock
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
 
@@ -30,13 +32,23 @@ class DispatchService:
                 logger.error(f"Cannot dispatch order {order_id}: Restaurant {restaurant.id} missing geo_location")
                 return order
 
-            matcher = PostgisRadiusStrategy()
-            best_driver = matcher.find_best_driver(
-                restaurant_lat=restaurant.geo_location.y,
-                restaurant_lng=restaurant.geo_location.x,
-                max_radius_km=radius_km,
-                restaurant_id=restaurant.id
-            )
+        # Phase 2 — Find a driver (no lock — annotated queries with GROUP BY
+        #           must not run inside a select_for_update transaction)
+        matcher = PostgisRadiusStrategy()
+        best_driver = matcher.find_best_driver(
+            restaurant_lat=restaurant.geo_location.y,
+            restaurant_lng=restaurant.geo_location.x,
+            max_radius_km=radius_km,
+            restaurant_id=restaurant.id,
+        )
+
+        # Phase 3 — Lock again and assign (or schedule retry)
+        with transaction.atomic():
+            order = Order.objects.select_for_update().get(id=order_id)
+
+            if order.driver:
+                logger.info(f"Order {order_id} acquired a driver while we searched")
+                return order
 
             if best_driver:
                 logger.info(f"Found driver {best_driver.id} for order {order_id}")

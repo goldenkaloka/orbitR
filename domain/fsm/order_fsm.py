@@ -4,6 +4,7 @@ class InvalidStateTransitionError(Exception):
 class OrderFSM:
     STATES = [
         'PENDING_PAYMENT',
+        'PENDING_MANUAL_ASSIGNMENT',
         'CREATED',
         'CONFIRMED',
         'PREPARING',
@@ -20,6 +21,7 @@ class OrderFSM:
 
     ALLOWED_TRANSITIONS = {
         'PENDING_PAYMENT': ['CREATED', 'CANCELLED', 'PENDING_PAYMENT'],
+        'PENDING_MANUAL_ASSIGNMENT': ['CONFIRMED', 'PREPARING', 'CANCELLED', 'PENDING_MANUAL_ASSIGNMENT'],
         'CREATED': ['CONFIRMED', 'CANCELLED', 'CREATED'],
         'CONFIRMED': ['PREPARING', 'CANCELLED', 'CONFIRMED'],
         'PREPARING': ['READY', 'CANCELLED', 'PREPARING'],
