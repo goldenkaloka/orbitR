@@ -55,7 +55,7 @@ def broadcast_order_status(order_id, status, message="Status updated"):
                     'type': 'new_order',
                     'order_id': str(order_id),
                     'restaurant_name': order.restaurant.name,
-                }
+                },
             )
 
         if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and (order.driver or status == 'OFFERED'):

@@ -289,12 +289,27 @@ def on_order_event(event):
                 body=status_msg,
                 data=extra_data
             )
-            # 2. Notify Vendor (Now only after payment)
+            # 2. Notify Vendor (Now only after payment) — with action buttons
+            short_id = str(order.id).split('-')[0]
+            is_group = bool(order.group_breakdown)
+            items_count = sum(
+                item.get('quantity', 0) for member in (order.group_breakdown or [])
+                for item in member.get('items', [])
+            ) if is_group else order.items.count()
+
+            vendor_data = {
+                    **extra_data,
+                    'type': 'vendor_order',
+                    'order_short_id': short_id,
+                    'items_count': items_count,
+                    'is_group': is_group,
+                    'restaurant_name': order.restaurant.name,
+                }
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
-                title="New Group Order!" if order.group_breakdown else "New Order!",
-                body=f"You have a new paid order: #{str(order.id).split('-')[0]}",
-                data=extra_data
+                title="New Group Order!" if is_group else "New Order!",
+                body=f"You have a new paid order: #{short_id} ({items_count} item(s))",
+                data=vendor_data,
             )
             # 3. SMS Notification to Vendor (Detailed for Group Orders)
             vendor_phone = order.restaurant.owner.phone

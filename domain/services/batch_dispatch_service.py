@@ -291,7 +291,7 @@ class BatchDispatchService:
                         'batch_id': str(batch.id),
                         'num_orders': order_count,
                         'payout': float(payout_val),
-                    }
+                    },
                 )
             except Exception as exc:
                 logger.warning(f"[Dispatch] Failed to push offer notification to driver {driver.id}: {exc}")

@@ -85,10 +85,20 @@ class NotificationService:
     @staticmethod
     def send_push(user_id, title, body, data=None):
         """
-        Send push notification via OneSignal
+        Send push notification via OneSignal.
+
+        Args:
+            user_id:    The recipient user's UUID.
+            title:      Notification title.
+            body:       Notification body text.
+            data:       Optional dict of custom data payload. Must include a 'type' key
+                        for action-button determination. Known types:
+                        - 'batch_offer' / 'new_order'  → Accept / Decline buttons
+                        - 'vendor_order'               → Accept Order / Start Preparing buttons
+                        - all other types              → informational (no buttons)
         """
         logger.info(f"🔔 SENDING PUSH TO USER {user_id}: {title} - {body}")
-        
+
         # Save to database
         notification_id = None
         try:
@@ -133,21 +143,34 @@ class NotificationService:
                         "include_player_ids": [user.onesignal_id],
                         "headings": {"en": title},
                         "contents": {"en": body},
-                        "data": data
+                        "data": data or {},
                     }
-                    
+
+                    # Auto-detect action buttons from notification type
+                    notif_type = (data or {}).get('type')
+                    if notif_type in ('batch_offer', 'new_order'):
+                        payload["buttons"] = [
+                            {"id": "accept", "text": "Accept"},
+                            {"id": "decline", "text": "Decline"},
+                        ]
+                    elif notif_type == 'vendor_order':
+                        payload["buttons"] = [
+                            {"id": "confirm", "text": "Accept Order"},
+                            {"id": "start_preparing", "text": "Start Preparing"},
+                        ]
+
                     headers = {
                         "Authorization": f"Basic {settings.ONESIGNAL_REST_API_KEY}",
                         "Content-Type": "application/json; charset=utf-8"
                     }
-                    
+
                     response = requests.post(
                         "https://onesignal.com/api/v1/notifications",
                         json=payload,
                         headers=headers,
                         timeout=5
                     )
-                    
+
                     if response.status_code == 200:
                         logger.info(f"✅ OneSignal Push Sent successfully to {user_id}")
                     else:
@@ -158,7 +181,7 @@ class NotificationService:
             # Background thread
             threading.Thread(target=_send, daemon=True).start()
             return True
-                
+
         except Exception as e:
             logger.error(f"Error initiating OneSignal push: {str(e)}")
             return False
