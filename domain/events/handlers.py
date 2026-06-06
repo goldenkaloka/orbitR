@@ -450,23 +450,22 @@ def on_temp_driver_registered(event):
 
     logger.info(f"Checking for waiting batches for restaurant {restaurant_id} after temp driver {driver_id} registered")
 
+    # Phase 1 — Find candidate batch WITHOUT a lock (annotated query with GROUP BY
+    #           cannot run inside select_for_update on PostgreSQL)
+    candidate = DeliveryBatch.objects.filter(
+        status='WAITING_TEMP_DRIVER',
+        batch_type='SINGLE_RESTAURANT',
+        orders__restaurant_id=restaurant_id,
+        driver__isnull=True,
+    ).order_by('waiting_since').first()
+
+    if not candidate:
+        logger.info(f"No waiting batches found for restaurant {restaurant_id}")
+        return
+
+    # Phase 2 — Lock just this batch row and re-verify
     with transaction.atomic():
-        batch = DeliveryBatch.objects.select_for_update(skip_locked=True).filter(
-            status='WAITING_TEMP_DRIVER',
-            batch_type='SINGLE_RESTAURANT'
-        ).filter(
-            orders__restaurant_id=restaurant_id
-        ).annotate(
-            order_count=Count('orders')
-        ).order_by('waiting_since').first()
-
-        if not batch:
-            logger.info(f"No waiting batches found for restaurant {restaurant_id}")
-            return
-
-        if batch.driver_id:
-            logger.info(f"Batch {batch.id} already has a driver assigned, skipping")
-            return
+        batch = DeliveryBatch.objects.select_for_update().get(id=candidate.id)
 
         try:
             driver = Driver.objects.select_for_update().get(id=driver_id)
