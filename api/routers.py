@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from api.views.core import (
     UserViewSet, RestaurantViewSet, OrderViewSet, 
     FoodViewSet, NotificationViewSet, DisputeViewSet,
-    UniversalSearchView
+    UniversalSearchView, AppConfigView
 )
 from api.views.driver import DriverViewSet, DeliveryProofViewSet
 from api.views.wallets import WalletViewSet
@@ -49,4 +49,5 @@ urlpatterns = router.urls + [
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
     path('search/', UniversalSearchView.as_view(), name='universal-search'),
     path('ws-subscribe-check/', ws_subscribe_check, name='ws-subscribe-check'),
+    path('app-config/', AppConfigView.as_view(), name='app-config'),
 ]

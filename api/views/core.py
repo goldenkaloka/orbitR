@@ -6,7 +6,7 @@ from django.db import models
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from django.contrib.postgres.search import TrigramSimilarity
 
@@ -880,6 +880,19 @@ class UniversalSearchView(APIView):
             "products": FoodSerializer(products_qs, many=True, context={'request': request}).data,
             "marketplace": MarketplaceProductSerializer(marketplace_qs, many=True, context={'request': request}).data,
             "vendors": RestaurantListSerializer(all_vendors, many=True, context={'request': request}).data
+        })
+
+
+class AppConfigView(APIView):
+    """Public endpoint for app version config and update URLs."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        return Response({
+            "minimum_version": "1.0.1",
+            "latest_version": "1.0.1",
+            "update_url": "https://play.google.com/store/apps/details?id=com.mwanachuoshop.app",
         })
 
 
