@@ -13,6 +13,7 @@ from api.views.pools import PoolOrderViewSet
 from api.views.payments import AirpayWebhookView, InitiatePaymentView
 from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView, WsTicketView
 from api.views.marketplace import MarketplaceProductViewSet, MarketplaceCategoryViewSet
+from api.views.demands import ShopViewSet, BuyerDemandViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.pricing import PricingPolicyViewSet, ZonePricingTierViewSet, DeliveryFeeLogViewSet
 from api.views.batches import BatchViewSet
@@ -33,6 +34,8 @@ router.register(r'notifications', NotificationViewSet, basename='notification')
 router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'marketplace/products', MarketplaceProductViewSet, basename='marketplace-product')
 router.register(r'marketplace/categories', MarketplaceCategoryViewSet, basename='marketplace-category')
+router.register(r'marketplace/shops', ShopViewSet, basename='shop')
+router.register(r'marketplace/demands', BuyerDemandViewSet, basename='demand')
 router.register(r'geo/zones', OperationalZoneViewSet, basename='geo-zone')
 router.register(r'pricing/policies', PricingPolicyViewSet, basename='pricing-policy')
 router.register(r'pricing/tiers', ZonePricingTierViewSet, basename='pricing-tier')

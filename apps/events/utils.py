@@ -116,3 +116,28 @@ def broadcast_order_location(order_id, lat, lng, heading=0.0):
         'heading': float(heading)
     }
     centrifugo_publish.delay(f'orders:{order_id}', payload)
+
+
+def broadcast_demand_update(demand_id, type_tag, extra=None):
+    payload = {
+        'type': type_tag,
+        'demand_id': str(demand_id),
+    }
+    if extra:
+        payload.update(extra)
+    centrifugo_publish.delay(f'demands:{demand_id}', payload)
+
+
+def broadcast_new_demand_to_sellers(demand_id, seller_ids, demand_title,
+                                     buyer_h3, lat, lng, radius_km):
+    channels = [f'users:{sid}' for sid in seller_ids]
+    payload = {
+        'type': 'new_demand',
+        'demand_id': str(demand_id),
+        'title': demand_title,
+        'buyer_h3': buyer_h3,
+        'lat': lat,
+        'lng': lng,
+        'radius_km': radius_km,
+    }
+    centrifugo_broadcast.delay(channels, payload)

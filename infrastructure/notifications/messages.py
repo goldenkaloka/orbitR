@@ -258,6 +258,32 @@ def dispute_escalated_admin(dispute_id: str, reason: str) -> tuple[str, str]:
         f"Malalamiko {dispute_id} yamepandishwa kiotomatiki ({reason})."
     )
 
+# ── Demand/Reverse Auction ────────────────────────────────────────────────────
+
+def get_demand_message(title: str, radius_km: int) -> tuple[str, str]:
+    return (
+        f"Ombi Jipya Karibu Nayo 📢",
+        f"Mtu anatafuta '{title}' umbali wa {radius_km}km kwako. Bofya kuona na kujibu."
+    )
+
+def get_offer_message() -> tuple[str, str]:
+    return (
+        "Ofa Mpya Imewasili 💰",
+        "Muuzaji ametuma ofa kwenye ombi lako. Angalia sasa!"
+    )
+
+def get_demand_accepted_message_for_buyer(title: str, seller_name: str) -> tuple[str, str]:
+    return (
+        "Ombi Limekubaliwa! ✅",
+        f"'{title}' limekubaliwa na {seller_name}. Wasiliana naye kupitia maelezo ya mawasiliano."
+    )
+
+def get_demand_cancelled_message(title: str) -> tuple[str, str]:
+    return (
+        "Ombi Limefutwa",
+        f"Ombi la '{title}' limefutwa na mnunuzi. Ofa yako imekataliwa."
+    )
+
 # ── Background worker (Flutter side) ─────────────────────────────────────────
 # These are used in background_sync_service.dart — kept as Python constants
 # for reference. The actual Dart strings are in background_sync_service.dart.

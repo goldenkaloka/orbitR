@@ -86,4 +86,18 @@ def ws_subscribe_check(request):
         allowed = role == "driver" or role == "admin"
         return JsonResponse({"result": {"allowed": allowed}}, status=200)
 
+    if namespace == "demands":
+        from apps.marketplace.models import BuyerDemand
+        try:
+            demand = BuyerDemand.objects.get(id=key)
+        except BuyerDemand.DoesNotExist:
+            return JsonResponse({"result": {"allowed": False}}, status=200)
+        allowed = (
+            str(demand.buyer_id) == user
+            or demand.offers.filter(seller_id=user).exists()
+            or (role == "vendor" and demand.status == "OPEN")
+            or role == "admin"
+        )
+        return JsonResponse({"result": {"allowed": allowed}}, status=200)
+
     return JsonResponse({"result": {"allowed": False}}, status=200)

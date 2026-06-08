@@ -143,6 +143,38 @@ class MarketplaceProductActivated(DomainEvent):
 class MarketplaceProductExpired(DomainEvent):
     aggregate_type = 'MarketplaceProduct'
     event_type = 'MarketplaceProductExpired'
+
+
+@dataclass
+class BuyerDemandCreated(DomainEvent):
+    aggregate_type = 'BuyerDemand'
+    event_type = 'BuyerDemandCreated'
+
+
+@dataclass
+class BuyerDemandExpired(DomainEvent):
+    aggregate_type = 'BuyerDemand'
+    event_type = 'BuyerDemandExpired'
+
+
+@dataclass
+class BuyerDemandAccepted(DomainEvent):
+    aggregate_type = 'BuyerDemand'
+    event_type = 'BuyerDemandAccepted'
+
+
+@dataclass
+class SellerOfferCreated(DomainEvent):
+    aggregate_type = 'SellerOffer'
+    event_type = 'SellerOfferCreated'
+
+
+@dataclass
+class BuyerDemandCancelled(DomainEvent):
+    aggregate_type = 'BuyerDemand'
+    event_type = 'BuyerDemandCancelled'
+
+
 @dataclass
 class PaymentFailed(DomainEvent):
     aggregate_type = 'Payment'

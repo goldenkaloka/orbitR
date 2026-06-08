@@ -6,6 +6,12 @@ from io import BytesIO
 
 
 @shared_task
+def expire_demand(demand_id):
+    from domain.services.demand_services import DemandService
+    DemandService.expire_demand(demand_id)
+
+
+@shared_task
 def process_product_image(image_id):
     """
     Background task to resize and optimize marketplace product images for mobile viewing.
