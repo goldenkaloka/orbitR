@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gdal-bin \
     libpq5 \
     gosu \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
