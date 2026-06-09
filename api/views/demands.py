@@ -22,6 +22,34 @@ class ShopViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
+        user = self.request.user
+        if user.role != 'vendor':
+            user.role = 'vendor'
+            user.save(update_fields=['role'])
+
+    @action(detail=False, methods=['GET'])
+    def nearby(self, request):
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        if not lat or not lng:
+            return Response({'error': 'lat and lng required'}, status=400)
+
+        radius = request.query_params.get('radius_km', '20')
+        try:
+            radius = float(radius)
+        except ValueError:
+            radius = 20.0
+
+        point = Point(float(lng), float(lat), srid=4326)
+        queryset = Shop.objects.filter(
+            location__dwithin=(point, D(km=radius)),
+            is_active=True,
+        ).annotate(
+            distance=Distance('location', point),
+        ).order_by('distance')
+
+        serializer = ShopSerializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class BuyerDemandViewSet(viewsets.ModelViewSet):
@@ -129,11 +157,6 @@ class BuyerDemandViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def offer(self, request, pk=None):
         demand = self.get_object()
-        if request.user.role not in ('vendor', 'admin'):
-            return Response(
-                {'error': 'Only vendors can submit offers'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
         serializer = CreateOfferSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 

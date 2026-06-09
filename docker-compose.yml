@@ -97,6 +97,8 @@ services:
 
   backend:
     build: .
+    volumes:
+      - .:/app
     env_file:
       - .env
     environment: *env
@@ -116,6 +118,8 @@ services:
 
   celery-worker:
     build: .
+    volumes:
+      - .:/app
     command: celery -A config worker -l info -Q default,dispatch --concurrency ${CELERY_CONCURRENCY:-2}
     env_file:
       - .env
@@ -129,6 +133,8 @@ services:
 
   celery-worker-payments:
     build: .
+    volumes:
+      - .:/app
     command: celery -A config worker -l info -Q payments --concurrency ${CELERY_PAYMENTS_CONCURRENCY:-1}
     env_file:
       - .env
@@ -142,6 +148,8 @@ services:
 
   celery-beat:
     build: .
+    volumes:
+      - .:/app
     command: celery -A config beat -l info --schedule /tmp/celerybeat-schedule
     env_file:
       - .env

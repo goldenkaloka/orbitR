@@ -11,7 +11,12 @@ from domain.events.types import (
 from apps.events.utils import (
     broadcast_demand_update, broadcast_new_demand_to_sellers,
 )
-from apps.marketplace.models import Shop, BuyerDemand
+from infrastructure.notifications.service import NotificationService
+from infrastructure.notifications.messages import (
+    get_demand_message, get_offer_message,
+    get_demand_accepted_message_for_buyer,
+    get_demand_cancelled_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +30,8 @@ def on_demand_created(event: BuyerDemandCreated):
     radius_km = payload['radius_km']
 
     logger.info(f"Demand {demand_id} created — finding nearby shops")
+
+    from apps.marketplace.models import Shop
 
     point = Point(lng, lat, srid=4326)
     nearby_shops = Shop.objects.filter(
@@ -52,9 +59,6 @@ def on_demand_created(event: BuyerDemandCreated):
         lng=lng,
         radius_km=radius_km,
     )
-
-    from infrastructure.notifications.service import NotificationService
-    from infrastructure.notifications.messages import get_demand_message
 
     title, body = get_demand_message(payload['title'], radius_km)
     for seller_id in seller_ids:
@@ -88,8 +92,7 @@ def on_offer_created(event: SellerOfferCreated):
         }
     )
 
-    from infrastructure.notifications.service import NotificationService
-    from infrastructure.notifications.messages import get_offer_message
+    from apps.marketplace.models import BuyerDemand
 
     title, body = get_offer_message()
     try:
@@ -125,8 +128,6 @@ def on_demand_accepted(event: BuyerDemandAccepted):
         }
     )
 
-    from infrastructure.notifications.service import NotificationService
-
     buyer = payload['buyer_info']
     seller = payload['seller_info']
     title = "Offer yako imekubaliwa!"
@@ -145,7 +146,6 @@ def on_demand_accepted(event: BuyerDemandAccepted):
         },
     )
 
-    from infrastructure.notifications.messages import get_demand_accepted_message_for_buyer
     from apps.marketplace.models import SellerOffer
 
     declined_offers = SellerOffer.objects.filter(
@@ -178,8 +178,6 @@ def on_demand_expired(event: BuyerDemandExpired):
 
     broadcast_demand_update(demand_id, 'demand_expired')
 
-    from infrastructure.notifications.service import NotificationService
-
     title = "Ombi lako limeisha"
     body = f"Ombi lako la '{payload['title']}' limeisha bila kupata ofa zilizokubaliwa."
 
@@ -202,11 +200,9 @@ def on_demand_cancelled(event: BuyerDemandCancelled):
 
     broadcast_demand_update(demand_id, 'demand_cancelled')
 
-    from infrastructure.notifications.service import NotificationService
-    from infrastructure.notifications.messages import get_demand_cancelled_message
+    from apps.marketplace.models import SellerOffer
 
     title, body = get_demand_cancelled_message(payload['title'])
-    from apps.marketplace.models import SellerOffer
     declined_offers = SellerOffer.objects.filter(
         demand_id=demand_id, status='DECLINED'
     ).select_related('seller')
