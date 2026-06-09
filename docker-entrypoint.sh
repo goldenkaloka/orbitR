@@ -38,5 +38,11 @@ if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
   fi
 fi
 
-# Run the provided command
-exec "$@"
+# Ensure logs directory exists and is writable by the django user.
+# The volume mount .:/app may overlay host directories owned by root,
+# preventing the non-root django user from creating /app/logs at import time.
+mkdir -p /app/logs
+chown django:django /app/logs
+
+# Drop privileges to the django user and run the provided command
+exec gosu django "$@"

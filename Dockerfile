@@ -23,6 +23,7 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdal-bin \
     libpq5 \
+    gosu \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,8 +37,6 @@ COPY . /app/
 RUN addgroup --system django && adduser --system --ingroup django django && \
     chown -R django:django /app && \
     chmod +x /app/docker-entrypoint.sh
-
-USER django
 
 EXPOSE 8000
 
