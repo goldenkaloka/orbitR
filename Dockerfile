@@ -14,21 +14,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/pydeps -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 
 # === RUNTIME STAGE ===
 FROM python:3.12-slim
 
-# Runtime shared libraries only (no -dev headers)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gdal-bin \
     libpq5 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from builder
-COPY --from=builder /pydeps /usr/local
+# Copy the entire Python installation from builder (site-packages + binaries)
+COPY --from=builder /usr/local /usr/local
 
 WORKDIR /app
 

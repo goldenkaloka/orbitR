@@ -97,6 +97,7 @@ services:
 
   backend:
     build: .
+    image: orbitr-app:latest
     volumes:
       - .:/app
     env_file:
@@ -117,7 +118,8 @@ services:
       start_period: 60s
 
   celery-worker:
-    build: .
+    image: orbitr-app:latest
+    pull_policy: never
     volumes:
       - .:/app
     command: celery -A config worker -l info -Q default,dispatch --concurrency ${CELERY_CONCURRENCY:-2}
@@ -132,7 +134,8 @@ services:
     restart: unless-stopped
 
   celery-worker-payments:
-    build: .
+    image: orbitr-app:latest
+    pull_policy: never
     volumes:
       - .:/app
     command: celery -A config worker -l info -Q payments --concurrency ${CELERY_PAYMENTS_CONCURRENCY:-1}
@@ -147,7 +150,8 @@ services:
     restart: unless-stopped
 
   celery-beat:
-    build: .
+    image: orbitr-app:latest
+    pull_policy: never
     volumes:
       - .:/app
     command: celery -A config beat -l info --schedule /tmp/celerybeat-schedule
