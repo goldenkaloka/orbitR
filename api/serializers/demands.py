@@ -1,15 +1,28 @@
 from rest_framework import serializers
-from apps.marketplace.models import Shop, BuyerDemand, SellerOffer
+from apps.marketplace.models import Shop, BuyerDemand, SellerOffer, MarketplaceCategory
 from api.serializers.utils import parse_coordinate_dict
+
+
+class MarketplaceCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MarketplaceCategory
+        fields = ['id', 'name', 'icon']
 
 
 class ShopSerializer(serializers.ModelSerializer):
     owner_name = serializers.ReadOnlyField(source='owner.username')
+    categories = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=MarketplaceCategory.objects.all(), required=False,
+    )
+    categories_detail = MarketplaceCategorySerializer(
+        source='categories', many=True, read_only=True,
+    )
 
     class Meta:
         model = Shop
         fields = [
             'id', 'owner', 'owner_name', 'name', 'description',
+            'categories', 'categories_detail',
             'location', 'h3_index', 'whatsapp_number', 'is_active',
             'created_at', 'updated_at',
         ]
@@ -24,8 +37,11 @@ class ShopSerializer(serializers.ModelSerializer):
 
 class SellerOfferSerializer(serializers.ModelSerializer):
     seller_name = serializers.ReadOnlyField(source='seller.username')
-    shop_name = serializers.ReadOnlyField(source='shop.name')
+    shop_name = serializers.SerializerMethodField()
     shop_location = serializers.SerializerMethodField()
+
+    def get_shop_name(self, obj):
+        return obj.shop.name if obj.shop else None
 
     class Meta:
         model = SellerOffer

@@ -96,6 +96,7 @@ class Shop(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='shops')
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
+    categories = models.ManyToManyField(MarketplaceCategory, blank=True, related_name='shops')
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     whatsapp_number = models.CharField(max_length=20, blank=True, null=True)

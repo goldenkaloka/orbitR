@@ -216,3 +216,11 @@ class BuyerDemandViewSet(viewsets.ModelViewSet):
             return Response({'status': 'cancelled'})
         except ValueError as e:
             return Response({'error': str(e)}, status=400)
+
+    @action(detail=False, methods=['GET'])
+    def my_offers(self, request):
+        offers = SellerOffer.objects.filter(
+            seller=request.user,
+        ).select_related('demand', 'shop').order_by('-created_at')
+        serializer = SellerOfferSerializer(offers, many=True)
+        return Response(serializer.data)
