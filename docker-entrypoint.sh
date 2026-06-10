@@ -38,11 +38,17 @@ if [ "${RUN_COLLECTSTATIC:-1}" = "1" ]; then
   fi
 fi
 
-# Ensure logs directory exists and is writable by the django user.
+# Ensure logs and migrations directories are writable by the django user.
 # The volume mount .:/app may overlay host directories owned by root,
-# preventing the non-root django user from creating /app/logs at import time.
+# preventing the non-root django user from writing at import time.
 mkdir -p /app/logs
 chown django:django /app/logs
+find /app -path '*/migrations' -type d -exec chown django:django {} +
+find /app -path '*/migrations' -type f -exec chown django:django {} +
 
-# Drop privileges to the django user and run the provided command
-exec gosu django "$@"
+# Drop privileges to the django user (unless already root) and run the provided command
+if [ "$(id -u)" = "0" ]; then
+  exec gosu django "$@"
+else
+  exec "$@"
+fi

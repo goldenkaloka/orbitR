@@ -16,7 +16,7 @@ class Driver(models.Model):
     last_heartbeat = models.DateTimeField(null=True, blank=True, db_index=True)
     assigned_by = models.ForeignKey(
         'restaurants.Restaurant', on_delete=models.CASCADE,
-        related_name='drivers',
+        related_name='drivers', null=True, blank=True,
         help_text='Restaurant that owns this driver'
     )
 
