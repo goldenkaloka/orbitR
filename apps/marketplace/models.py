@@ -141,6 +141,7 @@ class BuyerDemand(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN', db_index=True)
     expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     accepted_offer = models.ForeignKey('SellerOffer', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    categories = models.ManyToManyField(MarketplaceCategory, blank=True, related_name='demands')
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 

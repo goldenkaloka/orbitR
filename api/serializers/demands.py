@@ -104,6 +104,9 @@ class BuyerDemandSerializer(serializers.ModelSerializer):
     buyer_name = serializers.ReadOnlyField(source='buyer.username')
     offers = SellerOfferSerializer(many=True, read_only=True)
     accepted_offer = SellerOfferSerializer(read_only=True)
+    category_ids = serializers.ListField(
+        child=serializers.UUIDField(), write_only=True, required=False,
+    )
 
     class Meta:
         model = BuyerDemand
@@ -111,6 +114,7 @@ class BuyerDemandSerializer(serializers.ModelSerializer):
             'id', 'buyer', 'buyer_name', 'title', 'description',
             'location', 'h3_index', 'radius_km', 'status',
             'expires_at', 'offers', 'accepted_offer', 'created_at', 'updated_at',
+            'category_ids',
         ]
         read_only_fields = ['buyer', 'h3_index', 'status', 'expires_at', 'accepted_offer']
 

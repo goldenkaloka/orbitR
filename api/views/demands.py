@@ -111,6 +111,7 @@ class BuyerDemandViewSet(viewsets.ModelViewSet):
             lng=lng,
             radius_km=data.get('radius_km', 5),
             description=data.get('description'),
+            category_ids=data.get('category_ids'),
         )
         serializer.instance = demand
 

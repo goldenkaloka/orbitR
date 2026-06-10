@@ -22,7 +22,8 @@ class DemandService:
 
     @staticmethod
     def create_demand(buyer_id: UUID, title: str, lat: float, lng: float,
-                      radius_km: int = 5, description: str = None) -> BuyerDemand:
+                      radius_km: int = 5, description: str = None,
+                      category_ids: list = None) -> BuyerDemand:
         from django.contrib.auth import get_user_model
         User = get_user_model()
 
@@ -36,6 +37,11 @@ class DemandService:
         )
         demand.save()
 
+        if category_ids:
+            from apps.marketplace.models import MarketplaceCategory
+            categories = MarketplaceCategory.objects.filter(id__in=category_ids)
+            demand.categories.set(categories)
+
         EventBus.publish(BuyerDemandCreated(
             aggregate_id=demand.id,
             payload={
@@ -47,6 +53,7 @@ class DemandService:
                 'h3_index': demand.h3_index or '',
                 'radius_km': radius_km,
                 'expires_at': str(demand.expires_at),
+                'category_ids': category_ids or [],
             }
         ))
 

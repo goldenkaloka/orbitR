@@ -37,7 +37,12 @@ def on_demand_created(event: BuyerDemandCreated):
     nearby_shops = Shop.objects.filter(
         location__dwithin=(point, D(km=radius_km)),
         is_active=True,
-    ).annotate(
+    )
+    category_ids = payload.get('category_ids', [])
+    if category_ids:
+        nearby_shops = nearby_shops.filter(categories__id__in=category_ids)
+
+    nearby_shops = nearby_shops.annotate(
         distance=Distance('location', point),
     ).only('owner_id').order_by('distance')
 
