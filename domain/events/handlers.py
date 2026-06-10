@@ -123,22 +123,11 @@ def on_payment_collected(event: PaymentCollected):
 
 def on_order_confirmed_dispatch(event: OrderConfirmed):
     """
-    Trigger automated dispatch when an order is confirmed.
-    Skips individual dispatch for orders with h3_index (zone-mapped orders)
-    because they will be dispatched via the batching pipeline after FoodReady.
-    Non-zone orders fall through to the original individual dispatch path.
+    No-op: individual auto-dispatch was removed in favour of the batching
+    pipeline (triggered by FoodReady). All orders reach dispatch via
+    on_food_ready_cross_batching → BatchPipeline.
     """
-    from apps.orders.models import Order
-    try:
-        order = Order.objects.get(id=event.aggregate_id)
-        if order.h3_index:
-            logger.debug(f"Order {order.id} has h3_index — deferring to batching pipeline")
-            return
-    except Order.DoesNotExist:
-        pass
-
-    from domain.services.dispatch_tasks import dispatch_order_task
-    dispatch_order_task.delay(str(event.aggregate_id))
+    logger.debug(f"Order {event.aggregate_id} confirmed — skipping individual dispatch")
 
 def on_payment_initiated(event: PaymentInitiated):
     logger.info(f"Payment initiated for order {event.payload.get('order_id')}")

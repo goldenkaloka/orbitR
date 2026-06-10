@@ -8,7 +8,7 @@ from django.core.cache import cache
 from django.contrib.auth import get_user_model
 
 from apps.orders.models import Order
-from domain.services.order_services import CancelOrderService, DispatchService
+from domain.services.order_services import CancelOrderService
 from infrastructure.notifications.messages import vendor_order_overdue, order_cancelled_restaurant_delay
 
 logger = logging.getLogger(__name__)
@@ -20,21 +20,16 @@ DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
 @shared_task(
     name='domain.services.dispatch_tasks.dispatch_order_task',
     bind=True,
-    max_retries=3,
+    max_retries=0,
     acks_late=True,
 )
 def dispatch_order_task(self, order_id):
-    """Asynchronous task to initiate driver dispatch for an order."""
-    try:
-        DispatchService.execute(order_id)
-    except Exception as e:
-        logger.error(f"Dispatch failed for order {order_id}: {str(e)}")
-        raise self.retry(exc=e, countdown=120)
-
-
-# Fix #4 — Retry storm: use Celery's own self.retry() instead of manual
-# apply_async scheduling. Celery tracks retries reliably via self.request.retries.
-BATCH_DISPATCH_RETRY_DELAYS = {0: 30, 1: 60, 2: 120, 3: 300, 4: 600}
+    """
+    Deprecated: individual auto-dispatch is dead. This task is kept for
+    backwards compatibility but will not retry.
+    """
+    logger.warning(f"[deprecated] dispatch_order_task called for {order_id} — no-op")
+    return
 
 
 @shared_task(
@@ -292,18 +287,6 @@ def daily_earnings_reset_task():
     logger.info("Daily earnings reset complete.")
 
 
-# Kept for backwards compatibility — new code uses dispatch_batch_task above.
-# This shim delegates to the new unified task.
-@shared_task(name='domain.services.dispatch_tasks.retry_batch_dispatch_task')
-def retry_batch_dispatch_task(batch_id, attempt=1):
-    """Deprecated shim — delegates to dispatch_batch_task."""
-    logger.warning(
-        f"[retry_batch_dispatch_task] Deprecated task called for batch {batch_id}. "
-        "Use dispatch_batch_task instead."
-    )
-    dispatch_batch_task.apply_async(args=[str(batch_id), attempt])
-
-
 @shared_task(name='domain.services.dispatch_tasks.expire_stale_preparing_orders_task')
 def expire_stale_preparing_orders_task():
     """
@@ -506,11 +489,4 @@ def expire_stale_picked_orders_task():
         )
 
 
-@shared_task(name='domain.services.dispatch_tasks.retry_dispatch_task')
-def retry_dispatch_task(order_id: str, attempt: int = 1):
-    """
-    Retry dispatch for an order after initial failure.
-    Delegates to dispatch_order_task which handles its own self.retry().
-    """
-    logger.info(f"[retry_dispatch_task] Retrying dispatch for order {order_id}, attempt {attempt}")
-    dispatch_order_task.delay(order_id)
+

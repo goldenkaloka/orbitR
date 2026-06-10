@@ -55,15 +55,6 @@ class DispatchService:
                 from .order_assignment import AssignDriverService
                 AssignDriverService.execute(order.id, best_driver.id, restaurant.owner)
             else:
-                logger.warning(f"No drivers found for order {order_id} within {radius_km}km")
-
-                if not is_retry:
-                    from domain.services.dispatch_tasks import retry_dispatch_task
-                    transaction.on_commit(lambda: retry_dispatch_task.delay(str(order.id), attempt=1))
-
-                transaction.on_commit(lambda: EventBus.publish(DispatchFailed(
-                    aggregate_id=order.id,
-                    payload={'order_id': str(order.id), 'attempt_retry': not is_retry}
-                )))
+                logger.warning(f"No drivers found for order {order_id} within {radius_km}km — dispatch is deprecated, batching handles this")
 
             return order
