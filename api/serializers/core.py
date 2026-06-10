@@ -241,7 +241,9 @@ class OrderSerializer(serializers.ModelSerializer):
         if not obj.batch:
             return None
         
-        # Optimize N+1 by reading from prefetch cache or custom annotation if present
+        request = self.context.get('request')
+        role = getattr(request, 'user', None).role if request and hasattr(request, 'user') else None
+
         order_count = getattr(obj.batch, 'orders_count', None)
         if order_count is None:
             if hasattr(obj.batch, '_prefetched_objects_cache') and 'orders' in obj.batch._prefetched_objects_cache:
@@ -249,17 +251,26 @@ class OrderSerializer(serializers.ModelSerializer):
             else:
                 order_count = obj.batch.orders.count()
 
-        return {
+        result = {
             'id': str(obj.batch.id),
             'status': obj.batch.status,
             'batch_type': obj.batch.batch_type,
             'order_count': order_count,
-            'driver_payout': float(obj.batch.driver_payout) if obj.batch.driver_payout else None,
             'route_distance_km': float(obj.batch.route_distance_km) if obj.batch.route_distance_km else None,
             'route_optimization': obj.batch.route_optimization,
-            'user_paid_total': float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None,
-            'company_profit': float(obj.batch.company_profit) if obj.batch.company_profit else None,
         }
+
+        # Role-gated pricing fields
+        if role == 'admin':
+            result['driver_payout'] = float(obj.batch.driver_payout) if obj.batch.driver_payout else None
+            result['user_paid_total'] = float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None
+            result['company_profit'] = float(obj.batch.company_profit) if obj.batch.company_profit else None
+        elif role == 'driver':
+            result['driver_payout'] = float(obj.batch.driver_payout) if obj.batch.driver_payout else None
+        elif role in ('vendor', 'customer'):
+            result['user_paid_total'] = float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None
+
+        return result
 
     def get_estimated_arrival_minutes(self, obj):
         result = self._get_cached_eta(obj)
@@ -292,10 +303,17 @@ class OrderSerializer(serializers.ModelSerializer):
         data['estimated_arrival_minutes'] = self.get_estimated_arrival_minutes(instance)
         data['waiting_info'] = self.get_waiting_info(instance)
         
-        # Hide OTP from drivers (only customer should see it)
         request = self.context.get('request')
-        if request and hasattr(request, 'user') and instance.customer != request.user:
-            data.pop('delivery_otp', None)
+        if request and hasattr(request, 'user'):
+            user = request.user
+            # Hide OTP from drivers (only customer should see it)
+            if instance.customer != user:
+                data.pop('delivery_otp', None)
+            # Hide pricing details from non-admin roles
+            if user.role != 'admin':
+                data.pop('original_delivery_fee', None)
+                data.pop('discount_applied', None)
+                data.pop('discount_amount', None)
             
         return data
 

@@ -70,11 +70,8 @@ class PromoteUserService:
 
             driver, created = Driver.objects.get_or_create(
                 user=user,
-                defaults={'driver_type': 'permanent', 'status': 'OFFLINE'}
+                defaults={'status': 'OFFLINE'}
             )
-            if not created:
-                driver.driver_type = 'permanent'
-                driver.save(update_fields=['driver_type'])
 
             EventBus.publish(UserPromotedToDriver(
                 aggregate_id=user.id,
@@ -212,14 +209,13 @@ class RegisterTempDriverService:
             driver, created = Driver.objects.get_or_create(
                 user=user,
                 defaults={
-                    'driver_type': 'temporary',
                     'assigned_by': restaurant,
                     'status': 'ONLINE',
                 }
             )
-            
-            if not created and driver.driver_type == 'permanent':
-                raise ValueError('This user is already a permanent driver')
+
+            if not created:
+                raise ValueError('This user is already a driver')
 
             if user.role == 'customer':
                 user.role = 'driver'

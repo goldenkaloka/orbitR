@@ -83,8 +83,7 @@ class PostgisRadiusStrategy(LocationMatcher):
             status='AVAILABLE',
             location__dwithin=(restaurant_point, D(km=max_radius_km)),
             last_heartbeat__gte=threshold,
-        ).filter(
-            Q(driver_type='permanent') | Q(assigned_by_id=restaurant_id)
+            assigned_by_id=restaurant_id,
         ).annotate(
             distance_meters=Distance('location', restaurant_point),
             active_count=Count('assignments', filter=Q(assignments__delivered_at__isnull=True)),

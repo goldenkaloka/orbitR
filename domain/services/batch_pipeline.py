@@ -1,7 +1,7 @@
 """
 BatchPipeline — Single, unified batching entry point.
 
-Replaces: BatchingEngine, CrossBatchingService, BatchingService.
+Replaces: BatchingEngine, BatchingService.
 
 Pipeline steps:
   1. Zone check  — order must be inside an active operational zone
@@ -37,15 +37,12 @@ logger = logging.getLogger(__name__)
 ZONE_LOCK_TTL = 60          # seconds — how long to hold the zone-level Redis lock
 MAX_CANDIDATES = 50         # max orders to fetch per batching cycle
 MAX_ORDERS_PER_BATCH = 5
-MAX_RESTAURANTS_PER_BATCH = 3
 MIN_ORDERS_FOR_BATCH = 2
 NEIGHBOR_RING_K = 3         # H3 rings to expand from delivery cell for clustering
-CLUSTER_RESOLUTION = 9     # fine resolution for delivery-proximity clustering
+CLUSTER_RESOLUTION = 9      # fine resolution for delivery-proximity clustering
 MAX_2OPT_ITERATIONS = 20    # hard cap — prevents unbounded loops inside transactions
-CLUSTER_RING_K = 2          # H3 rings for delivery-proximity clustering (was 1 — expanded for denser batches)
-SINGLE_ORDER_GRACE_SECONDS = 60  # how long a lone order waits before getting its own batch
-SAME_CUSTOMER_GRACE_EXTRA = 60   # extra seconds for same-customer same-restaurant orders
-CROSS_BATCH_DISCOUNT = Decimal('0.15')
+CLUSTER_RING_K = 2          # H3 rings for delivery-proximity clustering
+SINGLE_ORDER_GRACE_SECONDS = 30  # how long a lone order waits before getting its own batch
 
 # Fallback route estimation constants
 TRAVEL_TIME_PER_KM = 3      # minutes per km
@@ -223,46 +220,25 @@ class BatchPipeline:
                     batched_ids.add(o.id)
 
         # ── Pass 2: Stale singles (grace period expired) ───────────────────────
-        # Each order gets its own grace period — orders from customers who
-        # have other pending orders at the same restaurant wait longer.
-        from apps.orders.models import Order as OrderModel
         remaining = [o for o in candidates if o.id not in batched_ids]
         cutoff = timezone.now() - timezone.timedelta(seconds=SINGLE_ORDER_GRACE_SECONDS)
-        extra_cutoff = timezone.now() - timezone.timedelta(
-            seconds=SINGLE_ORDER_GRACE_SECONDS + SAME_CUSTOMER_GRACE_EXTRA
-        )
-        stale = []
-        for order in remaining:
-            has_pending = OrderModel.objects.filter(
-                customer=order.customer,
-                restaurant=order.restaurant,
-                status__in=['CONFIRMED', 'PREPARING'],
-            ).exclude(id=order.id).exists()
-            effective_cutoff = extra_cutoff if has_pending else cutoff
-            if (order.ready_at or order.created_at) < effective_cutoff:
-                stale.append((order, has_pending))
-        for order, has_pending in stale:
+        stale = [o for o in remaining if (o.ready_at or o.created_at) < cutoff]
+        for order in stale:
             route_dict = BatchPipeline._optimize_route([order])
             batch = BatchPipeline._create_single_order_batch_atomic(order, route_dict=route_dict)
             if batch:
                 created.append(batch)
-                suffix = " extended same-customer grace)" if has_pending else ")"
-                logger.info(
-                    f"[BatchPipeline] Poll created single-order batch for order "
-                    f"{order.id} (waited ≥{SINGLE_ORDER_GRACE_SECONDS}s{suffix}"
-                )
 
         return created
 
     @staticmethod
     def _form_clusters_from_pool(candidates: list) -> list:
         """
-        Form optimal clusters from a pool of candidate orders.
-        Strategy: same-restaurant clusters first, then cross-restaurant.
+        Form clusters of orders from the same restaurant.
+        Single-restaurant only — no cross-restaurant batching.
         """
         from collections import defaultdict
 
-        # Group by restaurant
         by_restaurant = defaultdict(list)
         for o in candidates:
             by_restaurant[o.restaurant_id].append(o)
@@ -270,8 +246,6 @@ class BatchPipeline:
         clusters = []
         batched_ids = set()
 
-        # Same-restaurant clusters (no discount needed)
-        # Sub-cluster by customer first so same person's orders are batched together.
         for rest_id, orders in by_restaurant.items():
             by_customer = defaultdict(list)
             for o in orders:
@@ -286,7 +260,7 @@ class BatchPipeline:
                         batched_ids.update(o.id for o in cluster)
                     cust_orders = cust_orders[MAX_ORDERS_PER_BATCH:]
 
-            # Remaining singles (cross-customer) batched together
+            # Cross-customer orders from same restaurant batched together
             sorted_orders = sorted(orders, key=lambda o: o.ready_at or o.created_at)
             remaining = [o for o in sorted_orders if o.id not in batched_ids]
             while remaining:
@@ -296,53 +270,7 @@ class BatchPipeline:
                     batched_ids.update(o.id for o in cluster)
                 remaining = remaining[MAX_ORDERS_PER_BATCH:]
 
-        # Cross-restaurant clusters — group remaining by delivery proximity
-        remaining = [o for o in candidates if o.id not in batched_ids]
-        if remaining:
-            cross_clusters = BatchPipeline._form_cross_clusters(remaining)
-            clusters.extend(cross_clusters)
-
         return clusters
-
-    @staticmethod
-    def _form_cross_clusters(orders: list) -> list:
-        """Form cross-restaurant clusters by delivery H3 proximity."""
-        from collections import defaultdict
-
-        # Assign each order a delivery H3 cell at CLUSTER_RESOLUTION
-        cell_groups = defaultdict(list)
-        for o in orders:
-            if not o.delivery_location:
-                continue
-            cell = latlng_to_h3(
-                o.delivery_location.y,
-                o.delivery_location.x,
-                CLUSTER_RESOLUTION,
-            )
-            if cell:
-                cell_groups[cell].append(o)
-
-        # Merge neighboring cells
-        merged = []
-        assigned = set()
-        for cell, group in cell_groups.items():
-            if cell in assigned:
-                continue
-            neighbor_cells = set(h3.grid_disk(cell, CLUSTER_RING_K))
-            merged_group = list(group)
-            assigned.add(cell)
-            for nc in neighbor_cells:
-                if nc in cell_groups and nc not in assigned:
-                    merged_group.extend(cell_groups[nc])
-                    assigned.add(nc)
-
-            # Cap by business rules
-            capped = _cap_by_restaurants(merged_group, MAX_ORDERS_PER_BATCH, MAX_RESTAURANTS_PER_BATCH)
-            capped = _dedup_by_pk(capped)
-            if len(capped) >= MIN_ORDERS_FOR_BATCH:
-                merged.append(capped)
-
-        return merged
 
 
     # ─── Internal pipeline ────────────────────────────────────────────────────
@@ -420,72 +348,21 @@ class BatchPipeline:
     @staticmethod
     def _find_best_cluster(trigger_order, candidates: list) -> list | None:
         """
-        Find the best cluster of orders that can be delivered together.
-        Tries same-restaurant first (cheaper), then cross-restaurant.
+        Find the best cluster of orders from the same restaurant.
+        Single-restaurant batching only — no cross-restaurant.
         """
-        # Strategy 1: Same restaurant (no discount needed, simpler routing)
         same_restaurant = [
             o for o in candidates
             if o.restaurant_id == trigger_order.restaurant_id
         ]
         if len(same_restaurant) >= MIN_ORDERS_FOR_BATCH:
-            # Prefer same-customer orders first (same person at same restaurant),
-            # then oldest ready_at for remaining slots.
             same_restaurant.sort(key=lambda o: (
                 0 if o.customer_id == trigger_order.customer_id else 1,
                 o.ready_at or o.created_at,
             ))
             return _dedup_by_pk(same_restaurant)[:MAX_ORDERS_PER_BATCH]
 
-        # Strategy 2: Cross-restaurant — cluster by delivery proximity
-        cross_cluster = BatchPipeline._cluster_by_delivery_proximity(trigger_order, candidates)
-        if cross_cluster and len(cross_cluster) >= MIN_ORDERS_FOR_BATCH:
-            return cross_cluster
-
         return None
-
-    @staticmethod
-    def _cluster_by_delivery_proximity(trigger_order, orders: list) -> list | None:
-        """
-        Group orders by delivery H3 cell proximity at fine resolution,
-        anchored on the triggering order.
-        """
-        if not trigger_order.delivery_location:
-            return None
-        trigger_cell = latlng_to_h3(
-            trigger_order.delivery_location.y,
-            trigger_order.delivery_location.x,
-            CLUSTER_RESOLUTION,
-        )
-        if not trigger_cell:
-            return None
-
-        neighbors = set(h3.grid_disk(trigger_cell, CLUSTER_RING_K))
-
-        cluster_orders = []
-        cluster_seen = set()
-
-        # Ensure trigger_order is always included and listed first to avoid pruning
-        cluster_orders.append(trigger_order)
-        cluster_seen.add(trigger_order.id)
-
-        for order in orders:
-            if order.id in cluster_seen:
-                continue
-            if not order.delivery_location:
-                continue
-            cell = latlng_to_h3(
-                order.delivery_location.y,
-                order.delivery_location.x,
-                CLUSTER_RESOLUTION,
-            )
-            if cell in neighbors:
-                cluster_orders.append(order)
-                cluster_seen.add(order.id)
-
-        # Apply restaurant and order caps
-        limited = _cap_by_restaurants(cluster_orders, MAX_ORDERS_PER_BATCH, MAX_RESTAURANTS_PER_BATCH)
-        return _dedup_by_pk(limited)
 
 
     # ─── Route optimization ───────────────────────────────────────────────────
@@ -589,14 +466,12 @@ class BatchPipeline:
             logger.info("[BatchPipeline] Not enough orders after locking — skipping batch")
             return None
 
-        # Determine batch type
-        unique_restaurants = {o.restaurant_id for o in locked_orders}
-        is_cross = len(unique_restaurants) > 1
-        batch_type = 'CROSS_RESTAURANT' if is_cross else 'SINGLE_RESTAURANT'
-        discount_rate = CROSS_BATCH_DISCOUNT if is_cross else Decimal('0')
+        # Single-restaurant batch — no cross-restaurant discount
+        batch_type = 'SINGLE_RESTAURANT'
+        discount_rate = Decimal('0')
 
         # Pricing
-        pricing = BatchPipeline._calculate_pricing(locked_orders, is_cross)
+        pricing = BatchPipeline._calculate_pricing(locked_orders)
         driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
             locked_orders, route_dict, pricing
         )
@@ -629,19 +504,11 @@ class BatchPipeline:
         delivery_seq_map = _build_delivery_seq_map(route_dict)
 
         # Link orders to batch
-        fee_map = pricing['per_order']
         for order in locked_orders:
             order.batch = batch
             order.route_sequence = delivery_seq_map.get(str(order.id))
-            if is_cross and str(order.id) in fee_map:
-                order.original_delivery_fee = fee_map[str(order.id)]['original']
-                order.delivery_fee = fee_map[str(order.id)]['discounted']
-                order.discount_applied = True
 
-        fields = ['batch', 'route_sequence']
-        if is_cross:
-            fields += ['original_delivery_fee', 'delivery_fee', 'discount_applied']
-        Order.objects.bulk_update(locked_orders, fields)
+        Order.objects.bulk_update(locked_orders, ['batch', 'route_sequence'])
 
         # Pickup sequence — spatially sorted by nearest-first from first pickup
         BatchPipeline._create_batch_restaurants(batch, locked_orders, route_dict)
@@ -654,8 +521,7 @@ class BatchPipeline:
 
         logger.info(
             f"[BatchPipeline] Created {batch_type} batch {batch.id} "
-            f"orders={len(locked_orders)} restaurants={len(unique_restaurants)} "
-            f"distance={route_distance}km discount={discount_rate} "
+            f"orders={len(locked_orders)} distance={route_distance}km "
             f"payout={driver_payout} profit={company_profit}"
         )
         return batch
@@ -841,7 +707,7 @@ class BatchPipeline:
     # ─── Helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _calculate_pricing(orders: list, is_cross: bool) -> dict:
+    def _calculate_pricing(orders: list) -> dict:
         from domain.services.pricing_service import PricingService
 
         original_total = Decimal('0')
@@ -854,17 +720,12 @@ class BatchPipeline:
                     order.restaurant, order.delivery_location,
                     order=order, skip_log=True
                 )
-            discounted = fee * (1 - CROSS_BATCH_DISCOUNT) if is_cross else fee
             original_total += fee
-            per_order[str(order.id)] = {'original': fee, 'discounted': discounted}
-
-        discounted_total = (
-            original_total * (1 - CROSS_BATCH_DISCOUNT) if is_cross else original_total
-        )
+            per_order[str(order.id)] = {'original': fee, 'discounted': fee}
 
         return {
             'original_total': original_total,
-            'discounted_total': discounted_total,
+            'discounted_total': original_total,
             'per_order': per_order,
         }
 
@@ -952,21 +813,6 @@ def _dedup_by_pk(orders: list) -> list:
     return result
 
 
-def _cap_by_restaurants(orders: list, max_orders: int, max_restaurants: int) -> list:
-    """Trim order list to respect max_orders and max_restaurants constraints."""
-    result = []
-    restaurants_seen: set = set()
-    for o in orders:
-        if len(result) >= max_orders:
-            break
-        if (o.restaurant_id not in restaurants_seen
-                and len(restaurants_seen) >= max_restaurants):
-            continue
-        result.append(o)
-        restaurants_seen.add(o.restaurant_id)
-    return result
-
-
 def _build_delivery_seq_map(route_dict: dict | None) -> dict:
     """Build {order_id_str: sequence_number} from route stop_sequence."""
     if not route_dict:
@@ -1014,38 +860,6 @@ def _route_distance_km(route: list, all_locs: list) -> float:
         if l1 and l2:
             total += _haversine_km(l1['lat'], l1['lng'], l2['lat'], l2['lng'])
     return total
-
-
-def _nearest_neighbour(pickups: list, deliveries: list) -> list:
-    """Classic nearest-neighbour heuristic: all pickups first, then deliveries."""
-    if not pickups or not deliveries:
-        return pickups + deliveries
-
-    route = []
-    current_lat = pickups[0]['lat']
-    current_lng = pickups[0]['lng']
-    remaining_p = list(pickups)
-    remaining_d = list(deliveries)
-
-    while remaining_p or remaining_d:
-        if remaining_p:
-            nearest = min(
-                remaining_p,
-                key=lambda p: _haversine_km(current_lat, current_lng, p['lat'], p['lng'])
-            )
-            route.append(nearest)
-            current_lat, current_lng = nearest['lat'], nearest['lng']
-            remaining_p.remove(nearest)
-        elif remaining_d:
-            nearest = min(
-                remaining_d,
-                key=lambda d: _haversine_km(current_lat, current_lng, d['lat'], d['lng'])
-            )
-            route.append(nearest)
-            current_lat, current_lng = nearest['lat'], nearest['lng']
-            remaining_d.remove(nearest)
-
-    return route
 
 
 def _nearest_neighbour_single(locs: list) -> list:

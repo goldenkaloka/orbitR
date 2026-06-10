@@ -10,31 +10,25 @@ from django.contrib.gis.db import models as gis_models
 from apps.core.geo_utils import latlng_to_h3
 
 class Driver(models.Model):
-    DRIVER_TYPE_CHOICES = (
-        ('permanent', 'Permanent'),
-        ('temporary', 'Temporary'),
-    )
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
     status = models.CharField(max_length=50, default='OFFLINE', db_index=True)
     last_heartbeat = models.DateTimeField(null=True, blank=True, db_index=True)
-    driver_type = models.CharField(max_length=20, choices=DRIVER_TYPE_CHOICES, default='permanent', db_index=True)
     assigned_by = models.ForeignKey(
-        'restaurants.Restaurant', on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='temp_drivers',
-        help_text='Only set for temporary drivers assigned by a restaurant'
+        'restaurants.Restaurant', on_delete=models.CASCADE,
+        related_name='drivers',
+        help_text='Restaurant that owns this driver'
     )
-    
+
     # PostGIS Location Field
     location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
     # H3 Spatial Indexing
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
-    
+
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
     max_active_orders = models.PositiveIntegerField(default=3)
     current_active_orders = models.PositiveIntegerField(default=0)
-    
+
     VEHICLE_CHOICES = (
         ('bicycle', 'Bicycle'),
         ('motorcycle', 'Motorcycle'),
@@ -43,24 +37,21 @@ class Driver(models.Model):
     )
     vehicle_type = models.CharField(max_length=20, choices=VEHICLE_CHOICES, default='motorcycle')
     vehicle_number = models.CharField(max_length=50, blank=True, null=True)
-    
+
     # Performance & Earnings
     total_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
     today_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
-    total_claim_attempts = models.PositiveIntegerField(default=0)
-    total_claims_accepted = models.PositiveIntegerField(default=0)
-    
+
     def save(self, *args, **kwargs):
         if self.location:
             new_h3 = latlng_to_h3(self.location.y, self.location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
-        
+
         super().save(*args, **kwargs)
 
-
     def __str__(self):
-        return f"Driver: {self.user.username} ({self.driver_type})"
+        return f"Driver: {self.user.username}"
 
 class DeliveryAssignment(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

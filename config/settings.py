@@ -590,10 +590,7 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'domain.services.dispatch_tasks.expire_stale_picked_orders_task',
         'schedule': crontab(minute='*/10'),
     },
-    'check-waiting-batches-timeout-every-5-mins': {
-        'task': 'apps.orders.tasks.check_waiting_batches_timeout',
-        'schedule': crontab(minute='*/5'),
-    },
+
     'batch-poll-every-30-seconds': {
         'task': 'domain.services.dispatch_tasks.batch_poll_task',
         'schedule': 30.0,

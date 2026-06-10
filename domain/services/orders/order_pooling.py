@@ -501,7 +501,7 @@ class PoolOrderService:
         from apps.orders.models import DeliveryBatch
         from domain.services.driver_free_service import DriverFreeService
 
-        CANCELLABLE_STATES = {'CREATED', 'OFFERED', 'DISPATCHED'}
+        CANCELLABLE_STATES = {'CREATED', 'PENDING_DRIVER', 'DISPATCHED'}
 
         try:
             with transaction.atomic():
@@ -513,7 +513,7 @@ class PoolOrderService:
                     )
                     return
 
-                if batch.status in ('OFFERED', 'DISPATCHED') and batch.driver_id:
+                if batch.status == 'DISPATCHED' and batch.driver_id:
                     DriverFreeService.release(batch_id, event='CANCEL', reason=f'Pool {pool_id} was cancelled')
                     batch.refresh_from_db()
 

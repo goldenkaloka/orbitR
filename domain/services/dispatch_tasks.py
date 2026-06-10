@@ -39,81 +39,31 @@ BATCH_DISPATCH_RETRY_DELAYS = {0: 30, 1: 60, 2: 120, 3: 300, 4: 600}
 
 @shared_task(
     name='domain.services.dispatch_tasks.dispatch_batch_task',
-    bind=True,
-    max_retries=5,
-    acks_late=True,
 )
-def dispatch_batch_task(self, batch_id: str, attempt: int = 0):
+def dispatch_batch_task(batch_id: str):
     """
-    Dispatch a batch to a driver. Self-retrying with exponential backoff.
-
-    Uses a Redis lock to prevent duplicate concurrent executions of the same
-    batch dispatch — acks_late + retries can cause fanout on worker restarts.
+    Notify restaurants that their batch needs a driver assigned.
+    One-shot — no retry needed (restaurants handle driver assignment).
     """
     from domain.services.batch_dispatch_service import BatchDispatchService
 
-    # Deduplication lock — only one worker may dispatch a given batch at a time.
-    # TTL is generous (10 min) so it outlives the longest retry delay (600s).
     lock_key = f'dispatch_batch_lock:{batch_id}'
-    lock_ttl = 660  # seconds
+    lock_ttl = 60
 
-    # Try to acquire the lock. If another worker holds it, skip silently.
-    acquired = cache.add(lock_key, self.request.id, lock_ttl)
+    acquired = cache.add(lock_key, '1', lock_ttl)
     if not acquired:
-        # Another worker is already handling this batch — nothing to do.
         return
 
     try:
         result = BatchDispatchService.dispatch_batch(str(batch_id))
         if result:
-            logger.info(f"[dispatch_batch_task] Batch {batch_id} dispatched successfully")
-            cache.delete(lock_key)
-            return
-
-        # No driver found — release lock and schedule next attempt
-        cache.delete(lock_key)
-        delay = BATCH_DISPATCH_RETRY_DELAYS.get(self.request.retries, 60)
-        logger.info(
-            f"[dispatch_batch_task] No driver for batch {batch_id}. "
-            f"Retry {self.request.retries + 1}/5 in {delay}s"
-        )
-        raise self.retry(countdown=delay)
-
-    except self.MaxRetriesExceededError:
-        cache.delete(lock_key)
-        logger.error(
-            f"[dispatch_batch_task] Batch {batch_id} exhausted all retries — "
-            "escalating to WAITING_TEMP_DRIVER"
-        )
-        from apps.orders.models import DeliveryBatch
-        from domain.services.batch_fsm import BatchFSM
-        from domain.services.batch_dispatch_service import handle_expired_batch
-
-        try:
-            with transaction.atomic():
-                batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
-                if batch.status in ('CREATED', 'OFFERED'):
-                    batch.status = BatchFSM.transition(batch, 'MAX_ATTEMPTS')
-                    batch.save(update_fields=['status'])
-            handle_expired_batch(batch_id)
-        except Exception as e:
-            logger.error(f"Failed to escalate batch {batch_id} on retry exhaustion: {e}")
-
+            logger.info(f"[dispatch_batch_task] Batch {batch_id} → PENDING_DRIVER, restaurants notified")
+        else:
+            logger.warning(f"[dispatch_batch_task] Batch {batch_id} dispatch returned None")
     except Exception as exc:
+        logger.error(f"[dispatch_batch_task] Error dispatching batch {batch_id}: {exc}", exc_info=True)
+    finally:
         cache.delete(lock_key)
-        from domain.services.batch_fsm import BatchFSMError
-        if isinstance(exc, (BatchFSMError, ValueError)):
-            logger.error(
-                f"[dispatch_batch_task] Permanent failure for batch {batch_id}: {exc}"
-            )
-            return
-
-        delay = BATCH_DISPATCH_RETRY_DELAYS.get(self.request.retries, 60)
-        logger.warning(
-            f"[dispatch_batch_task] Transient error for batch {batch_id}: {exc}. "
-            f"Retry in {delay}s"
-        )
-        raise self.retry(exc=exc, countdown=delay)
 
 @shared_task(name='domain.services.dispatch_tasks.batch_poll_task')
 def batch_poll_task():
@@ -156,7 +106,7 @@ def expire_unassigned_orders_task():
         # nullable side of an outer join, which is what .exclude(batch__status__in=[...])
         # generates. Fetching the IDs separately avoids that entirely.
         active_batch_order_ids = Order.objects.filter(
-            batch__status__in=['OFFERED', 'CREATED', 'WAITING_TEMP_DRIVER']
+            batch__status__in=['CREATED', 'PENDING_DRIVER']
         ).values_list('id', flat=True)
 
         stale_orders = list(

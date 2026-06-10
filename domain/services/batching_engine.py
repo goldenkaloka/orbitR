@@ -46,56 +46,7 @@ DEFAULT_STRATEGIES_CONFIG = [
         },
         'priority': 20,
     },
-    {
-        'name': 'CROSS_RESTAURANT',
-        'description': 'Group orders from different restaurants with nearby delivery locations',
-        'cluster_by': 'delivery_h3',
-        'h3_resolution': 10,
-        'neighbor_ring_k': 2,
-        'constraints': {
-            'max_orders': 5,
-            'max_restaurants': 3,
-            'max_distance_km': 8,
-            'min_orders': 2,
-            'min_restaurants': 2,
-        },
-        'pricing': {
-            'discount_rate': '0.15',
-            'driver_payout_type': 'delivery_fee',
-        },
-        'route_optimization': {
-            'enabled': True,
-            'distance_weight': 0.6,
-            'time_weight': 0.4,
-            'algorithm': 'nearest_neighbor_2opt',
-        },
-        'priority': 10,
-    },
-    {
-        'name': 'TIME_WINDOW',
-        'description': 'Group orders ready within a time window',
-        'cluster_by': 'time_window',
-        'h3_resolution': 9,
-        'neighbor_ring_k': 1,
-        'constraints': {
-            'max_orders': 5,
-            'max_restaurants': 3,
-            'max_distance_km': 12,
-            'min_orders': 2,
-            'time_window_min': 15,
-        },
-        'pricing': {
-            'discount_rate': '0.10',
-            'driver_payout_type': 'delivery_fee',
-        },
-        'route_optimization': {
-            'enabled': True,
-            'distance_weight': 0.6,
-            'time_weight': 0.4,
-            'algorithm': 'nearest_neighbor_2opt',
-        },
-        'priority': 5,
-    },
+
 ]
 
 
@@ -134,7 +85,7 @@ class BatchingEngine:
         Attempt to batch a READY order.
 
         Delegates to BatchPipeline.run(order) — the single, unified batching
-        implementation that replaces BatchingService, CrossBatchingService,
+        implementation that replaces BatchingService,
         and the old BatchingEngine._process_batching().
         """
         from domain.services.batch_pipeline import BatchPipeline

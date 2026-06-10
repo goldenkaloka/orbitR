@@ -45,22 +45,7 @@ def broadcast_order_status(order_id, status, message="Status updated"):
             }
             centrifugo_publish.delay('riders_global:pool', ping_payload)
 
-        if status == 'OFFERED' and order.driver:
-            from infrastructure.notifications.service import NotificationService
-            from infrastructure.notifications.messages import single_order_offered
-            so_title, so_body = single_order_offered(order.restaurant.name)
-            NotificationService.send_push(
-                user_id=str(order.driver.user_id),
-                title=so_title,
-                body=so_body,
-                data={
-                    'type': 'new_order',
-                    'order_id': str(order_id),
-                    'restaurant_name': order.restaurant.name,
-                },
-            )
-
-        if status in ('OFFERED', 'ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and (order.driver or status == 'OFFERED'):
+        if status in ('ASSIGNED', 'PICKED', 'DELIVERED', 'CANCELLED') and order.driver:
             centrifugo_publish.delay('riders_global:pool', {
                 'type': 'order_removed_from_pool',
                 'order_id': str(order_id),

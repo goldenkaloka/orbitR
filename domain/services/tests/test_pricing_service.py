@@ -92,45 +92,6 @@ class PricingServiceTests(TestCase):
         self.assertEqual(result['discounted_total'], Decimal('1500.00'))
         self.assertEqual(result['discount_rate'], Decimal('0'))
 
-    def test_calculate_batch_fee_cross_restaurant_discount(self):
-        """Test that CROSS_RESTAURANT batch applies 15% discount"""
-        user2 = User.objects.create_user(username='test_customer_2', password='testpass')
-        order1 = Order.objects.create(
-            restaurant=self.restaurant,
-            customer=self.user,
-            delivery_location=Point(39.2100, -6.7924),
-            delivery_address="Test Address 1",
-            status='READY',
-            delivery_fee=Decimal('1500.00'),
-            service_fee=Decimal('300.00'),
-            items_subtotal=Decimal('5000.00'),
-            total_amount=Decimal('6800.00')
-        )
-
-        restaurant2 = Restaurant.objects.create(
-            name="Test Restaurant 2",
-            owner=self.user,
-            geo_location=Point(39.2050, -6.7930),
-            max_delivery_radius_km=10.0
-        )
-        order2 = Order.objects.create(
-            restaurant=restaurant2,
-            customer=user2,
-            delivery_location=Point(39.2100, -6.7924),
-            delivery_address="Test Address 2",
-            status='READY',
-            delivery_fee=Decimal('1500.00'),
-            service_fee=Decimal('300.00'),
-            items_subtotal=Decimal('5000.00'),
-            total_amount=Decimal('6800.00')
-        )
-
-        result = PricingService.calculate_batch_fee([order1, order2], 'CROSS_RESTAURANT')
-
-        self.assertEqual(result['original_total'], Decimal('3000.00'))
-        self.assertEqual(result['discounted_total'], Decimal('2550.00'))
-        self.assertEqual(result['discount_rate'], Decimal('0.15'))
-
     def test_apply_batch_fees_updates_orders(self):
         """Test that apply_batch_fees correctly updates order fees"""
         order = Order.objects.create(

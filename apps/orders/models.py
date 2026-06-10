@@ -276,19 +276,13 @@ class PoolItem(models.Model):
 class DeliveryBatch(models.Model):
     STATUS_CHOICES = (
         ('CREATED', 'Batch Created'),
-        ('OFFERED', 'Offered to Driver'),
-        ('EXPIRED', 'Expired (No Driver)'),
-        ('WAITING_TEMP_DRIVER', 'Waiting for Temp Driver'),
+        ('PENDING_DRIVER', 'Waiting for Restaurant to Assign Driver'),
         ('DISPATCHED', 'Driver Assigned'),
         ('CANCELLED', 'Cancelled'),
     )
 
     BATCH_TYPE_CHOICES = (
-        ('SINGLE_ORDER', 'Single Order'),
         ('SINGLE_RESTAURANT', 'Single Restaurant'),
-        ('CROSS_RESTAURANT', 'Cross Restaurant'),
-        ('TIME_WINDOW', 'Time Window'),
-        ('INTER_ZONE', 'Inter-Zone'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -313,7 +307,7 @@ class DeliveryBatch(models.Model):
 
     offer_attempt = models.PositiveIntegerField(default=0, help_text="Number of times batch has been offered to drivers")
     offer_sent_at = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch was last offered")
-    waiting_since = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch entered WAITING_TEMP_DRIVER status")
+    waiting_since = models.DateTimeField(null=True, blank=True, help_text="Timestamp when batch entered PENDING_DRIVER status")
     
     zone_ids = models.JSONField(null=True, blank=True, help_text="List of zone IDs this batch spans")
     is_inter_zone = models.BooleanField(default=False, help_text="True if batch spans multiple zones")

@@ -57,8 +57,7 @@ class AdminViewSet(viewsets.GenericViewSet):
         active_drivers = Driver.objects.filter(status='ONLINE').count()
         total_drivers = Driver.objects.count()
         total_restaurants = Restaurant.objects.count()
-        permanent_drivers = Driver.objects.filter(driver_type='permanent').count()
-        temp_drivers = Driver.objects.filter(driver_type='temporary').count()
+        temp_drivers = Driver.objects.count()
         
         # Total funds currently in the system wallets
         platform_balance = Wallet.objects.aggregate(Sum('balance'))['balance__sum'] or 0
@@ -72,7 +71,6 @@ class AdminViewSet(viewsets.GenericViewSet):
             'platform_balance': float(platform_balance),
             'active_drivers': active_drivers,
             'total_drivers': total_drivers,
-            'permanent_drivers': permanent_drivers,
             'temp_drivers': temp_drivers,
             'total_restaurants': total_restaurants,
         }
@@ -104,11 +102,8 @@ class AdminViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['GET'])
     def drivers(self, request):
-        """List all drivers with optional type filter."""
-        driver_type = request.query_params.get('type')  # permanent / temporary
+        """List all drivers."""
         queryset = Driver.objects.select_related('user').all()
-        if driver_type:
-            queryset = queryset.filter(driver_type=driver_type)
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = DriverSerializer(page, many=True)
@@ -300,19 +295,9 @@ class AdminViewSet(viewsets.GenericViewSet):
 
     @action(detail=False, methods=['GET'])
     def pending_manual_assignment(self, request):
-        """
-        Get orders that need manual driver assignment.
-        In the new design, these are READY orders with no batch or whose batch
-        has exhausted all dispatch attempts (WAITING_TEMP_DRIVER).
-        """
-        from apps.orders.models import DeliveryBatch
-        waiting_batch_ids = DeliveryBatch.objects.filter(
-            status='WAITING_TEMP_DRIVER'
-        ).values_list('id', flat=True)
-
+        """Get READY orders that need driver assignment."""
         orders = Order.objects.filter(
-            models.Q(status='READY', batch__isnull=True) |
-            models.Q(status='READY', batch_id__in=waiting_batch_ids)
+            status='READY', batch__isnull=True
         ).select_related('restaurant', 'customer')
         return Response({
             'count': orders.count(),

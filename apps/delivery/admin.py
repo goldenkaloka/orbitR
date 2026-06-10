@@ -25,7 +25,7 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_filter = ('status', 'vehicle_type')
     search_fields = ('user__username', 'user__email', 'user__phone', 'vehicle_number')
     raw_id_fields = ('user',)
-    readonly_fields = ('id', 'total_earnings', 'today_earnings', 'total_claim_attempts', 'total_claims_accepted')
+    readonly_fields = ('id', 'total_earnings', 'today_earnings')
     list_per_page = 25
     inlines = [DeliveryAssignmentInline]
 
@@ -33,7 +33,7 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
         (None, {'fields': ('id', 'user', 'status', 'assigned_by')}),
         ('Vehicle Info', {'fields': ('vehicle_type', 'vehicle_number')}),
         ('Capacity & Quality', {'fields': ('max_active_orders', 'current_active_orders', 'rating')}),
-        ('Financials & Stats', {'fields': ('total_earnings', 'today_earnings', 'total_claim_attempts', 'total_claims_accepted')}),
+        ('Financials & Stats', {'fields': ('total_earnings', 'today_earnings')}),
         ('Location', {'fields': ('location',)}),
     )
 
@@ -53,7 +53,8 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
         label={
             "ONLINE": "success",
             "OFFLINE": "warning",
-            "ON_DELIVERY": "info",
+            "AVAILABLE": "info",
+            "DELIVERING": "primary",
         },
     )
     def show_status(self, obj):
@@ -70,7 +71,7 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
 
     @admin.action(description='⚫ Set selected drivers OFFLINE')
     def set_offline(self, request, queryset):
-        updated = queryset.exclude(status='ON_DELIVERY').update(status='OFFLINE')
+        updated = queryset.exclude(status='DELIVERING').update(status='OFFLINE')
         self.message_user(request, f'{updated} driver(s) set offline.')
 
     def get_queryset(self, request):

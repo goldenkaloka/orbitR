@@ -201,16 +201,11 @@ class PricingService:
             return Decimal('1000.00'), Decimal('300.00'), None
 
     @classmethod
-    def calculate_batch_fee(cls, orders, batch_type='CROSS_RESTAURANT'):
-        from decimal import Decimal
-
-        CROSS_BATCH_DISCOUNT = Decimal('0.15')
-
+    def calculate_batch_fee(cls, orders, batch_type='SINGLE_ORDER'):
         original_total = Decimal('0')
         per_order_fees = []
 
         for order in orders:
-            # Use already calculated delivery fee on the order if available to prevent double/mismatched calculations
             if getattr(order, 'delivery_fee', None) is not None:
                 fee = order.delivery_fee
             else:
@@ -223,21 +218,14 @@ class PricingService:
             per_order_fees.append({
                 'order_id': str(order.id),
                 'original_fee': fee,
-                'discounted_fee': fee * (1 - CROSS_BATCH_DISCOUNT) if batch_type == 'CROSS_RESTAURANT' else fee
+                'discounted_fee': fee,
             })
-
-        if batch_type == 'CROSS_RESTAURANT':
-            discount_amount = original_total * CROSS_BATCH_DISCOUNT
-            discounted_total = original_total - discount_amount
-        else:
-            discount_amount = Decimal('0')
-            discounted_total = original_total
 
         return {
             'original_total': original_total,
-            'discount_rate': CROSS_BATCH_DISCOUNT if batch_type == 'CROSS_RESTAURANT' else Decimal('0'),
-            'discount_amount': discount_amount,
-            'discounted_total': discounted_total,
+            'discount_rate': Decimal('0'),
+            'discount_amount': Decimal('0'),
+            'discounted_total': original_total,
             'per_order_fees': per_order_fees
         }
 
@@ -250,10 +238,9 @@ class PricingService:
         if not orders:
             return None
 
-        batch_type = batch.batch_type
-        fee_result = cls.calculate_batch_fee(orders, batch_type)
+        fee_result = cls.calculate_batch_fee(orders)
 
-        discount_applied = batch_type == 'CROSS_RESTAURANT'
+        discount_applied = False
         fee_map = {fee_info['order_id']: fee_info for fee_info in fee_result['per_order_fees']}
 
         with transaction.atomic():

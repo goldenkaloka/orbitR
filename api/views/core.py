@@ -183,12 +183,8 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             restaurant = Restaurant.objects.select_related('owner').prefetch_related('foods').get(owner=request.user)
             data = RestaurantSerializer(restaurant).data
 
-            timeout_minutes = getattr(settings, 'WAITING_BATCH_TIMEOUT_MINUTES', 15)
-            threshold = timezone.now() - timezone.timedelta(minutes=timeout_minutes)
-
             pending_count = DeliveryBatch.objects.filter(
-                status='WAITING_TEMP_DRIVER',
-                waiting_since__gt=threshold,
+                status='PENDING_DRIVER',
                 orders__restaurant_id=restaurant.id
             ).values('id').distinct().count()
 
@@ -202,6 +198,15 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(data)
         except Restaurant.DoesNotExist:
             return Response({}, status=200)
+
+    @action(detail=True, methods=['GET'], url_path='drivers')
+    def list_drivers(self, request, pk=None):
+        """List all drivers assigned to this restaurant (owner only)."""
+        restaurant = self.get_object()
+        if restaurant.owner != request.user:
+            return Response({'error': 'Only the restaurant owner can view drivers'}, status=403)
+        drivers = restaurant.drivers.select_related('user').all()
+        return Response(DriverSerializer(drivers, many=True).data)
 
     @action(detail=True, methods=['POST'], url_path='register-temp-driver')
     def register_temp_driver(self, request, pk=None):
@@ -274,13 +279,10 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         except Restaurant.DoesNotExist:
             return Response({'error': 'Restaurant not found'}, status=404)
 
-        timeout_minutes = getattr(settings, 'WAITING_BATCH_TIMEOUT_MINUTES', 15)
-        threshold = timezone.now() - timedelta(minutes=timeout_minutes)
-
         batches = DeliveryBatch.objects.filter(
-            status='WAITING_TEMP_DRIVER',
-            waiting_since__gt=threshold
-        ).prefetch_related('orders')
+            status='PENDING_DRIVER',
+            orders__restaurant_id=restaurant.id
+        ).distinct().prefetch_related('orders')
 
         restaurant_batches = []
         for batch in batches:
@@ -291,11 +293,9 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                     'batch_id': str(batch.id),
                     'status': batch.status,
                     'waiting_since': batch.waiting_since.isoformat() if batch.waiting_since else None,
-                    'timeout_at': (batch.waiting_since + timedelta(minutes=timeout_minutes)).isoformat() if batch.waiting_since else None,
                     'order_count': len(all_orders),
                     'restaurant_order_count': len(restaurant_orders),
                     'total_value': float(sum(o.total_amount for o in all_orders)),
-                    'has_temp_driver_pending': True
                 })
 
         return Response({
@@ -443,19 +443,12 @@ class OrderViewSet(viewsets.ModelViewSet):
         else:
             zone_filter = {}
 
-        from django.db.models import Q
-        # Exclude batches that are offered to other drivers.
-        exclude_filter = Q(batch__status='OFFERED')
-        if driver:
-            exclude_filter &= ~Q(batch__driver=driver)
-
         orders = Order.objects.filter(
             **zone_filter,
             status='READY',
             is_paid=True,
             driver__isnull=True,
-        ).exclude(
-            exclude_filter
+            batch__isnull=True,
         ).select_related(
             'restaurant', 'restaurant__owner', 'customer',
         ).prefetch_related('items', 'items__food').order_by('-created_at')[offset:offset + limit]
@@ -470,34 +463,24 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 driver = Driver.objects.select_for_update().get(user=request.user)
-                # Security: Lock order and check if it's READY for claiming
                 order = Order.objects.select_for_update().get(id=pk)
                 if order.status != 'READY':
                     return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
-                
+
+                if not driver.assigned_by_id or driver.assigned_by_id != order.restaurant_id:
+                    return Response({"error": "Driver not assigned to this restaurant"}, status=403)
+
                 if order.batch_id:
                     batch = AssignBatchService.execute(order.batch_id, driver.id, request.user)
                     if batch.status == 'DISPATCHED':
                         order.refresh_from_db()
-                    elif batch.status == 'WAITING_TEMP_DRIVER':
-                        # Expired batch — assign this single order directly.
-                        order = AssignDriverService.execute(pk, driver.id, request.user)
-                    elif batch.status == 'CREATED':
-                        # AssignBatchService didn't assign (shouldn't happen for CREATED).
-                        order = AssignDriverService.execute(pk, driver.id, request.user)
                     else:
-                        # OFFERED — batch reserved for another driver
-                        return Response(
-                            {"error": "This order is currently reserved for another driver"},
-                            status=409,
-                        )
+                        # Fallback to single-order assignment
+                        order = AssignDriverService.execute(pk, driver.id, request.user)
                 else:
                     order = AssignDriverService.execute(pk, driver.id, request.user)
                 
-                # Track successful claim attempt
-                driver.total_claim_attempts += 1
-                driver.save(update_fields=['total_claim_attempts'])
-                
+
                 return Response(OrderSerializer(order).data)
         except Driver.DoesNotExist:
             return Response({"error": "You are not registered as a driver"}, status=403)
@@ -580,47 +563,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
         except (ValueError, InvalidStateTransitionError) as e:
-            return Response({"error": str(e)}, status=400)
-
-    @action(detail=True, methods=['POST'], url_path='rider-accept')
-    def rider_accept(self, request, pk=None):
-        try:
-            from apps.delivery.models import Driver
-            from apps.orders.models import DeliveryBatch
-            from domain.services.batch_dispatch_service import BatchDispatchService
-
-            with transaction.atomic():
-                order = Order.objects.select_for_update().get(id=pk)
-                if not order.batch_id:
-                    raise ValueError("Order is not part of any batch.")
-                batch = DeliveryBatch.objects.select_for_update().get(id=order.batch_id)
-                if batch.status != 'OFFERED':
-                    raise ValueError(f"Batch is in {batch.status} state — cannot accept.")
-
-                driver = Driver.objects.get(user=request.user)
-                result = BatchDispatchService.accept_batch(
-                    str(batch.id), str(driver.id), request.user
-                )
-                order.refresh_from_db()
-                return Response(OrderSerializer(order).data)
-        except Driver.DoesNotExist:
-            return Response({"error": "Driver profile not found"}, status=403)
-        except PermissionError as e:
-            return Response({"error": str(e)}, status=403)
-        except (InvalidStateTransitionError, ValueError) as e:
-            return Response({"error": str(e)}, status=400)
-
-    @action(detail=True, methods=['POST'], url_path='rider-reject')
-    def rider_reject(self, request, pk=None):
-        from domain.services.orders.order_assignment import RejectOrderService
-        try:
-            result = RejectOrderService.execute(pk, request.user)
-            return Response(
-                OrderSerializer(result).data if hasattr(result, 'id') else {'status': 'declined'}
-            )
-        except PermissionError as e:
-            return Response({"error": str(e)}, status=403)
-        except (InvalidStateTransitionError, ValueError) as e:
             return Response({"error": str(e)}, status=400)
 
     @action(detail=True, methods=['POST'], url_path='rider-cancel')
