@@ -2,7 +2,7 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import Order, OrderItem, BatchingStrategy, Dispute
+from .models import Order, OrderItem, DeliveryBatch, BatchSectionStatus, BatchingStrategy, Dispute
 
 
 class OrderItemInline(TabularInline):
@@ -163,6 +163,20 @@ class DisputeAdmin(ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('order', 'raised_by', 'assigned_to', 'resolved_by')
+
+
+@admin.register(DeliveryBatch)
+class DeliveryBatchAdmin(ModelAdmin):
+    list_display = ('id', 'restaurant', 'status', 'driver', 'created_at')
+    list_filter = ('status',)
+    raw_id_fields = ('restaurant', 'driver')
+    readonly_fields = ('id', 'created_at', 'updated_at')
+
+
+@admin.register(BatchSectionStatus)
+class BatchSectionStatusAdmin(ModelAdmin):
+    list_display = ('batch', 'section', 'status', 'updated_at')
+    list_filter = ('status',)
 
 
 @admin.register(BatchingStrategy)

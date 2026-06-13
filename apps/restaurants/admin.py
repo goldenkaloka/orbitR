@@ -2,7 +2,7 @@ from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import Restaurant
+from .models import Restaurant, RestaurantSection, SectionStaff
 from apps.products.models import Food
 
 
@@ -11,6 +11,36 @@ class FoodInline(TabularInline):
     extra = 0
     fields = ('name', 'price', 'is_available')
     show_change_link = True
+
+
+class SectionInline(TabularInline):
+    model = RestaurantSection
+    extra = 0
+    fields = ('name', 'specialization', 'is_active', 'sort_order')
+    show_change_link = True
+
+
+class SectionStaffInline(TabularInline):
+    model = SectionStaff
+    extra = 0
+    fields = ('user',)
+    raw_id_fields = ('user',)
+
+
+@admin.register(RestaurantSection)
+class RestaurantSectionAdmin(ModelAdmin):
+    list_display = ('name', 'restaurant', 'specialization', 'is_active', 'sort_order')
+    list_filter = ('is_active', 'restaurant')
+    search_fields = ('name', 'specialization', 'restaurant__name')
+    inlines = [SectionStaffInline]
+
+
+@admin.register(SectionStaff)
+class SectionStaffAdmin(ModelAdmin):
+    list_display = ('user', 'section')
+    search_fields = ('user__username', 'section__name')
+    raw_id_fields = ('user',)
+
 
 @admin.register(Restaurant)
 class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
@@ -22,7 +52,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_per_page = 25
     raw_id_fields = ('owner',)
     readonly_fields = ('id', 'created_at')
-    inlines = [FoodInline]
+    inlines = [FoodInline, SectionInline]
 
     settings_overrides = {
         'DEFAULT_CENTER': (-6.7924, 39.2083),

@@ -50,7 +50,8 @@ def dispatch_batch_task(batch_id: str):
         return
 
     try:
-        result = BatchDispatchService.dispatch_batch(str(batch_id))
+        service = BatchDispatchService()
+        result = service.dispatch_batch(str(batch_id))
         if result:
             logger.info(f"[dispatch_batch_task] Batch {batch_id} → PENDING_DRIVER, restaurants notified")
         else:
@@ -101,7 +102,7 @@ def expire_unassigned_orders_task():
         # nullable side of an outer join, which is what .exclude(batch__status__in=[...])
         # generates. Fetching the IDs separately avoids that entirely.
         active_batch_order_ids = Order.objects.filter(
-            batch__status__in=['CREATED', 'PENDING_DRIVER']
+            batch__status__in=['CREATED', 'PENDING_DRIVER', 'DISPATCHED']
         ).values_list('id', flat=True)
 
         stale_orders = list(

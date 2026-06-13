@@ -530,17 +530,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         except InvalidStateTransitionError as e:
             return Response({"error": str(e)}, status=400)
 
-    @action(detail=True, methods=['POST'], url_path='assign-driver')
-    def assign_driver(self, request, pk=None):
-        driver_id = request.data.get('driver_id')
-        if not driver_id:
-            return Response({"error": "driver_id is required"}, status=400)
-        try:
-            order = AssignDriverService.execute(pk, driver_id, request.user)
-            return Response(OrderSerializer(order).data)
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
-
     @action(detail=True, methods=['POST'])
     def pickup(self, request, pk=None):
         bypass = request.data.get('bypass_geofence', False)

@@ -16,6 +16,7 @@ States:
 Events:
     WAIT_FOR_DRIVER  — Move from CREATED to PENDING_DRIVER
     ACCEPT           — Restaurant assigns a driver
+    REASSIGN         — Restaurant replaces the driver (DISPATCHED → DISPATCHED)
     TIMEOUT          — No driver assigned within time limit
     CANCEL           — Admin or system cancels the batch
 """
@@ -38,6 +39,7 @@ class BatchFSM:
         ('CREATED',          'CANCEL'):          'CANCELLED',
         ('PENDING_DRIVER',   'CANCEL'):          'CANCELLED',
         ('DISPATCHED',       'CANCEL'):          'CANCELLED',
+        ('DISPATCHED',       'REASSIGN'):        'DISPATCHED',
     }
 
     @classmethod

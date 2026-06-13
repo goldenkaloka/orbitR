@@ -11,57 +11,31 @@ from django.db import transaction
 from django.utils import timezone
 
 from domain.services.batch_fsm import BatchFSM, BatchFSMError
-from infrastructure.notifications.messages import vendor_need_driver
+from domain.services.batch.notify_strategies import default_strategy
+from domain.services.batch.interfaces import NotifyStrategy
 
 logger = logging.getLogger(__name__)
-
-
-def notify_restaurant_pending_batch(batch_id, restaurant_id, batch=None):
-    """Notify a restaurant owner that their batch needs a driver assigned."""
-    from apps.orders.models import DeliveryBatch
-    from apps.restaurants.models import Restaurant
-    from infrastructure.notifications.service import NotificationService
-
-    try:
-        if batch is None:
-            batch = DeliveryBatch.objects.prefetch_related('orders').get(id=batch_id)
-
-        restaurant = Restaurant.objects.select_related('owner').get(id=restaurant_id)
-        if not restaurant.owner:
-            return
-
-        order_count = batch.orders.filter(restaurant_id=restaurant_id).count()
-        if order_count == 0:
-            return
-
-        vn_title, vn_body = vendor_need_driver(order_count)
-        NotificationService.send_push(
-            user_id=str(restaurant.owner.id),
-            title=vn_title,
-            body=vn_body,
-            data={
-                "batch_id": str(batch_id),
-                "restaurant_id": str(restaurant_id),
-                "type": "batch_needs_driver",
-            },
-        )
-    except Exception as exc:
-        logger.error(f"[Dispatch] Failed to notify restaurant {restaurant_id}: {exc}")
 
 
 class BatchDispatchService:
     """
     Notifies restaurants that their batch needs a driver.
     Restaurant assigns a temp driver via the assign-driver endpoint.
+
+    Accepts an optional NotifyStrategy at construction time — swap it
+    for different notification modes (push only, push+SMS, auto-assign, …).
     """
 
-    @staticmethod
-    def dispatch_batch(batch_id: str):
+    def __init__(self, strategy: NotifyStrategy | None = None):
+        self.strategy = strategy or default_strategy
+
+    def dispatch_batch(self, batch_id: str):
         """
         Called after batch creation (via on_commit) or on retry.
         Transitions batch to PENDING_DRIVER and notifies all restaurants.
         """
         from apps.orders.models import DeliveryBatch
+        from apps.restaurants.models import Restaurant
 
         try:
             batch = DeliveryBatch.objects.get(id=batch_id)
@@ -92,12 +66,28 @@ class BatchDispatchService:
                 f"Orders: {batch.orders.count()}"
             )
 
-            # Notify all restaurants in the batch
             restaurant_ids = set(
                 batch.orders.values_list('restaurant_id', flat=True)
             )
+            owners = {
+                r.id: r.owner_id
+                for r in Restaurant.objects.filter(id__in=restaurant_ids)
+                .select_related('owner')
+                .only('id', 'owner_id')
+            }
             for rid in restaurant_ids:
-                notify_restaurant_pending_batch(batch_id, rid, batch)
+                owner_id = owners.get(rid)
+                if not owner_id:
+                    continue
+                order_count = batch.orders.filter(restaurant_id=rid).count()
+                if order_count == 0:
+                    continue
+                self.strategy.notify_restaurant_pending(
+                    batch_id=batch_id,
+                    restaurant_id=str(rid),
+                    restaurant_owner_id=str(owner_id),
+                    order_count=order_count,
+                )
 
             return batch
 

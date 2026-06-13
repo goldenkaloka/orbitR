@@ -2,7 +2,8 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.users.models import User
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import Restaurant, RestaurantSection
+from apps.orders.models import BatchSectionStatus
 from apps.products.models import Food
 from apps.orders.models import Order, OrderItem, Dispute
 from apps.delivery.models import Driver, DeliveryProof
@@ -46,6 +47,7 @@ class FoodSerializer(serializers.ModelSerializer):
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     foods = FoodSerializer(many=True, read_only=True)
+    sections = RestaurantSectionSerializer(many=True, read_only=True)
 
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
@@ -55,7 +57,7 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'image', 'image_url', 
             'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
-            'is_active', 'foods'
+            'is_active', 'foods', 'sections'
         ]
 
     def get_latitude(self, obj):
@@ -77,9 +79,10 @@ class RestaurantListSerializer(serializers.ModelSerializer):
 
 class RestaurantSerializer(RestaurantListSerializer):
     foods = FoodSerializer(many=True, read_only=True)
+    sections = RestaurantSectionSerializer(many=True, read_only=True)
 
     class Meta(RestaurantListSerializer.Meta):
-        fields = RestaurantListSerializer.Meta.fields + ['foods']
+        fields = RestaurantListSerializer.Meta.fields + ['foods', 'sections']
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
     class Meta:
@@ -333,6 +336,28 @@ class OrderSerializer(serializers.ModelSerializer):
             
         from domain.services.order_services import PlaceOrderService
         return PlaceOrderService.execute(validated_data)
+
+class RestaurantSectionSerializer(serializers.ModelSerializer):
+    food_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RestaurantSection
+        fields = ['id', 'name', 'specialization', 'description', 'image',
+                  'is_active', 'sort_order', 'prep_time', 'food_count']
+
+    def get_food_count(self, obj):
+        return obj.foods.count()
+
+
+class BatchSectionStatusSerializer(serializers.ModelSerializer):
+    section_name = serializers.CharField(source='section.name', read_only=True)
+    section_specialization = serializers.CharField(source='section.specialization', read_only=True)
+
+    class Meta:
+        model = BatchSectionStatus
+        fields = ['id', 'section', 'section_name', 'section_specialization', 'status', 'updated_at']
+        read_only_fields = ['id', 'section', 'section_name', 'section_specialization', 'updated_at']
+
 
 class DriverSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)

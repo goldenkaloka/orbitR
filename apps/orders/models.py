@@ -91,6 +91,7 @@ class OrderItem(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='items')
     food = models.ForeignKey(Food, on_delete=models.SET_NULL, null=True, blank=True)
+    section = models.ForeignKey('restaurants.RestaurantSection', on_delete=models.SET_NULL, null=True, blank=True)
     quantity = models.PositiveIntegerField(default=1)
     price = models.DecimalField(max_digits=10, decimal_places=2) # snapshot price at order time
 
@@ -316,6 +317,27 @@ class DeliveryBatch(models.Model):
         if self.restaurant:
             return f"Batch {self.id} - {self.restaurant.name} ({self.status})"
         return f"Batch {self.id} - Multi-Restaurant ({self.status})"
+
+
+class BatchSectionStatus(models.Model):
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('PREPARING', 'Preparing'),
+        ('READY', 'Ready'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    batch = models.ForeignKey(DeliveryBatch, on_delete=models.CASCADE, related_name='section_statuses')
+    section = models.ForeignKey('restaurants.RestaurantSection', on_delete=models.CASCADE)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING', db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ('batch', 'section')
+        verbose_name_plural = 'Batch section statuses'
+
+    def __str__(self):
+        return f"{self.section.name} @ {self.batch.id}: {self.status}"
 
 
 class BatchRestaurant(models.Model):

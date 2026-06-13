@@ -35,9 +35,9 @@ class BatchViewSet(viewsets.ViewSet):
     
     @action(detail=True, methods=['post'], url_path='assign-driver')
     def assign_driver(self, request, pk=None):
-        """Restaurant assigns a driver to a PENDING_DRIVER batch."""
-        if request.user.role != 'vendor':
-            return Response({'error': 'Only restaurant owners can assign drivers'}, status=403)
+        """Restaurant owner or stall manager assigns a driver to a batch."""
+        if request.user.role not in ('vendor',):
+            return Response({'error': 'Only vendors or stall managers can assign drivers'}, status=403)
 
         driver_id = request.data.get('driver_id')
         if not driver_id:

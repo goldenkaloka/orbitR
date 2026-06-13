@@ -292,3 +292,11 @@ FLUTTER_DELIVERED = ("Oda Imefika! 😋", "Oda #{id} imewasili. Furahia chakula 
 FLUTTER_CANCELLED = ("Oda Imefutwa", "Oda #{id} imefutwa. Tutakurudishia malipo yako hivi karibuni.")
 FLUTTER_EXPIRED = ("Oda Imekwisha Muda", "Oda #{id} iliisha muda kabla dereva hajapatikana.")
 FLUTTER_DISPUTED = ("Malalamiko Yametolewa", "Malalamiko yametolewa kwenye oda #{id}. Timu yetu inachunguza.")
+
+# ── Batch dispatch ─────────────────────────────────────────────────────────────
+
+def batch_dispatched_notification() -> tuple[str, str]:
+    return (
+        "Dereva Amepewa Oda",
+        "Dereva amepewa oda zako na anaelekea kukusanya. Usisite kumwangalia.",
+    )

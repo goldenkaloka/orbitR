@@ -17,6 +17,7 @@ from api.views.demands import ShopViewSet, BuyerDemandViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.pricing import PricingPolicyViewSet, ZonePricingTierViewSet, DeliveryFeeLogViewSet
 from api.views.batches import BatchViewSet
+from api.views.sections import SectionViewSet, BatchSectionStatusViewSet
 from api.views.subscribe_check import ws_subscribe_check
 
 router = DefaultRouter()
@@ -41,6 +42,8 @@ router.register(r'pricing/policies', PricingPolicyViewSet, basename='pricing-pol
 router.register(r'pricing/tiers', ZonePricingTierViewSet, basename='pricing-tier')
 router.register(r'pricing/logs', DeliveryFeeLogViewSet, basename='pricing-log')
 router.register(r'batches', BatchViewSet, basename='batch')
+router.register(r'sections', SectionViewSet, basename='section')
+router.register(r'batch-section-statuses', BatchSectionStatusViewSet, basename='batch-section-status')
 
 urlpatterns = router.urls + [
     path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),

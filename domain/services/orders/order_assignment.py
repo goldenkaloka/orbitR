@@ -45,8 +45,9 @@ class AssignDriverService:
 
 class AssignBatchService:
     """
-    Restaurant assigns a driver to a PENDING_DRIVER batch.
-    Transitions batch to DISPATCHED and all orders to ASSIGNED.
+    Restaurant assigns (or reassigns) a driver to a batch.
+    First assignment: CREATED/PENDING_DRIVER → DISPATCHED.
+    Reassignment: DISPATCHED → DISPATCHED (releases old driver first).
     """
 
     @staticmethod
@@ -54,10 +55,21 @@ class AssignBatchService:
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
 
-            if batch.status not in ('CREATED', 'PENDING_DRIVER'):
+            is_dispatch = batch.status in ('CREATED', 'PENDING_DRIVER')
+            is_reassign = batch.status == 'DISPATCHED'
+
+            if not is_dispatch and not is_reassign:
                 raise ValueError(
                     f"Batch {batch_id} is in '{batch.status}' state — "
-                    "expected CREATED or PENDING_DRIVER."
+                    "expected CREATED, PENDING_DRIVER, or DISPATCHED."
+                )
+
+            # All sections must be READY before driver can be assigned
+            unready = batch.section_statuses.exclude(status='READY').exists()
+            if unready:
+                raise ValueError(
+                    f"Batch {batch_id} has sections not yet marked READY — "
+                    "cannot assign driver."
                 )
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
@@ -77,7 +89,18 @@ class AssignBatchService:
                     f"Current: {current_load}, Max: {driver.max_active_orders}"
                 )
 
-            batch.status = BatchFSM.transition(batch, 'ACCEPT')
+            # --- Release old driver if reassigning ---
+            if is_reassign and batch.driver:
+                old_driver = batch.driver
+                old_driver.current_active_orders = max(0, old_driver.current_active_orders - new_order_count)
+                if old_driver.current_active_orders == 0 and old_driver.status == 'DELIVERING':
+                    old_driver.status = 'ONLINE'
+                old_driver.save(update_fields=['current_active_orders', 'status'])
+                DeliveryAssignment.objects.filter(order__in=orders).delete()
+
+            # --- Assign new driver ---
+            event = 'REASSIGN' if is_reassign else 'ACCEPT'
+            batch.status = BatchFSM.transition(batch, event)
             batch.driver = driver
             batch.save(update_fields=['status', 'driver'])
 
@@ -87,7 +110,11 @@ class AssignBatchService:
             driver.save(update_fields=['status', 'current_active_orders'])
 
             for order in orders:
-                order.status = OrderFSM.transition(order.status, 'ASSIGNED')
+                if is_reassign:
+                    # Order may already be dispatched/re-assigned; skip FSM for reassign
+                    order.status = 'ASSIGNED'
+                else:
+                    order.status = OrderFSM.transition(order.status, 'ASSIGNED')
                 order.driver = driver
                 order.save(update_fields=['status', 'driver'])
 

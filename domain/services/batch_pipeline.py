@@ -519,6 +519,8 @@ class BatchPipeline:
             lambda: _schedule_dispatch(batch_id_str)
         )
 
+        BatchPipeline._create_section_statuses_from_orders(batch, locked_orders)
+
         logger.info(
             f"[BatchPipeline] Created {batch_type} batch {batch.id} "
             f"orders={len(locked_orders)} distance={route_distance}km "
@@ -701,7 +703,33 @@ class BatchPipeline:
             f"order={locked_order.id} distance={route_distance}km "
             f"payout={driver_payout} profit={company_profit}"
         )
+        BatchPipeline._create_section_statuses_from_orders(batch, [locked_order])
         return batch
+
+
+    # ─── Section statuses ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _create_section_statuses_from_orders(batch, orders):
+        """Create BatchSectionStatus records for each unique section in orders."""
+        from apps.orders.models import BatchSectionStatus, OrderItem
+
+        section_ids = set()
+        for order in orders:
+            item_sections = (
+                OrderItem.objects.filter(order=order)
+                .exclude(section__isnull=True)
+                .values_list('section_id', flat=True)
+                .distinct()
+            )
+            section_ids.update(item_sections)
+
+        for section_id in section_ids:
+            BatchSectionStatus.objects.get_or_create(
+                batch=batch,
+                section_id=section_id,
+                defaults={'status': 'PENDING'},
+            )
 
 
     # ─── Helpers ──────────────────────────────────────────────────────────────

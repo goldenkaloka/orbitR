@@ -6,6 +6,37 @@ from decimal import Decimal
 from django.contrib.gis.db import models as gis_models
 from apps.core.geo_utils import latlng_to_h3
 
+
+class RestaurantSection(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('Restaurant', on_delete=models.CASCADE, related_name='sections')
+    name = models.CharField(max_length=255)
+    specialization = models.CharField(max_length=100, blank=True, db_index=True)
+    description = models.TextField(blank=True, null=True)
+    image = models.ImageField(upload_to='sections/', blank=True, null=True)
+    is_active = models.BooleanField(default=True, db_index=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    prep_time = models.PositiveIntegerField(default=20, help_text='Preparation time in minutes')
+
+    class Meta:
+        ordering = ['sort_order', 'name']
+
+    def __str__(self):
+        return f"{self.name} @ {self.restaurant.name}"
+
+
+class SectionStaff(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='managed_stalls')
+    section = models.ForeignKey(RestaurantSection, on_delete=models.CASCADE, related_name='staff')
+
+    class Meta:
+        unique_together = ('user', 'section')
+
+    def __str__(self):
+        return f"{self.user.username} → {self.section.name}"
+
+
 class Restaurant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='restaurants', db_index=True)
