@@ -603,6 +603,14 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.orders.tasks.cleanup_stale_idempotency_keys',
         'schedule': crontab(minute=0, hour='*'),
     },
+    'check-stale-drivers-every-2-mins': {
+        'task': 'apps.delivery.tasks.check_stale_drivers',
+        'schedule': crontab(minute='*/2'),
+    },
+    'clear-stale-heartbeats-every-5-mins': {
+        'task': 'apps.delivery.tasks.clear_stale_heartbeats',
+        'schedule': crontab(minute='*/5'),
+    },
 }
 
 PREPARING_ORDER_TIMEOUT_MINUTES = config('PREPARING_ORDER_TIMEOUT_MINUTES', default=45, cast=int)

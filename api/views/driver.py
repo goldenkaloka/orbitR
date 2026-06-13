@@ -32,6 +32,21 @@ class DriverViewSet(viewsets.ModelViewSet):
             driver.save()
             # Invalidate stats cache
             cache.delete(f"stats_{request.user.id}")
+
+            # Notify Centrifugo so the app and admin dashboard update in real-time
+            from apps.events.tasks import centrifugo_publish
+            centrifugo_publish.delay(f'riders:{request.user.id}', {
+                'type': 'driver_status_change',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+            })
+            centrifugo_publish.delay('riders_global:pool', {
+                'type': 'driver_availability',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+                'action': 'refresh_driver_pool',
+            })
+
             return Response(DriverSerializer(driver).data)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
@@ -44,6 +59,21 @@ class DriverViewSet(viewsets.ModelViewSet):
             driver.save()
             # Invalidate stats cache
             cache.delete(f"stats_{request.user.id}")
+
+            # Notify Centrifugo so the app and admin dashboard update in real-time
+            from apps.events.tasks import centrifugo_publish
+            centrifugo_publish.delay(f'riders:{request.user.id}', {
+                'type': 'driver_status_change',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+            })
+            centrifugo_publish.delay('riders_global:pool', {
+                'type': 'driver_availability',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+                'action': 'refresh_driver_pool',
+            })
+
             return Response(DriverSerializer(driver).data)
         except Exception as e:
             return Response({"error": str(e)}, status=400)

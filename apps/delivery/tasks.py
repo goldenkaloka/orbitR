@@ -29,6 +29,22 @@ def check_stale_drivers():
             driver.status = DriverFSM.transition(driver.status, 'OFFLINE')
             driver.save(update_fields=['status'])
             logger.info(f"Driver {driver.id} marked as OFFLINE (stale heartbeat)")
+
+            # Notify Centrifugo so the app and admin dashboard reflect the offline status
+            from apps.events.tasks import centrifugo_publish
+            centrifugo_publish.delay(f'riders:{driver.user_id}', {
+                'type': 'driver_status_change',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+                'reason': 'stale_heartbeat',
+            })
+            centrifugo_publish.delay('riders_global:pool', {
+                'type': 'driver_availability',
+                'driver_id': str(driver.id),
+                'status': driver.status,
+                'action': 'refresh_driver_pool',
+            })
+
             count += 1
         except Exception as e:
             logger.error(f"Failed to mark driver {driver.id} as OFFLINE: {e}")

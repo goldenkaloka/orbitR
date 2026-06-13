@@ -7,12 +7,20 @@ from django.db.models import Sum, Count
 from django.db.models.functions import TruncDate
 from django.utils import timezone
 from datetime import timedelta
+from django.core.cache import cache
 
 
 def dashboard_callback(request, context):
     """
     Custom Unfold dashboard — populates context with KPIs, charts, and recent data tables.
+    Results are cached for 60 seconds to avoid running 11 queries on every admin page load.
     """
+    cache_key = 'admin_dashboard_v2'
+    cached = cache.get(cache_key)
+    if cached:
+        context.update(cached)
+        return context
+
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     week_ago = (now - timedelta(days=7)).date()
@@ -76,7 +84,7 @@ def dashboard_callback(request, context):
     # ── Recent Users Table ───────────────────────────────────────────────────
     recent_users = User.objects.order_by('-date_joined')[:8]
 
-    context.update({
+    dashboard_data = {
         # KPIs
         "kpi_today_revenue":  f"TSh {int(today_revenue):,}",
         "kpi_active_orders":  active_orders,
@@ -93,6 +101,9 @@ def dashboard_callback(request, context):
         # Tables
         "recent_orders": recent_orders,
         "recent_users":  recent_users,
-    })
+    }
+
+    cache.set(cache_key, dashboard_data, 60)
+    context.update(dashboard_data)
 
     return context

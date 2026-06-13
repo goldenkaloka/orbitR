@@ -34,6 +34,86 @@ class SectionViewSet(viewsets.ModelViewSet):
             raise PermissionDenied('Only the restaurant owner can edit sections')
         serializer.save()
 
+    @action(detail=True, methods=['post'], url_path='add-staff')
+    def add_staff(self, request, pk=None):
+        """
+        Add a user as section staff.
+        Body: { user_id }
+        Only the restaurant owner can call this.
+        """
+        section = self.get_object()
+        if section.restaurant.owner != request.user:
+            return Response({'error': 'Only the restaurant owner can manage staff'}, status=403)
+
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id is required'}, status=400)
+
+        from apps.users.models import User as AppUser
+        try:
+            target_user = AppUser.objects.get(id=user_id)
+        except AppUser.DoesNotExist:
+            return Response({'error': 'User not found'}, status=404)
+
+        staff, created = SectionStaff.objects.get_or_create(
+            user=target_user,
+            section=section,
+        )
+        return Response({
+            'id': str(staff.id),
+            'user_id': str(target_user.id),
+            'username': target_user.username,
+            'section_id': str(section.id),
+            'section_name': section.name,
+            'created': created,
+        }, status=201 if created else 200)
+
+    @action(detail=True, methods=['post'], url_path='remove-staff')
+    def remove_staff(self, request, pk=None):
+        """
+        Remove a user from section staff.
+        Body: { user_id }
+        Only the restaurant owner can call this.
+        """
+        section = self.get_object()
+        if section.restaurant.owner != request.user:
+            return Response({'error': 'Only the restaurant owner can manage staff'}, status=403)
+
+        user_id = request.data.get('user_id')
+        if not user_id:
+            return Response({'error': 'user_id is required'}, status=400)
+
+        deleted, _ = SectionStaff.objects.filter(
+            user_id=user_id,
+            section=section,
+        ).delete()
+
+        if deleted == 0:
+            return Response({'error': 'This user is not staff for this section'}, status=404)
+
+        return Response({'status': 'staff removed'})
+
+    @action(detail=True, methods=['get'], url_path='staff')
+    def list_staff(self, request, pk=None):
+        """
+        List all staff members for a section.
+        Accessible to the restaurant owner only.
+        """
+        section = self.get_object()
+        if section.restaurant.owner != request.user:
+            return Response({'error': 'Only the restaurant owner can view staff'}, status=403)
+
+        staff_members = SectionStaff.objects.filter(section=section).select_related('user')
+        return Response([
+            {
+                'staff_id': str(s.id),
+                'user_id': str(s.user.id),
+                'username': s.user.username,
+                'phone': s.user.phone,
+            }
+            for s in staff_members
+        ])
+
 
 class BatchSectionStatusViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = BatchSectionStatusSerializer
