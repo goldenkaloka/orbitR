@@ -43,6 +43,27 @@ class FoodSerializer(serializers.ModelSerializer):
         return None
 
 
+class RestaurantSectionSerializer(serializers.ModelSerializer):
+    food_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RestaurantSection
+        fields = ['id', 'name', 'specialization', 'description', 'image',
+                  'is_active', 'sort_order', 'prep_time', 'food_count']
+
+    def get_food_count(self, obj):
+        return obj.foods.count()
+
+
+class BatchSectionStatusSerializer(serializers.ModelSerializer):
+    section_name = serializers.CharField(source='section.name', read_only=True)
+    section_specialization = serializers.CharField(source='section.specialization', read_only=True)
+
+    class Meta:
+        model = BatchSectionStatus
+        fields = ['id', 'section', 'section_name', 'section_specialization', 'status', 'updated_at']
+        read_only_fields = ['id', 'section', 'section_name', 'section_specialization', 'updated_at']
+
 
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
@@ -336,27 +357,6 @@ class OrderSerializer(serializers.ModelSerializer):
             
         from domain.services.order_services import PlaceOrderService
         return PlaceOrderService.execute(validated_data)
-
-class RestaurantSectionSerializer(serializers.ModelSerializer):
-    food_count = serializers.SerializerMethodField()
-
-    class Meta:
-        model = RestaurantSection
-        fields = ['id', 'name', 'specialization', 'description', 'image',
-                  'is_active', 'sort_order', 'prep_time', 'food_count']
-
-    def get_food_count(self, obj):
-        return obj.foods.count()
-
-
-class BatchSectionStatusSerializer(serializers.ModelSerializer):
-    section_name = serializers.CharField(source='section.name', read_only=True)
-    section_specialization = serializers.CharField(source='section.specialization', read_only=True)
-
-    class Meta:
-        model = BatchSectionStatus
-        fields = ['id', 'section', 'section_name', 'section_specialization', 'status', 'updated_at']
-        read_only_fields = ['id', 'section', 'section_name', 'section_specialization', 'updated_at']
 
 
 class DriverSerializer(serializers.ModelSerializer):
