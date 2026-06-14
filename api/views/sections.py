@@ -37,6 +37,13 @@ class SectionViewSet(viewsets.ModelViewSet):
         serializer.save()
         invalidate_restaurant_cache(section.restaurant)
 
+    def perform_destroy(self, instance):
+        restaurant = instance.restaurant
+        if restaurant.owner != self.request.user:
+            raise PermissionDenied('Only the restaurant owner can delete sections')
+        instance.delete()
+        invalidate_restaurant_cache(restaurant)
+
     @action(detail=True, methods=['post'], url_path='add-staff')
     def add_staff(self, request, pk=None):
         """

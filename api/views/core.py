@@ -42,17 +42,73 @@ from domain.services.order_services import (
 )
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
+def build_restaurant_mine_data(user):
+    from apps.restaurants.models import SectionStaff
+    
+    try:
+        restaurant = Restaurant.objects.select_related('owner').get(owner=user)
+        is_owner = True
+    except Restaurant.DoesNotExist:
+        staff_link = SectionStaff.objects.filter(user=user).select_related('section__restaurant').first()
+        if not staff_link:
+            return {}
+        restaurant = staff_link.section.restaurant
+        is_owner = False
+
+    if is_owner:
+        data = RestaurantSerializer(restaurant).data
+        data['staff_section_ids'] = []
+    else:
+        staff_section_ids = list(SectionStaff.objects.filter(user=user).values_list('section_id', flat=True))
+        data = RestaurantSerializer(restaurant).data
+        data['foods'] = [f for f in data.get('foods', []) if f.get('section') in staff_section_ids or f.get('section') is None]
+        data['staff_section_ids'] = [str(sid) for sid in staff_section_ids]
+
+    data['is_owner'] = is_owner
+
+    pending_count = DeliveryBatch.objects.filter(
+        status='PENDING_DRIVER',
+        orders__restaurant_id=restaurant.id
+    ).values('id').distinct().count()
+
+    data['pending_batches_banner'] = {
+        'has_pending': pending_count > 0,
+        'count': pending_count,
+        'message': f'{pending_count} batch(es) waiting for driver' if pending_count > 0 else None
+    }
+
+    return data
+
 def invalidate_restaurant_cache(restaurant):
     if not restaurant:
         return
-    # Invalidate owner's cache
+    # Pre-warm owner's cache
     if restaurant.owner_id:
-        cache.delete(f"restaurant_mine_{restaurant.owner_id}")
-    # Invalidate all section staff's caches
+        cache_key = f"restaurant_mine_{restaurant.owner_id}"
+        try:
+            owner = User.objects.get(id=restaurant.owner_id)
+            data = build_restaurant_mine_data(owner)
+            if data:
+                cache.set(cache_key, data, 3600)
+            else:
+                cache.delete(cache_key)
+        except Exception:
+            cache.delete(cache_key)
+
+    # Pre-warm all section staff's caches
     from apps.restaurants.models import SectionStaff
     staff_user_ids = SectionStaff.objects.filter(section__restaurant=restaurant).values_list('user_id', flat=True)
     for uid in staff_user_ids:
-        cache.delete(f"restaurant_mine_{uid}")
+        cache_key = f"restaurant_mine_{uid}"
+        try:
+            user = User.objects.get(id=uid)
+            data = build_restaurant_mine_data(user)
+            if data:
+                cache.set(cache_key, data, 3600)
+            else:
+                cache.delete(cache_key)
+        except Exception:
+            cache.delete(cache_key)
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -131,6 +187,13 @@ class FoodViewSet(viewsets.ModelViewSet):
             from rest_framework.exceptions import ValidationError
             raise ValidationError(str(e))
 
+    def perform_update(self, serializer):
+        if serializer.instance.vendor.owner != self.request.user:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Only the restaurant owner can edit food items')
+        serializer.save()
+        invalidate_restaurant_cache(serializer.instance.vendor)
+
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
 
@@ -194,43 +257,14 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['GET'])
     def mine(self, request):
         """Get the restaurant owned by the current user (or staff's restaurant)."""
-        from apps.restaurants.models import SectionStaff
         cache_key = f"restaurant_mine_{request.user.id}"
         cached_data = cache.get(cache_key)
         if cached_data:
             return Response(cached_data)
 
-        try:
-            restaurant = Restaurant.objects.select_related('owner').get(owner=request.user)
-            is_owner = True
-        except Restaurant.DoesNotExist:
-            staff_link = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
-            if not staff_link:
-                return Response({}, status=200)
-            restaurant = staff_link.section.restaurant
-            is_owner = False
-
-        if is_owner:
-            data = RestaurantSerializer(restaurant).data
-            data['staff_section_ids'] = []
-        else:
-            staff_section_ids = list(SectionStaff.objects.filter(user=request.user).values_list('section_id', flat=True))
-            data = RestaurantSerializer(restaurant).data
-            data['foods'] = [f for f in data.get('foods', []) if f.get('section') in staff_section_ids or f.get('section') is None]
-            data['staff_section_ids'] = [str(sid) for sid in staff_section_ids]
-
-        data['is_owner'] = is_owner
-
-        pending_count = DeliveryBatch.objects.filter(
-            status='PENDING_DRIVER',
-            orders__restaurant_id=restaurant.id
-        ).values('id').distinct().count()
-
-        data['pending_batches_banner'] = {
-            'has_pending': pending_count > 0,
-            'count': pending_count,
-            'message': f'{pending_count} batch(es) waiting for driver' if pending_count > 0 else None
-        }
+        data = build_restaurant_mine_data(request.user)
+        if not data:
+            return Response({}, status=200)
 
         cache.set(cache_key, data, 3600)
         return Response(data)
