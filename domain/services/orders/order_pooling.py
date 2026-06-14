@@ -403,6 +403,7 @@ class PoolOrderService:
                         food=food,
                         quantity=item.get('quantity', 1),
                         price=Decimal(str(item.get('price', 0))),
+                        section=food.section if food else None,
                     )
                 )
 

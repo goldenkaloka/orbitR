@@ -102,7 +102,8 @@ class PlaceOrderService:
                     order=order,
                     food=item_data['food'],
                     quantity=item_data['quantity'],
-                    price=item_data['food'].price * item_data['quantity']
+                    price=item_data['food'].price * item_data['quantity'],
+                    section=item_data['food'].section
                 ) for item_data in items_data
             ]
             OrderItem.objects.bulk_create(order_items)

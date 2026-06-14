@@ -82,8 +82,12 @@ class FoodViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Food.objects.select_related('vendor', 'vendor__owner').all()
+        queryset = Food.objects.select_related('vendor', 'vendor__owner', 'section').all()
         if user.is_authenticated and user.role == 'vendor':
+            from apps.restaurants.models import SectionStaff
+            if SectionStaff.objects.filter(user=user).exists():
+                staff_section_ids = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
+                return queryset.filter(vendor__owner=user) | queryset.filter(section_id__in=staff_section_ids)
             return queryset.filter(vendor__owner=user)
         return queryset.filter(is_available=True)
 
@@ -97,7 +101,8 @@ class FoodViewSet(viewsets.ModelViewSet):
                 description=serializer.validated_data.get('description', ''),
                 category=serializer.validated_data.get('category', 'MAIN'),
                 is_available=serializer.validated_data.get('is_available', True),
-                image=serializer.validated_data.get('image')
+                image=serializer.validated_data.get('image'),
+                section=serializer.validated_data.get('section')
             )
         except ValueError as e:
             from rest_framework.exceptions import ValidationError
@@ -173,31 +178,45 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['GET'])
     def mine(self, request):
-        """Get the restaurant owned by the current user."""
+        """Get the restaurant owned by the current user (or staff's restaurant)."""
+        from apps.restaurants.models import SectionStaff
         cache_key = f"restaurant_mine_{request.user.id}"
         cached_data = cache.get(cache_key)
         if cached_data:
             return Response(cached_data)
 
         try:
-            restaurant = Restaurant.objects.select_related('owner').prefetch_related('foods').get(owner=request.user)
-            data = RestaurantSerializer(restaurant).data
-
-            pending_count = DeliveryBatch.objects.filter(
-                status='PENDING_DRIVER',
-                orders__restaurant_id=restaurant.id
-            ).values('id').distinct().count()
-
-            data['pending_batches_banner'] = {
-                'has_pending': pending_count > 0,
-                'count': pending_count,
-                'message': f'{pending_count} batch(es) waiting for driver' if pending_count > 0 else None
-            }
-
-            cache.set(cache_key, data, 3600)
-            return Response(data)
+            restaurant = Restaurant.objects.select_related('owner').get(owner=request.user)
+            is_owner = True
         except Restaurant.DoesNotExist:
-            return Response({}, status=200)
+            staff_link = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
+            if not staff_link:
+                return Response({}, status=200)
+            restaurant = staff_link.section.restaurant
+            is_owner = False
+
+        if is_owner:
+            data = RestaurantSerializer(restaurant).data
+        else:
+            staff_section_ids = list(SectionStaff.objects.filter(user=request.user).values_list('section_id', flat=True))
+            data = RestaurantSerializer(restaurant).data
+            data['foods'] = [f for f in data.get('foods', []) if f.get('section') in staff_section_ids or f.get('section') is None]
+
+        data['is_owner'] = is_owner
+
+        pending_count = DeliveryBatch.objects.filter(
+            status='PENDING_DRIVER',
+            orders__restaurant_id=restaurant.id
+        ).values('id').distinct().count()
+
+        data['pending_batches_banner'] = {
+            'has_pending': pending_count > 0,
+            'count': pending_count,
+            'message': f'{pending_count} batch(es) waiting for driver' if pending_count > 0 else None
+        }
+
+        cache.set(cache_key, data, 3600)
+        return Response(data)
 
     @action(detail=True, methods=['GET'], url_path='drivers')
     def list_drivers(self, request, pk=None):
@@ -330,7 +349,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         if user.role == 'customer':
             return queryset.filter(customer=user)
         elif user.role == 'vendor':
-            # Vendors only see paid orders
+            from apps.restaurants.models import SectionStaff
+            staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
+            if staff_sections.exists():
+                return queryset.filter(
+                    items__section_id__in=list(staff_sections),
+                    is_paid=True
+                ).distinct()
             return queryset.filter(restaurant__owner=user, is_paid=True)
         elif user.role == 'driver':
             return queryset.filter(driver__user=user, is_paid=True)
@@ -355,12 +380,22 @@ class OrderViewSet(viewsets.ModelViewSet):
         data = {}
         try:
             if user.role == 'vendor':
-                orders = Order.objects.filter(
-                    restaurant__owner=user,
-                    created_at__gte=start_of_day,
-                    created_at__lt=end_of_day,
-                    is_paid=True,
-                )
+                from apps.restaurants.models import SectionStaff
+                staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
+                if staff_sections.exists():
+                    orders = Order.objects.filter(
+                        items__section_id__in=list(staff_sections),
+                        created_at__gte=start_of_day,
+                        created_at__lt=end_of_day,
+                        is_paid=True,
+                    ).distinct()
+                else:
+                    orders = Order.objects.filter(
+                        restaurant__owner=user,
+                        created_at__gte=start_of_day,
+                        created_at__lt=end_of_day,
+                        is_paid=True,
+                    )
                 revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
                 count = orders.count()
                 data = {

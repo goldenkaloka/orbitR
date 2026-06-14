@@ -1,27 +1,40 @@
 from django.db import transaction
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import Restaurant, RestaurantSection
+from apps.restaurants.models import SectionStaff
 from domain.events.bus import EventBus
 from domain.events.types import FoodCreated, FoodDeleted
 
 class MenuService:
     @staticmethod
-    def create_food(owner_user, name, price, description='', category='MAIN', is_available=True, image=None):
+    def create_food(owner_user, name, price, description='', category='MAIN', is_available=True, image=None, section=None):
         with transaction.atomic():
             try:
                 restaurant = Restaurant.objects.get(owner=owner_user)
             except Restaurant.DoesNotExist:
-                raise ValueError("You must own a restaurant to create foods")
+                staff_section = SectionStaff.objects.filter(user=owner_user).select_related('section__restaurant').first()
+                if staff_section:
+                    restaurant = staff_section.section.restaurant
+                else:
+                    raise ValueError("You must own or work at a restaurant to create foods")
 
-            food = Food.objects.create(
+            food_kwargs = dict(
                 vendor=restaurant,
                 name=name,
                 price=price,
                 description=description,
                 category=category,
                 is_available=is_available,
-                image=image
+                image=image,
             )
+            if section is not None:
+                food_kwargs['section'] = section
+            elif not Restaurant.objects.filter(owner=owner_user).exists():
+                staff_sec = SectionStaff.objects.filter(user=owner_user).select_related('section').first()
+                if staff_sec:
+                    food_kwargs['section'] = staff_sec.section
+
+            food = Food.objects.create(**food_kwargs)
 
             EventBus.publish(FoodCreated(
                 aggregate_id=food.id,
@@ -39,7 +52,8 @@ class MenuService:
             try:
                 food = Food.objects.get(id=food_id, vendor__owner=owner_user)
             except Food.DoesNotExist:
-                raise ValueError("Food item not found or you do not have permission to delete it")
+                staff_sec = SectionStaff.objects.filter(user=owner_user).values_list('section_id', flat=True)
+                food = Food.objects.get(id=food_id, section_id__in=list(staff_sec))
 
             food_name = food.name
             restaurant_id = food.vendor.id
