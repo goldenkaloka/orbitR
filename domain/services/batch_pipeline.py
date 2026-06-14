@@ -72,21 +72,14 @@ class BatchPipeline:
             return None
 
         # ── Pool order fast-path ───────────────────────────────────────────────
-        # Pool orders already share a single delivery point by design — all
-        # members' items are consolidated into one master order.  There is no
-        # benefit in trying to cluster them with other orders; just create a
-        # dedicated single-order batch immediately and dispatch it.
+        # Pool orders are batched collectively via run_for_pool() when the pool
+        # is marked ready. Individual pool orders must not be batched singly here.
         if getattr(order, 'is_pool_order', False):
             logger.info(
-                f"[BatchPipeline] Pool order {order.id} — skipping clustering, "
-                f"creating dedicated single-order batch"
+                f"[BatchPipeline] Order {order.id} is a pool order — skipping "
+                f"individual batching (handled via pool dispatch)"
             )
-            batch = BatchPipeline._create_single_order_batch_atomic(order)
-            if batch:
-                if order.pool_id:
-                    from apps.orders.models import OrderPool
-                    OrderPool.objects.filter(id=order.pool_id).update(batch_id=batch.id)
-            return batch
+            return None
 
         # ── Regular order path ────────────────────────────────────────────────
         # Check the order is inside an active operational zone, then attempt
@@ -553,7 +546,7 @@ class BatchPipeline:
     @transaction.atomic
     def _persist_single_pool_batch(pool_id, pool, route_dict, route_distance):
         """Atomically create a single batch for a pool."""
-        from apps.orders.models import DeliveryBatch
+        from apps.orders.models import DeliveryBatch, Order
         from domain.services.pricing_service import PricingService
 
         policy = PricingService.get_active_policy()
@@ -576,7 +569,8 @@ class BatchPipeline:
         company_profit = user_paid_total - driver_payout
 
         batch = DeliveryBatch.objects.create(
-            batch_type='SINGLE_ORDER',
+            batch_type='SINGLE_RESTAURANT',
+            restaurant_id=pool.restaurant_id,
             status='CREATED',
             route_optimization=route_dict,
             route_distance_km=route_distance,
@@ -588,6 +582,17 @@ class BatchPipeline:
             offer_attempt=0,
             waiting_since=timezone.now(),
         )
+
+        # Link individual pool orders to the batch and set their status to READY
+        pool_orders = list(Order.objects.filter(pool_id=pool_id))
+        for i, order in enumerate(pool_orders, 1):
+            order.batch = batch
+            order.status = 'READY'
+            order.route_sequence = i
+            order.save(update_fields=['batch', 'status', 'route_sequence'])
+
+        # Create BatchSectionStatus (stall preparation status) for all sections in pool orders
+        BatchPipeline._create_section_statuses_from_orders(batch, pool_orders)
 
         batch_id_str = str(batch.id)
         transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))

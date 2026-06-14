@@ -72,6 +72,13 @@ class AssignBatchService:
                     "cannot assign driver."
                 )
 
+            # Verify actor is authorized (is restaurant owner or section staff member)
+            from apps.restaurants.models import SectionStaff
+            is_owner = batch.restaurant.owner == actor
+            is_staff = SectionStaff.objects.filter(user=actor, section__restaurant=batch.restaurant).exists()
+            if not is_owner and not is_staff:
+                raise PermissionError("You are not authorized to assign drivers for this restaurant's batches.")
+
             driver = Driver.objects.select_for_update().get(id=driver_id)
 
             # Verify driver belongs to the same restaurant as the batch orders
@@ -81,12 +88,18 @@ class AssignBatchService:
 
             orders = list(batch.orders.all())
             new_order_count = len(orders)
+            
+            # Count unique drop-off locations (physical stops) to allow pool orders
+            unique_stops = len(set(o.h3_index for o in orders if o.h3_index))
+            if unique_stops == 0:
+                unique_stops = new_order_count
+
             current_load = driver.assignments.filter(delivered_at__isnull=True).count()
 
-            if current_load + new_order_count > driver.max_active_orders:
+            if current_load + unique_stops > driver.max_active_orders:
                 raise ValueError(
-                    f"Driver cannot take {new_order_count} more orders. "
-                    f"Current: {current_load}, Max: {driver.max_active_orders}"
+                    f"Driver cannot take {unique_stops} more stops. "
+                    f"Current active assignments: {current_load}, Max: {driver.max_active_orders}"
                 )
 
             # --- Release old driver if reassigning ---

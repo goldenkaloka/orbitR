@@ -16,22 +16,27 @@ class BatchViewSet(viewsets.ViewSet):
         if user.role == 'driver':
             return DeliveryBatch.objects.filter(driver__user=user)
         elif user.role == 'vendor':
-            from apps.restaurants.models import Restaurant
-            vendor_restaurants = Restaurant.objects.filter(owner=user).values_list('id', flat=True)
-            return DeliveryBatch.objects.filter(orders__restaurant_id__in=vendor_restaurants).distinct()
+            from apps.restaurants.models import Restaurant, SectionStaff
+            owned_rids = Restaurant.objects.filter(owner=user).values_list('id', flat=True)
+            staff_rids = SectionStaff.objects.filter(user=user).values_list('section__restaurant_id', flat=True)
+            all_rids = set(owned_rids) | set(staff_rids)
+            return DeliveryBatch.objects.filter(orders__restaurant_id__in=all_rids).distinct()
         return DeliveryBatch.objects.none()
     
     def list(self, request):
         queryset = self.get_queryset()
-        return Response(OrderSerializer(queryset.first().orders.all() if queryset.exists() else [], many=True).data)
+        from apps.orders.models import Order
+        orders = Order.objects.filter(batch__in=queryset).distinct()
+        return Response(OrderSerializer(orders, many=True).data)
     
     def retrieve(self, request, pk=None):
+        queryset = self.get_queryset()
         try:
-            batch = DeliveryBatch.objects.get(id=pk)
+            batch = queryset.get(id=pk)
             orders = batch.orders.all()
             return Response(OrderSerializer(orders, many=True).data)
         except DeliveryBatch.DoesNotExist:
-            return Response({'error': 'Batch not found'}, status=404)
+            return Response({'error': 'Batch not found or access denied'}, status=404)
     
     @action(detail=True, methods=['post'], url_path='assign-driver')
     def assign_driver(self, request, pk=None):

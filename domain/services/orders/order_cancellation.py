@@ -39,7 +39,11 @@ class CancelOrderService:
                 RefundPaymentService.execute('order', order.id)
 
             if order.driver:
-                if order.driver.status != 'AVAILABLE':
+                # Only return the driver to AVAILABLE if they have no other active deliveries
+                active_orders_count = Order.objects.filter(
+                    driver=order.driver, status__in=['ASSIGNED', 'PICKED']
+                ).exclude(id=order.id).count()
+                if active_orders_count == 0:
                     order.driver.status = DriverFSM.transition(
                         order.driver.status, 'AVAILABLE'
                     )

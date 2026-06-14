@@ -8,6 +8,7 @@ from django.db import transaction
 from apps.restaurants.models import RestaurantSection, SectionStaff
 from apps.orders.models import BatchSectionStatus
 from api.serializers.core import RestaurantSectionSerializer, BatchSectionStatusSerializer
+from api.views.core import invalidate_restaurant_cache
 
 
 class SectionViewSet(viewsets.ModelViewSet):
@@ -27,12 +28,14 @@ class SectionViewSet(viewsets.ModelViewSet):
         if restaurant.owner != self.request.user:
             raise PermissionDenied('Only the restaurant owner can create sections')
         serializer.save(restaurant=restaurant)
+        invalidate_restaurant_cache(restaurant)
 
     def perform_update(self, serializer):
         section = self.get_object()
         if section.restaurant.owner != self.request.user:
             raise PermissionDenied('Only the restaurant owner can edit sections')
         serializer.save()
+        invalidate_restaurant_cache(section.restaurant)
 
     @action(detail=True, methods=['post'], url_path='add-staff')
     def add_staff(self, request, pk=None):
@@ -59,6 +62,7 @@ class SectionViewSet(viewsets.ModelViewSet):
             user=target_user,
             section=section,
         )
+        invalidate_restaurant_cache(section.restaurant)
         return Response({
             'id': str(staff.id),
             'user_id': str(target_user.id),
@@ -91,6 +95,7 @@ class SectionViewSet(viewsets.ModelViewSet):
         if deleted == 0:
             return Response({'error': 'This user is not staff for this section'}, status=404)
 
+        invalidate_restaurant_cache(section.restaurant)
         return Response({'status': 'staff removed'})
 
     @action(detail=True, methods=['get'], url_path='staff')

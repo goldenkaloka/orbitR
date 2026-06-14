@@ -42,6 +42,18 @@ from domain.services.order_services import (
 )
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
+def invalidate_restaurant_cache(restaurant):
+    if not restaurant:
+        return
+    # Invalidate owner's cache
+    if restaurant.owner_id:
+        cache.delete(f"restaurant_mine_{restaurant.owner_id}")
+    # Invalidate all section staff's caches
+    from apps.restaurants.models import SectionStaff
+    staff_user_ids = SectionStaff.objects.filter(section__restaurant=restaurant).values_list('user_id', flat=True)
+    for uid in staff_user_ids:
+        cache.delete(f"restaurant_mine_{uid}")
+
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
@@ -104,14 +116,17 @@ class FoodViewSet(viewsets.ModelViewSet):
                 image=serializer.validated_data.get('image'),
                 section=serializer.validated_data.get('section')
             )
+            invalidate_restaurant_cache(serializer.instance.vendor)
         except ValueError as e:
             from rest_framework.exceptions import ValidationError
             raise ValidationError(str(e))
 
     def perform_destroy(self, instance):
         from domain.services.menu_services import MenuService
+        vendor = instance.vendor
         try:
             MenuService.delete_food(owner_user=self.request.user, food_id=instance.id)
+            invalidate_restaurant_cache(vendor)
         except ValueError as e:
             from rest_framework.exceptions import ValidationError
             raise ValidationError(str(e))
@@ -197,10 +212,12 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
         if is_owner:
             data = RestaurantSerializer(restaurant).data
+            data['staff_section_ids'] = []
         else:
             staff_section_ids = list(SectionStaff.objects.filter(user=request.user).values_list('section_id', flat=True))
             data = RestaurantSerializer(restaurant).data
             data['foods'] = [f for f in data.get('foods', []) if f.get('section') in staff_section_ids or f.get('section') is None]
+            data['staff_section_ids'] = [str(sid) for sid in staff_section_ids]
 
         data['is_owner'] = is_owner
 

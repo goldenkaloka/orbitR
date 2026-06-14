@@ -33,6 +33,22 @@ class FoodSerializer(serializers.ModelSerializer):
         model = Food
         fields = ['id', 'name', 'description', 'price', 'category', 'is_available', 'image', 'image_url', 'vendor_id', 'vendor_name', 'section']
 
+    def validate(self, attrs):
+        section = attrs.get('section')
+        if section:
+            request = self.context.get('request')
+            if request and request.user:
+                from apps.restaurants.models import Restaurant, SectionStaff
+                try:
+                    restaurant = Restaurant.objects.get(owner=request.user)
+                except Restaurant.DoesNotExist:
+                    staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
+                    restaurant = staff_sec.section.restaurant if staff_sec else None
+                
+                if restaurant and section.restaurant != restaurant:
+                    raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
+        return attrs
+
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
@@ -106,9 +122,12 @@ class RestaurantSerializer(RestaurantListSerializer):
         fields = RestaurantListSerializer.Meta.fields + ['foods', 'sections']
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
+    section_name = serializers.CharField(source='section.name', read_only=True)
+    section_id = serializers.CharField(source='section.id', read_only=True)
+
     class Meta:
         model = OrderItem
-        fields = ['food', 'food_name', 'quantity', 'price']
+        fields = ['food', 'food_name', 'quantity', 'price', 'section_id', 'section_name']
         extra_kwargs = {'price': {'read_only': True}}
 
     def get_food_name(self, obj):
@@ -465,8 +484,14 @@ class OrderPoolSerializer(serializers.ModelSerializer):
     final_order_id = serializers.SerializerMethodField()
 
     def get_final_order_id(self, obj):
-        # Return the ID of the finalized order if it exists
-        order = obj.final_orders.order_by('-created_at').first()
+        # Return the ID of the finalized order belonging to the current user if it exists
+        request = self.context.get('request')
+        if request and hasattr(request, 'user') and request.user.is_authenticated:
+            order = obj.final_orders.filter(customer=request.user).first()
+            if order:
+                return str(order.id)
+        # Fallback to the first order if request context is missing or order is not found
+        order = obj.final_orders.first()
         return str(order.id) if order else None
 
 

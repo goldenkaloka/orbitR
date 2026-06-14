@@ -131,13 +131,20 @@ class DeliverOrderService:
             order.delivered_at = timezone.now()
             order.save()
 
-            # Payout: per-order, not batch-divided.
-            from domain.services.pricing_service import PricingService
-            policy = PricingService.get_active_policy()
-            driver_share = Decimal('0.90')
-            if policy and policy.single_order_driver_share:
-                driver_share = policy.single_order_driver_share
-            order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
+            # If the order is part of a batch or pool batch, calculate its share of the batch's driver payout.
+            if order.batch_id and order.batch.driver_payout:
+                batch_order_count = order.batch.orders.count()
+                order_driver_payout = Decimal(str(order.batch.driver_payout)) / batch_order_count if batch_order_count > 0 else Decimal('0')
+            elif order.pool_id and order.pool.batch_id and order.pool.batch.driver_payout:
+                paid_member_count = order.pool.members.filter(status='PAID').count()
+                order_driver_payout = Decimal(str(order.pool.batch.driver_payout)) / paid_member_count if paid_member_count > 0 else Decimal('0')
+            else:
+                from domain.services.pricing_service import PricingService
+                policy = PricingService.get_active_policy()
+                driver_share = Decimal('0.90')
+                if policy and policy.single_order_driver_share:
+                    driver_share = policy.single_order_driver_share
+                order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
 
             # Return driver to AVAILABLE when no more active deliveries.
             active_orders_count = Order.objects.filter(

@@ -29,11 +29,20 @@ class WalletViewSet(viewsets.GenericViewSet):
     serializer_class = WalletSerializer
 
     def get_queryset(self):
+        from apps.restaurants.models import SectionStaff
+        staff_link = SectionStaff.objects.filter(user=self.request.user).select_related('section').first()
+        if staff_link:
+            return Wallet.objects.filter(section=staff_link.section).prefetch_related('transactions')
         return Wallet.objects.filter(user=self.request.user).prefetch_related('transactions')
 
     @action(detail=False, methods=['GET'])
     def me(self, request):
-        wallet, _ = Wallet.objects.get_or_create(user=request.user)
+        from apps.restaurants.models import SectionStaff
+        staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
+        if staff_link:
+            wallet, _ = Wallet.objects.get_or_create(section=staff_link.section)
+        else:
+            wallet, _ = Wallet.objects.get_or_create(user=request.user)
         wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
         serializer = self.get_serializer(wallet)
         return Response(serializer.data)
@@ -79,10 +88,12 @@ class WalletViewSet(viewsets.GenericViewSet):
     def cashout(self, request):
         logger.info(f"Cashout requested by user {request.user.id}")
         
-        try:
-            wallet = Wallet.objects.select_for_update().get(user=request.user)
-        except Wallet.DoesNotExist:
-            wallet = Wallet.objects.create(user=request.user)
+        from apps.restaurants.models import SectionStaff
+        staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
+        if staff_link:
+            wallet, _ = Wallet.objects.select_for_update().get_or_create(section=staff_link.section)
+        else:
+            wallet, _ = Wallet.objects.select_for_update().get_or_create(user=request.user)
         
         amount_str = request.data.get('amount')
         if amount_str is not None:
@@ -126,7 +137,7 @@ class WalletViewSet(viewsets.GenericViewSet):
         
         WalletTransaction.objects.create(
             wallet=wallet,
-            amount=amount,
+            amount=net_amount,
             tx_type='DEBIT',
             description=f"Cashout to {provider_name}",
             created_at=timezone.now(),
@@ -151,3 +162,29 @@ class WalletViewSet(viewsets.GenericViewSet):
             "total_fees": float(total_fees),
             "net_amount": float(net_amount),
         })
+
+    @action(detail=False, methods=['GET'], url_path='stalls')
+    def list_stall_wallets(self, request):
+        """Restaurant owner (super admin) lists wallets and transactions of all their stalls."""
+        if request.user.role != 'vendor':
+            return Response({'error': 'Only restaurant owners can view stall wallets'}, status=403)
+            
+        from apps.restaurants.models import Restaurant, RestaurantSection
+        try:
+            restaurant = Restaurant.objects.get(owner=request.user)
+        except Restaurant.DoesNotExist:
+            return Response({'error': 'You do not own a restaurant'}, status=404)
+            
+        sections = RestaurantSection.objects.filter(restaurant=restaurant)
+        wallets = Wallet.objects.filter(section__in=sections).select_related('section').prefetch_related('transactions')
+        
+        data = []
+        for wallet in wallets:
+            data.append({
+                'section_id': str(wallet.section.id),
+                'section_name': wallet.section.name,
+                'balance': float(wallet.balance),
+                'pending_balance': float(wallet.pending_balance),
+                'transactions': TransactionSerializer(wallet.transactions.all()[:10], many=True).data
+            })
+        return Response(data)

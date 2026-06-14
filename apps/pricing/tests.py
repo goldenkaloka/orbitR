@@ -22,7 +22,11 @@ class PricingServiceTest(TestCase):
             name="Standard Policy",
             is_active=True,
             base_fee=Decimal('1000.00'),
-            per_km_rate=Decimal('500.00')
+            per_km_rate=Decimal('500.00'),
+            service_fee=Decimal('300.00'),
+            driver_min_guarantee=Decimal('2000.00'),
+            driver_per_km_rate=Decimal('500.00'),
+            driver_per_stop_rate=Decimal('300.00'),
         )
 
     def test_calculate_fee_standard(self):

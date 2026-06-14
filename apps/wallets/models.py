@@ -5,13 +5,26 @@ import uuid
 
 class Wallet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='wallet')
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='wallet', null=True, blank=True)
+    section = models.OneToOneField('restaurants.RestaurantSection', on_delete=models.CASCADE, related_name='wallet', null=True, blank=True)
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     pending_balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def clean(self):
+        from django.core.exceptions import ValidationError
+        if not self.user and not self.section:
+            raise ValidationError("A wallet must belong to either a User or a RestaurantSection.")
+        if self.user and self.section:
+            raise ValidationError("A wallet cannot belong to both a User and a RestaurantSection.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"Wallet: {self.user.username} ({self.balance})"
+        owner = self.user.username if self.user else f"Stall: {self.section.name}"
+        return f"Wallet: {owner} ({self.balance})"
 
 class WalletTransaction(models.Model):
     TRANSACTION_TYPES = (
@@ -32,4 +45,5 @@ class WalletTransaction(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.tx_type} | {self.amount} | {self.wallet.user.username}"
+        owner = self.wallet.user.username if self.wallet.user else f"Stall: {self.wallet.section.name}"
+        return f"{self.tx_type} | {self.amount} | {owner}"

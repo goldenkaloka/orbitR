@@ -40,15 +40,20 @@ class WalletDomainService:
         
         with transaction.atomic():
             wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-            
-            # Bug 7 Fix: Create ledger entry FIRST, then update balance.
+            return WalletDomainService.credit_wallet(wallet, amount, description)
+
+    @staticmethod
+    def credit_wallet(wallet, amount: Decimal, description: str):
+        if amount <= 0:
+            raise ValueError("Credit amount must be greater than zero.")
+
+        with transaction.atomic():
             WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=amount,
                 tx_type='CREDIT',
                 description=description
             )
-            
             wallet.balance += amount
             wallet.save()
             return wallet

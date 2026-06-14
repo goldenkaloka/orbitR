@@ -284,11 +284,18 @@ class ReleasePaymentService:
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import PoolMember
                 member = PoolMember.objects.select_related(
-                    'pool', 'pool__restaurant', 'pool__restaurant__owner'
+                    'pool', 'pool__restaurant', 'pool__restaurant__owner', 'pool__batch'
                 ).get(id=payment.payable_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
-                driver_payout = Decimal(str(member.delivery_fee_share or 0))
+                
+                # Align driver payout with the batch payout split equally among paid pool members
+                if member.pool.batch and member.pool.batch.driver_payout:
+                    paid_member_count = member.pool.members.filter(status='PAID').count()
+                    driver_payout = member.pool.batch.driver_payout / paid_member_count if paid_member_count > 0 else Decimal('0')
+                else:
+                    driver_payout = Decimal(str(member.delivery_fee_share or 0))
+
                 order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
                 if order and order.restaurant and order.restaurant.owner:
                     vendor_phone = order.restaurant.owner.phone
@@ -337,13 +344,9 @@ class ReleasePaymentService:
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
 
-                # Credit vendor wallet
+                # Credit vendor wallet proportionally by stall/section
                 if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
-                    WalletDomainService.credit(
-                        order.restaurant.owner,
-                        restaurant_payout,
-                        f"Earnings from Order #{order.id}"
-                    )
+                    ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
                     Transaction.objects.create(
                         payment=payment,
                         from_wallet=None,
@@ -392,6 +395,45 @@ class ReleasePaymentService:
                 logger.error(f"Split settlement failed for payment {payment.id}: [{error_code}] {error_msg}")
 
             return payment
+
+    @staticmethod
+    def _distribute_restaurant_payout(order, restaurant_payout):
+        """
+        Distributes the restaurant payout among the sections (stalls) that prepared the items.
+        If any items have no section, their share goes to the restaurant owner's wallet.
+        """
+        from apps.wallets.models import Wallet
+        from domain.services.wallet_services import WalletDomainService
+        from decimal import Decimal
+
+        items = list(order.items.select_related('food', 'section').all())
+        if not items:
+            WalletDomainService.credit(order.restaurant.owner, restaurant_payout, f"Earnings from Order #{order.id}")
+            return
+
+        total_items_price = sum(item.price for item in items)
+        if total_items_price == 0:
+            WalletDomainService.credit(order.restaurant.owner, restaurant_payout, f"Earnings from Order #{order.id}")
+            return
+
+        distributed_amount = Decimal('0')
+        for idx, item in enumerate(items):
+            item_proportion = item.price / total_items_price
+            item_payout = (restaurant_payout * item_proportion).quantize(Decimal('0.01'))
+            
+            if idx == len(items) - 1:
+                item_payout = restaurant_payout - distributed_amount
+            
+            distributed_amount += item_payout
+
+            if item_payout <= 0:
+                continue
+
+            if item.section:
+                wallet, _ = Wallet.objects.get_or_create(section=item.section)
+                WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
+            else:
+                WalletDomainService.credit(order.restaurant.owner, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
 
 class RefundPaymentService:
     @staticmethod

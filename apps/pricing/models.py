@@ -19,9 +19,9 @@ class PricingPolicy(models.Model):
     fuel_price_reference = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text="For tracking why this policy was created")
 
     # Driver Payout Settings
-    driver_min_guarantee = models.DecimalField(max_digits=10, decimal_places=2, default=200.00, help_text="Minimum payout per order")
-    driver_per_km_rate = models.DecimalField(max_digits=10, decimal_places=2, default=50.00, help_text="Payout per kilometer")
-    driver_per_stop_rate = models.DecimalField(max_digits=10, decimal_places=2, default=30.00, help_text="Payout per stop (pickup/delivery)")
+    driver_min_guarantee = models.DecimalField(max_digits=10, decimal_places=2, default=2000.00, help_text="Minimum payout per order")
+    driver_per_km_rate = models.DecimalField(max_digits=10, decimal_places=2, default=500.00, help_text="Payout per kilometer")
+    driver_per_stop_rate = models.DecimalField(max_digits=10, decimal_places=2, default=300.00, help_text="Payout per stop (pickup/delivery)")
     single_order_driver_share = models.DecimalField(max_digits=5, decimal_places=2, default=0.90, help_text="Driver share for non-batched orders (0.90 = 90%)")
 
     created_at = models.DateTimeField(auto_now_add=True)

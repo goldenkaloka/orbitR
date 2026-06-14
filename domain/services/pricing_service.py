@@ -49,9 +49,9 @@ class PricingService:
             base_fee=Decimal('1000.00'),
             per_km_rate=Decimal('500.00'),
             service_fee=Decimal('300.00'),
-            driver_min_guarantee=Decimal('200.00'),
-            driver_per_km_rate=Decimal('50.00'),
-            driver_per_stop_rate=Decimal('30.00'),
+            driver_min_guarantee=Decimal('2000.00'),
+            driver_per_km_rate=Decimal('500.00'),
+            driver_per_stop_rate=Decimal('300.00'),
             single_order_driver_share=Decimal('0.90')
         )
         return policy
