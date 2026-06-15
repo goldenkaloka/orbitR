@@ -11,8 +11,7 @@ class Food(models.Model):
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    vendor = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='foods', db_index=True)
-    section = models.ForeignKey('restaurants.RestaurantSection', on_delete=models.SET_NULL, null=True, blank=True, related_name='foods')
+    section = models.ForeignKey('restaurants.RestaurantSection', on_delete=models.CASCADE, related_name='foods', db_index=True)
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     image = models.ImageField(upload_to='products/', blank=True, null=True)
@@ -20,5 +19,9 @@ class Food(models.Model):
     category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='MAIN', db_index=True)
     is_available = models.BooleanField(default=True, db_index=True)
 
+    @property
+    def vendor(self):
+        return self.section.restaurant
+
     def __str__(self):
-        return f"{self.name} - {self.vendor.name}"
+        return f"{self.name} - {self.section.restaurant.name}"

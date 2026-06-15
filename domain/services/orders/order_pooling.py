@@ -145,7 +145,7 @@ class PoolOrderService:
             from apps.products.models import Food
             food = Food.objects.get(id=food_id)
 
-            if food.vendor != pool.restaurant:
+            if food.section.restaurant != pool.restaurant:
                 raise ValueError("Food must be from the same restaurant as the pool.")
 
             items = list(member.items)

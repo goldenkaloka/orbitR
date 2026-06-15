@@ -56,9 +56,14 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
             location="University Main Hall",
             geo_location=Point(39.2083, -6.7924),
             max_delivery_radius_km=10.0
+        from apps.restaurants.models import RestaurantSection
+        self.section = RestaurantSection.objects.create(
+            restaurant=self.restaurant,
+            name="Burgers",
+            description="Burger Section"
         )
         self.food = Food.objects.create(
-            vendor=self.restaurant,
+            section=self.section,
             name="Beef Burger",
             price=Decimal('5000.00')
         )

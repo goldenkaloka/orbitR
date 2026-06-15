@@ -45,9 +45,15 @@ def setup_data():
         print(f"Restaurant Created ID: {res.id}")
 
     # 4. Create Food (replacing incorrect Product class reference)
+    from apps.restaurants.models import RestaurantSection
+    sec, _ = RestaurantSection.objects.get_or_create(
+        restaurant=res,
+        name='Grill Section',
+        defaults={'description': 'Mwanachuo Grill Main Stall'}
+    )
     food, _ = Food.objects.get_or_create(
         name='Special Burger',
-        vendor=res,
+        section=sec,
         defaults={'price': 5000.00, 'is_available': True}
     )
     print(f"Food Created ID: {food.id}")

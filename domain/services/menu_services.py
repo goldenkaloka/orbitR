@@ -19,7 +19,6 @@ class MenuService:
                     raise ValueError("You must own or work at a restaurant to create foods")
 
             food_kwargs = dict(
-                vendor=restaurant,
                 name=name,
                 price=price,
                 description=description,
@@ -29,10 +28,17 @@ class MenuService:
             )
             if section is not None:
                 food_kwargs['section'] = section
-            elif not Restaurant.objects.filter(owner=owner_user).exists():
+            else:
+                # If staff member, auto-assign their stall/section
                 staff_sec = SectionStaff.objects.filter(user=owner_user).select_related('section').first()
                 if staff_sec:
                     food_kwargs['section'] = staff_sec.section
+                else:
+                    # Fallback to the first section of the restaurant
+                    first_section = RestaurantSection.objects.filter(restaurant=restaurant).first()
+                    if not first_section:
+                        raise ValueError("A section (stall) must be created before adding foods.")
+                    food_kwargs['section'] = first_section
 
             food = Food.objects.create(**food_kwargs)
 
@@ -50,13 +56,13 @@ class MenuService:
     def delete_food(owner_user, food_id):
         with transaction.atomic():
             try:
-                food = Food.objects.get(id=food_id, vendor__owner=owner_user)
+                food = Food.objects.get(id=food_id, section__restaurant__owner=owner_user)
             except Food.DoesNotExist:
                 staff_sec = SectionStaff.objects.filter(user=owner_user).values_list('section_id', flat=True)
                 food = Food.objects.get(id=food_id, section_id__in=list(staff_sec))
 
             food_name = food.name
-            restaurant_id = food.vendor.id
+            restaurant_id = food.section.restaurant.id
             food.delete()
 
             EventBus.publish(FoodDeleted(

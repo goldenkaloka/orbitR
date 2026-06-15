@@ -55,13 +55,20 @@ def seed():
 
         print(f"Created Restaurant: {restaurant.name}")
 
+        from apps.restaurants.models import RestaurantSection
+        section = RestaurantSection.objects.create(
+            restaurant=restaurant,
+            name="Main Stall",
+            description="The primary stall of the restaurant"
+        )
+
         for j in range(10):
             food_names = [
                 f"{categories[i]} Special", "Mshikaki", "Pilau", "Ugali Nyama", "Samaki",
                 "Chips Mayai", "Nyama Choma", "Wali Maharage", "Ndizi", "Samosa"
             ]
             food = Food.objects.create(
-                vendor=restaurant,
+                section=section,
                 name=f"{restaurant.name} {food_names[j % len(food_names)]} {j+1}",
                 description=f"A delicious {categories[i]} specialty made with fresh ingredients.",
                 price=random.randint(5000, 25000),

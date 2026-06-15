@@ -26,8 +26,8 @@ class UserSerializer(serializers.ModelSerializer):
 
 class FoodSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
-    vendor_id = serializers.CharField(source='vendor.id', read_only=True)
-    vendor_name = serializers.CharField(source='vendor.name', read_only=True)
+    vendor_id = serializers.CharField(source='section.restaurant.id', read_only=True)
+    vendor_name = serializers.CharField(source='section.restaurant.name', read_only=True)
 
     class Meta:
         model = Food
@@ -35,18 +35,20 @@ class FoodSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         section = attrs.get('section')
-        if section:
-            request = self.context.get('request')
-            if request and request.user:
-                from apps.restaurants.models import Restaurant, SectionStaff
-                try:
-                    restaurant = Restaurant.objects.get(owner=request.user)
-                except Restaurant.DoesNotExist:
-                    staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
-                    restaurant = staff_sec.section.restaurant if staff_sec else None
-                
-                if restaurant and section.restaurant != restaurant:
-                    raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
+        if not section:
+            raise serializers.ValidationError({"section": "Section (Stall) is required."})
+
+        request = self.context.get('request')
+        if request and request.user:
+            from apps.restaurants.models import Restaurant, SectionStaff
+            try:
+                restaurant = Restaurant.objects.get(owner=request.user)
+            except Restaurant.DoesNotExist:
+                staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
+                restaurant = staff_sec.section.restaurant if staff_sec else None
+            
+            if restaurant and section.restaurant != restaurant:
+                raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
         return attrs
 
     def get_image_url(self, obj):
