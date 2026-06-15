@@ -23,5 +23,9 @@ class Food(models.Model):
     def vendor(self):
         return self.section.restaurant
 
+    @property
+    def vendor_id(self):
+        return self.section.restaurant_id
+
     def __str__(self):
         return f"{self.name} - {self.section.restaurant.name}"

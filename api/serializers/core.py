@@ -503,10 +503,14 @@ class OrderPoolSerializer(serializers.ModelSerializer):
         if not obj.restaurant:
             return []
         # Use prefetched cache if available, otherwise fall back to filtered query
-        if hasattr(obj.restaurant, '_prefetched_objects_cache') and 'foods' in obj.restaurant._prefetched_objects_cache:
-            foods = [f for f in obj.restaurant.foods.all() if f.is_available]
+        if hasattr(obj.restaurant, '_prefetched_objects_cache') and 'sections' in obj.restaurant._prefetched_objects_cache:
+            foods = []
+            for section in obj.restaurant.sections.all():
+                # section.foods is prefetched if sections__foods was prefetched
+                foods.extend([f for f in section.foods.all() if f.is_available])
         else:
-            foods = obj.restaurant.foods.filter(is_available=True).only('id', 'name', 'price', 'category', 'image')
+            from apps.products.models import Food
+            foods = Food.objects.filter(section__restaurant=obj.restaurant, is_available=True).only('id', 'name', 'price', 'category', 'image')
         return [{'id': str(f.id), 'name': f.name, 'price': float(f.price), 'category': f.category, 'image': f.image.url if f.image else None} for f in foods]
 
 

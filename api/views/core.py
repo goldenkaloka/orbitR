@@ -150,13 +150,13 @@ class FoodViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Food.objects.select_related('vendor', 'vendor__owner', 'section').all()
+        queryset = Food.objects.select_related('section__restaurant', 'section__restaurant__owner', 'section').all()
         if user.is_authenticated and user.role == 'vendor':
             from apps.restaurants.models import SectionStaff
             if SectionStaff.objects.filter(user=user).exists():
                 staff_section_ids = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
-                return queryset.filter(vendor__owner=user) | queryset.filter(section_id__in=staff_section_ids)
-            return queryset.filter(vendor__owner=user)
+                return queryset.filter(section__restaurant__owner=user) | queryset.filter(section_id__in=staff_section_ids)
+            return queryset.filter(section__restaurant__owner=user)
         return queryset.filter(is_available=True)
 
     def perform_create(self, serializer):
@@ -204,7 +204,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         return RestaurantSerializer
 
     def get_queryset(self):
-        queryset = Restaurant.objects.select_related('owner').prefetch_related('foods').filter(is_active=True)
+        queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').filter(is_active=True)
         if getattr(self, "action", None) in ("retrieve", "mine"):
             pass
         category = self.request.query_params.get('category')
@@ -868,12 +868,12 @@ class UniversalSearchView(APIView):
             })
 
         # Search Restaurants — Prefetch foods to avoid N+1 in serializer
-        restaurants_qs = Restaurant.objects.filter(is_active=True).prefetch_related('foods').annotate(
+        restaurants_qs = Restaurant.objects.filter(is_active=True).prefetch_related('sections__foods').annotate(
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:15]
 
         # Search Products — select_related for vendor info
-        products_qs = Food.objects.select_related('vendor').filter(is_available=True).annotate(
+        products_qs = Food.objects.select_related('section__restaurant').filter(is_available=True).annotate(
             similarity=TrigramSimilarity('name', query)
         ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
 
@@ -890,7 +890,7 @@ class UniversalSearchView(APIView):
         vendor_ids.update(r.id for r in restaurants_qs)
         
         # Prefetch all vendors to serve as a lookup table
-        all_vendors = Restaurant.objects.filter(id__in=vendor_ids).prefetch_related('foods')
+        all_vendors = Restaurant.objects.filter(id__in=vendor_ids).prefetch_related('sections__foods')
         
         return Response({
             "restaurants": RestaurantListSerializer(restaurants_qs, many=True, context={'request': request}).data,

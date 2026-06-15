@@ -32,7 +32,7 @@ class RestaurantSectionAdmin(ModelAdmin):
     list_display = ('name', 'restaurant', 'specialization', 'is_active', 'sort_order')
     list_filter = ('is_active', 'restaurant')
     search_fields = ('name', 'specialization', 'restaurant__name')
-    inlines = [SectionStaffInline]
+    inlines = [SectionStaffInline, FoodInline]
 
 
 @admin.register(SectionStaff)
@@ -52,7 +52,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_per_page = 25
     raw_id_fields = ('owner',)
     readonly_fields = ('id', 'created_at')
-    inlines = [FoodInline, SectionInline]
+    inlines = [SectionInline]
 
     settings_overrides = {
         'DEFAULT_CENTER': (-6.7924, 39.2083),
@@ -82,7 +82,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
 
     @display(description="Foods")
     def food_count(self, obj):
-        return obj.foods.count()
+        return Food.objects.filter(section__restaurant=obj).count()
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('owner').prefetch_related('foods')
+        return super().get_queryset(request).select_related('owner').prefetch_related('sections__foods')

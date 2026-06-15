@@ -6,17 +6,17 @@ from .models import Food
 
 @admin.register(Food)
 class FoodAdmin(ModelAdmin):
-    list_display = ('name', 'vendor', 'price', 'show_availability')
-    list_filter = ('is_available', 'vendor')
-    search_fields = ('name', 'vendor__name')
-    ordering = ('vendor', 'name')
+    list_display = ('name', 'section', 'vendor', 'price', 'show_availability')
+    list_filter = ('is_available', 'section__restaurant', 'section')
+    search_fields = ('name', 'section__name', 'section__restaurant__name')
+    ordering = ('section__restaurant__name', 'name')
     list_per_page = 25
     list_editable = ('price',)
-    raw_id_fields = ('vendor',)
+    raw_id_fields = ('section',)
     readonly_fields = ('id',)
 
     fieldsets = (
-        (None, {'fields': ('id', 'name', 'vendor', 'description', 'image')}),
+        (None, {'fields': ('id', 'name', 'section', 'description', 'image')}),
         ('Pricing & Availability', {'fields': ('price', 'is_available')}),
     )
 
@@ -31,4 +31,4 @@ class FoodAdmin(ModelAdmin):
         return "Available" if obj.is_available else "Out of Stock"
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('vendor')
+        return super().get_queryset(request).select_related('section__restaurant')
