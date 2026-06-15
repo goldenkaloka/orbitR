@@ -89,3 +89,25 @@ class Restaurant(models.Model):
 
     def __str__(self):
         return self.name
+
+
+from django.db.models.signals import post_save, post_delete
+from django.dispatch import receiver
+
+@receiver(post_save, sender=SectionStaff)
+def promote_staff_user_role(sender, instance, created, **kwargs):
+    if created:
+        user = instance.user
+        if user.role == 'customer':
+            user.role = 'vendor'
+            user.save(update_fields=['role'])
+
+@receiver(post_delete, sender=SectionStaff)
+def demote_staff_user_role(sender, instance, **kwargs):
+    user = instance.user
+    # Check if they have other staff links or own a restaurant
+    has_other_links = SectionStaff.objects.filter(user=user).exists()
+    owns_restaurant = Restaurant.objects.filter(owner=user).exists()
+    if not has_other_links and not owns_restaurant and user.role == 'vendor':
+        user.role = 'customer'
+        user.save(update_fields=['role'])
