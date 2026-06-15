@@ -105,6 +105,8 @@ def on_payment_disbursed(event: PaymentDisbursed):
                 title=d_title, body=d_body,
                 data={"order_id": str(order.id), "type": "payout_received"},
             )
+    except Payment.DoesNotExist:
+        logger.error(f"Payment {event.aggregate_id} not found for disbursement")
     except Order.DoesNotExist:
         logger.error(f"Order {order_id} not found for disbursement notification")
 

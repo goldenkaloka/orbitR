@@ -168,6 +168,7 @@ def on_order_delivered(event):
         )
     except Order.DoesNotExist:
         logger.error(f"Order {event.aggregate_id} not found for delivery notification")
+        return
 
     try:
         if order.pool:
