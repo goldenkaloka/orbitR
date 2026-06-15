@@ -69,6 +69,10 @@ class SectionViewSet(viewsets.ModelViewSet):
             user=target_user,
             section=section,
         )
+        if target_user.role == 'customer':
+            target_user.role = 'vendor'
+            target_user.save(update_fields=['role'])
+            
         invalidate_restaurant_cache(section.restaurant)
         return Response({
             'id': str(staff.id),
@@ -101,6 +105,20 @@ class SectionViewSet(viewsets.ModelViewSet):
 
         if deleted == 0:
             return Response({'error': 'This user is not staff for this section'}, status=404)
+
+        # Revert role to 'customer' if they have no other vendor links or restaurant ownerships
+        from apps.restaurants.models import Restaurant
+        has_other_staff_link = SectionStaff.objects.filter(user_id=user_id).exists()
+        owns_restaurant = Restaurant.objects.filter(owner_id=user_id).exists()
+        if not has_other_staff_link and not owns_restaurant:
+            from apps.users.models import User as AppUser
+            try:
+                target_user = AppUser.objects.get(id=user_id)
+                if target_user.role == 'vendor':
+                    target_user.role = 'customer'
+                    target_user.save(update_fields=['role'])
+            except AppUser.DoesNotExist:
+                pass
 
         invalidate_restaurant_cache(section.restaurant)
         return Response({'status': 'staff removed'})

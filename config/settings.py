@@ -554,6 +554,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'domain.services.dispatch_tasks.daily_earnings_reset_task',
         'schedule': crontab(hour=0, minute=0),
     },
+    'retry-stuck-events-every-2-mins': {
+        'task': 'apps.events.tasks.retry_stuck_events',
+        'schedule': crontab(minute='*/2'),
+    },
     'retry-failed-payouts-every-15-mins': {
         'task': 'apps.payments.tasks.retry_failed_payouts',
         'schedule': crontab(minute='*/15'),

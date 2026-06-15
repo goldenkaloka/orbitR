@@ -7,6 +7,8 @@ class EventLog(models.Model):
     aggregate_id = models.UUIDField()
     event_type = models.CharField(max_length=100) # e.g. 'OrderCreated'
     payload = models.JSONField(default=dict)
+    status = models.CharField(max_length=20, default='PENDING', db_index=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

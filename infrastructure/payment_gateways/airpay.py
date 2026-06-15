@@ -341,7 +341,7 @@ class AirpayGateway(PaymentGateway):
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    def split_settlement(self, airpay_id, rrn, primary_account=None, primary_value=None, other_identifiers=None, split_values=None, splits=None):
+    def split_settlement(self, airpay_id, rrn, primary_account=None, primary_value=None, other_identifiers=None, split_values=None, splits=None, split_request_id=None):
         """
         Release escrowed funds via Airpay split settlement API.
 
@@ -367,7 +367,8 @@ class AirpayGateway(PaymentGateway):
             other_identifiers = []
             split_values = []
 
-        split_request_id = str(int(time.time() * 1000))[-15:]
+        if not split_request_id:
+            split_request_id = str(int(time.time() * 1000))[-15:]
 
         # Generate auth token per Airpay docs:
         # PRIVATE_KEY = SHA256(APIKEY + '@' + USERNAME + ':|:' + PASSWORD)

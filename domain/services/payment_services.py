@@ -307,9 +307,47 @@ class ReleasePaymentService:
             if not vendor_phone:
                 raise ValueError(f"Cannot process payment: Restaurant has no owner phone number")
 
+            # Helper to check if TZ phone number is valid
+            def is_valid_tz_phone(phone_number):
+                if not phone_number:
+                    return False
+                p = str(phone_number).replace('+', '').strip()
+                if p.startswith('255'): p = p[3:]
+                if p.startswith('0'): p = p[1:]
+                if not p.isdigit() or len(p) != 9:
+                    return False
+                prefix = p[:2]
+                valid_prefixes = {'74', '75', '76', '73', '65', '67', '71', '72', '68', '69', '78', '79', '61', '62'}
+                return prefix in valid_prefixes
+
             platform_cut = payment.amount - restaurant_payout - driver_payout
             if platform_cut < 0:
                 platform_cut = Decimal('0')
+
+            actual_restaurant_payout = restaurant_payout
+            actual_driver_payout = driver_payout
+
+            # Validate restaurant owner phone
+            if restaurant_payout > 0 and vendor_phone:
+                if not is_valid_tz_phone(vendor_phone):
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Vendor phone number '{vendor_phone}' for payment {payment.id} is invalid. "
+                        f"Redirecting restaurant share of {restaurant_payout} to platform primary account."
+                    )
+                    platform_cut += restaurant_payout
+                    actual_restaurant_payout = Decimal('0')
+
+            # Validate driver phone
+            if driver_payout > 0 and driver_phone:
+                if not is_valid_tz_phone(driver_phone):
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Driver phone number '{driver_phone}' for payment {payment.id} is invalid. "
+                        f"Redirecting driver share of {driver_payout} to platform primary account."
+                    )
+                    platform_cut += driver_payout
+                    actual_driver_payout = Decimal('0')
 
             # Build split payload per Airpay docs:
             # PRIACCT_IDENTIFIER = platform primary account
@@ -322,13 +360,18 @@ class ReleasePaymentService:
             other_identifiers = []
             split_values = []
 
-            if restaurant_payout > 0:
+            if actual_restaurant_payout > 0 and vendor_phone:
                 other_identifiers.append(vendor_phone)
-                split_values.append(float(restaurant_payout))
+                split_values.append(float(actual_restaurant_payout))
 
-            if driver_payout > 0 and driver_phone:
+            if actual_driver_payout > 0 and driver_phone:
                 other_identifiers.append(driver_phone)
-                split_values.append(float(driver_payout))
+                split_values.append(float(actual_driver_payout))
+
+            # Generate deterministic 15-character split_request_id for gateway idempotency
+            import hashlib
+            h = hashlib.sha256(str(payment.id).encode())
+            split_request_id = str(int(h.hexdigest(), 16))[-15:]
 
             gateway = get_payment_gateway()
             response = gateway.split_settlement(
@@ -338,6 +381,7 @@ class ReleasePaymentService:
                 primary_value=float(platform_cut),
                 other_identifiers=other_identifiers,
                 split_values=split_values,
+                split_request_id=split_request_id,
             )
 
             if response and response.get('success'):
@@ -417,13 +461,15 @@ class ReleasePaymentService:
             return
 
         distributed_amount = Decimal('0')
+        cumulative_price = Decimal('0')
         for idx, item in enumerate(items):
-            item_proportion = item.price / total_items_price
-            item_payout = (restaurant_payout * item_proportion).quantize(Decimal('0.01'))
+            cumulative_price += Decimal(str(item.price))
+            if total_items_price > 0:
+                cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
+            else:
+                cumulative_target = Decimal('0')
             
-            if idx == len(items) - 1:
-                item_payout = restaurant_payout - distributed_amount
-            
+            item_payout = cumulative_target - distributed_amount
             distributed_amount += item_payout
 
             if item_payout <= 0:

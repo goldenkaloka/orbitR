@@ -19,7 +19,8 @@ class EventBus:
             aggregate_type=event.aggregate_type,
             aggregate_id=event.aggregate_id,
             event_type=event.event_type,
-            payload=event.payload
+            payload=event.payload,
+            status='PENDING'
         )
 
         task_id = str(event_log.id)

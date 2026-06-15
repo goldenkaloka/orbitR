@@ -11,7 +11,11 @@ import importlib
     retry_jitter=True
 )
 def dispatch_event_task(self, event_log_id):
+    from django.utils import timezone
     event_log = EventLog.objects.get(id=event_log_id)
+    
+    if event_log.status == 'PROCESSED':
+        return
     
     types_module = importlib.import_module('domain.events.types')
     EventClass = getattr(types_module, event_log.event_type, None)
@@ -27,3 +31,7 @@ def dispatch_event_task(self, event_log_id):
     )
     
     EventBus._dispatch(event)
+    
+    event_log.status = 'PROCESSED'
+    event_log.processed_at = timezone.now()
+    event_log.save(update_fields=['status', 'processed_at'])

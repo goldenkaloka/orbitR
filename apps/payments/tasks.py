@@ -57,12 +57,42 @@ def retry_failed_payouts():
 def cleanup_expired_payments():
     """
     Cancel payments that have been stuck in INITIATED for more than 30 mins.
+    Before cancelling, poll the payment gateway status. If it was completed, recover it.
     """
     from apps.payments.models import Payment
     from django.utils import timezone
     from datetime import timedelta
+    from infrastructure.payment_gateways.factory import get_payment_gateway
+    from domain.services.payment_services import CompletePaymentService
     
     expiry_time = timezone.now() - timedelta(minutes=30)
-    updated = Payment.objects.filter(status='INITIATED', created_at__lt=expiry_time).update(status='FAILED')
-    if updated:
-        logger.info(f"Expired {updated} stale payments")
+    stuck_payments = Payment.objects.filter(status='INITIATED', created_at__lt=expiry_time)
+    
+    expired_count = 0
+    recovered_count = 0
+    
+    for payment in stuck_payments:
+        try:
+            gateway = get_payment_gateway(phone=payment.payable_id)
+            
+            if payment.provider_reference:
+                status_res = gateway.get_status(provider_reference=payment.provider_reference)
+                if status_res.get('success') and status_res.get('status') == 'SUCCESS':
+                    CompletePaymentService.execute(
+                        payment_id=payment.id,
+                        provider_reference=payment.provider_reference,
+                        success=True
+                    )
+                    recovered_count += 1
+                    logger.info(f"Recovered stuck payment {payment.id} via status polling")
+                    continue
+            
+            payment.status = 'FAILED'
+            payment.save()
+            expired_count += 1
+            logger.info(f"Expired stuck payment {payment.id} to FAILED")
+        except Exception as e:
+            logger.error(f"Error checking status for payment {payment.id}: {str(e)}")
+            
+    if expired_count or recovered_count:
+        logger.info(f"Expired payment cleanup complete. Expired: {expired_count}, Recovered: {recovered_count}")

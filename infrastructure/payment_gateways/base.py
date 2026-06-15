@@ -18,10 +18,8 @@ class PaymentGateway(ABC):
         pass
 
     @abstractmethod
-    def split_settlement(self, airpay_id: str, rrn: str, splits: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def split_settlement(self, airpay_id: str, rrn: str, *args, **kwargs) -> Dict[str, Any]:
         """
         Release escrowed funds via split settlement.
-        Sends the full transaction amount to the platform's primary account.
-        Internal distribution to vendors/drivers is handled via wallet cashouts.
         """
         pass
