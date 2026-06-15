@@ -41,7 +41,7 @@ def ws_subscribe_check(request):
     except (UserModel.DoesNotExist, ValueError):
         return JsonResponse({"result": {"allowed": False}}, status=200)
 
-    role = user_obj.role
+    role = user_obj.serialized_role
 
     if namespace == "orders":
         from apps.orders.models import Order
@@ -49,10 +49,12 @@ def ws_subscribe_check(request):
             order = Order.objects.get(id=key)
         except Order.DoesNotExist:
             return JsonResponse({"result": {"allowed": False}}, status=200)
+        from apps.restaurants.models import SectionStaff
         allowed = (
             str(order.customer_id) == user
             or (order.driver and str(order.driver.user_id) == user)
             or (order.restaurant and str(order.restaurant.owner_id) == user)
+            or (order.restaurant and SectionStaff.objects.filter(user_id=user, section__restaurant=order.restaurant).exists())
             or role == "admin"
         )
         return JsonResponse({"result": {"allowed": allowed}}, status=200)
@@ -71,9 +73,10 @@ def ws_subscribe_check(request):
         return JsonResponse({"result": {"allowed": allowed}}, status=200)
 
     if namespace == "vendors":
-        from apps.restaurants.models import Restaurant
+        from apps.restaurants.models import Restaurant, SectionStaff
         allowed = (
             Restaurant.objects.filter(owner_id=user).exists()
+            or SectionStaff.objects.filter(user_id=user, section__restaurant_id=key).exists()
             or role == "admin"
         )
         return JsonResponse({"result": {"allowed": allowed}}, status=200)
@@ -95,7 +98,7 @@ def ws_subscribe_check(request):
         allowed = (
             str(demand.buyer_id) == user
             or demand.offers.filter(seller_id=user).exists()
-            or (role == "vendor" and demand.status == "OPEN")
+            or (role in ("vendor", "vendor_staff") and demand.status == "OPEN")
             or role == "admin"
         )
         return JsonResponse({"result": {"allowed": allowed}}, status=200)

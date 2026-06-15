@@ -13,9 +13,9 @@ class BatchViewSet(viewsets.ViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        if user.role == 'driver':
+        if user.serialized_role == 'driver':
             return DeliveryBatch.objects.filter(driver__user=user)
-        elif user.role == 'vendor':
+        elif user.serialized_role in ('vendor', 'vendor_staff'):
             from apps.restaurants.models import Restaurant, SectionStaff
             owned_rids = Restaurant.objects.filter(owner=user).values_list('id', flat=True)
             staff_rids = SectionStaff.objects.filter(user=user).values_list('section__restaurant_id', flat=True)

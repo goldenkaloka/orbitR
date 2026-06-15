@@ -151,7 +151,7 @@ class FoodViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = Food.objects.select_related('section__restaurant', 'section__restaurant__owner', 'section').all()
-        if user.is_authenticated and user.role == 'vendor':
+        if user.is_authenticated and user.serialized_role in ('vendor', 'vendor_staff'):
             from apps.restaurants.models import SectionStaff
             if SectionStaff.objects.filter(user=user).exists():
                 staff_section_ids = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
@@ -397,9 +397,9 @@ class OrderViewSet(viewsets.ModelViewSet):
             'pool__members__user',
         ).order_by('-created_at')
         
-        if user.role == 'customer':
+        if user.serialized_role == 'customer':
             return queryset.filter(customer=user)
-        elif user.role == 'vendor':
+        elif user.serialized_role in ('vendor', 'vendor_staff'):
             from apps.restaurants.models import SectionStaff
             staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
             if staff_sections.exists():
@@ -430,7 +430,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         data = {}
         try:
-            if user.role == 'vendor':
+            if user.serialized_role in ('vendor', 'vendor_staff'):
                 from apps.restaurants.models import SectionStaff
                 staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
                 if staff_sections.exists():

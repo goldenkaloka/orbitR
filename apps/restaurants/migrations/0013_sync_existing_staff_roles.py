@@ -2,14 +2,15 @@ from django.db import migrations
 
 def sync_existing_staff_roles(apps, schema_editor):
     SectionStaff = apps.get_model('restaurants', 'SectionStaff')
+    Restaurant = apps.get_model('restaurants', 'Restaurant')
     User = apps.get_model('users', 'User')
 
-    # Find users who are associated with any SectionStaff record
     staff_user_ids = SectionStaff.objects.values_list('user_id', flat=True).distinct()
-    
-    # Update their role to 'vendor' if they are currently 'customer'
-    updated = User.objects.filter(id__in=staff_user_ids, role='customer').update(role='vendor')
-    print(f"Synced {updated} existing staff users to 'vendor' role.")
+    owner_user_ids = Restaurant.objects.values_list('owner_id', flat=True).distinct()
+    non_owner_staff_ids = set(staff_user_ids) - set(owner_user_ids)
+
+    updated = User.objects.filter(id__in=non_owner_staff_ids).exclude(role='customer').update(role='customer')
+    print(f"Synced {updated} staff users to 'customer' role (will be dynamically resolved as 'vendor_staff').")
 
 class Migration(migrations.Migration):
 

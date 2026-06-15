@@ -167,7 +167,7 @@ class VerifyOTPView(APIView):
                     'id': str(user.id),
                     'phone': user.phone,
                     'username': user.username,
-                    'role': user.role
+                    'role': user.serialized_role
                 }
             })
             
@@ -255,7 +255,7 @@ class RegisterView(APIView):
                     'id': str(user.id),
                     'phone': user.phone,
                     'username': user.username,
-                    'role': user.role
+                    'role': user.serialized_role
                 }
             }, status=status.HTTP_201_CREATED)
 
@@ -297,7 +297,7 @@ class MeView(APIView):
                 'phone': user.phone,
                 'username': user.username,
                 'avatar_url': user.avatar.url if user.avatar else user.avatar_url,
-                'role': user.role
+                'role': user.serialized_role
             }
         })
 
@@ -326,7 +326,7 @@ class MeView(APIView):
                 'phone': user.phone,
                 'username': user.username,
                 'avatar_url': user.avatar.url if user.avatar else user.avatar_url,
-                'role': user.role,
+                'role': user.serialized_role,
                 'onesignal_id': user.onesignal_id
             }
         })

@@ -44,6 +44,14 @@ class User(AbstractUser):
     def __str__(self):
         return f"{self.username or self.phone} ({self.role})"
 
+    @property
+    def serialized_role(self):
+        from apps.restaurants.models import SectionStaff
+        if self.role == 'customer':
+            if SectionStaff.objects.filter(user=self).exists():
+                return 'vendor_staff'
+        return self.role
+
 class OTPCode(models.Model):
     MAX_FAILED_ATTEMPTS = 5
 
