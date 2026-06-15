@@ -26,9 +26,10 @@ def migrate_foods_to_sections(apps, schema_editor):
         food.save()
 
 class Migration(migrations.Migration):
+    atomic = False  # Disable transaction for the migration to allow trigger events to clear in PostgreSQL
 
     dependencies = [
-        ('products', '0004_trigram_index'),
+        ('products', '0005_food_section'),
         ('restaurants', '0012_restaurant_average_prep_time'),
     ]
 
