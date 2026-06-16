@@ -433,7 +433,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if cached_data:
             return Response(cached_data)
 
-        from django.db.models import Sum, Count
+        from django.db.models import Sum, Count, DurationField, ExpressionWrapper
         from django.utils import timezone
         now = timezone.now()
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -474,7 +474,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 ).exclude(
                     models.Q(ready_at__lte=models.F('confirmed_at'))
                 ).annotate(
-                    prep_duration=models.F('ready_at') - models.F('confirmed_at')
+                    prep_duration=ExpressionWrapper(
+                        models.F('ready_at') - models.F('confirmed_at'),
+                        output_field=DurationField()
+                    )
                 ).values_list('prep_duration', flat=True)[:100]
 
                 avg_seconds = 0
@@ -495,7 +498,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                 }
             elif user.role == 'driver':
                 wallet, _ = Wallet.objects.get_or_create(user=user)
-                driver = user.driver_profile
+                driver, _ = Driver.objects.get_or_create(
+                    user=user,
+                    defaults={'status': 'OFFLINE'}
+                )
                 orders = Order.objects.filter(
                     driver__user=user,
                     created_at__gte=start_of_day,
@@ -540,6 +546,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             cache.set(cache_key, data, 300)
             return Response(data)
         except Exception as e:
+            logger.exception("Error in stats action: %s", str(e))
             return Response({"error": str(e)}, status=500)
 
     @action(detail=False, methods=['GET'], url_path='available-jobs')

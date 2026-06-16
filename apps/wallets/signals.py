@@ -28,4 +28,5 @@ def handle_order_wallet_updates(sender, instance, created, **kwargs):
 @receiver(post_save, sender=Wallet)
 def invalidate_stats_cache_on_wallet_change(sender, instance, **kwargs):
     """Invalidate the user stats cache when wallet balance changes."""
-    cache.delete(f"user_stats_{instance.user.id}_{instance.user.role}")
+    if instance.user:
+        cache.delete(f"user_stats_{instance.user.id}_{instance.user.role}")
