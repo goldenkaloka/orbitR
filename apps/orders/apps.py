@@ -36,15 +36,4 @@ class OrdersConfig(AppConfig):
     name = 'apps.orders'
 
     def ready(self):
-        from django.db import connection
-        try:
-            if connection.ensure_connection():
-                from apps.orders.models import BatchingStrategy
-                for config in DEFAULT_STRATEGIES_CONFIG:
-                    BatchingStrategy.objects.update_or_create(
-                        name=config['name'],
-                        defaults=config,
-                    )
-                logger.info(f"[OrdersConfig] Seeded {len(DEFAULT_STRATEGIES_CONFIG)} batching strategies")
-        except Exception:
-            pass
+        pass

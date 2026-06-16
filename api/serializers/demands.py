@@ -9,10 +9,15 @@ class MarketplaceCategorySerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'icon']
 
 
+class MarketplaceCategoryPrimaryKeyRelatedField(serializers.PrimaryKeyRelatedField):
+    def get_queryset(self):
+        return MarketplaceCategory.objects.all()
+
+
 class ShopSerializer(serializers.ModelSerializer):
     owner_name = serializers.ReadOnlyField(source='owner.username')
-    categories = serializers.PrimaryKeyRelatedField(
-        many=True, queryset=MarketplaceCategory.objects.all(), required=False,
+    categories = MarketplaceCategoryPrimaryKeyRelatedField(
+        many=True, queryset=MarketplaceCategory.objects.none(), required=False,
     )
     categories_detail = MarketplaceCategorySerializer(
         source='categories', many=True, read_only=True,
