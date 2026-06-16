@@ -39,5 +39,5 @@ class OperationalZoneAdmin(LeafletGeoAdminMixin, ModelAdmin):
         }
         js = (
             'admin/js/geo_locate.js',
-            'admin/js/h3_visualizer.js',
+            'admin/js/deck_h3_editor.js',
         )

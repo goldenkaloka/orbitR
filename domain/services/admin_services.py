@@ -59,7 +59,7 @@ class PromoteUserService:
             return user, restaurant
 
     @staticmethod
-    def to_driver(user_id: str):
+    def to_driver(user_id: str, **extra_fields):
         with transaction.atomic():
             user = User.objects.select_for_update().get(id=user_id)
             if user.role != 'customer':
@@ -68,10 +68,21 @@ class PromoteUserService:
             user.role = 'driver'
             user.save(update_fields=['role'])
 
+            defaults = {'status': 'OFFLINE'}
+            allowed_fields = {'serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders'}
+            for key in allowed_fields:
+                if key in extra_fields and extra_fields[key] is not None:
+                    defaults[key] = extra_fields[key]
+
             driver, created = Driver.objects.get_or_create(
                 user=user,
-                defaults={'status': 'OFFLINE'}
+                defaults=defaults
             )
+
+            if not created:
+                for key, value in defaults.items():
+                    setattr(driver, key, value)
+                driver.save()
 
             EventBus.publish(UserPromotedToDriver(
                 aggregate_id=user.id,
@@ -209,7 +220,7 @@ class RegisterTempDriverService:
             driver, created = Driver.objects.get_or_create(
                 user=user,
                 defaults={
-                    'assigned_by': restaurant,
+                    'home_restaurant': restaurant,
                     'status': 'ONLINE',
                 }
             )
@@ -226,7 +237,7 @@ class RegisterTempDriverService:
                 payload={
                     'driver_id': str(driver.id),
                     'user_id': str(user.id),
-                    'assigned_by': str(restaurant.id)
+                    'home_restaurant': str(restaurant.id)
                 }
             ))
 
@@ -274,3 +285,17 @@ class ManageRestaurantService:
             restaurant = Restaurant.objects.select_for_update().get(id=restaurant_id)
             restaurant.delete()
             return True
+
+class UpdateDriverService:
+    @staticmethod
+    def execute(driver_id: str, **fields):
+        with transaction.atomic():
+            driver = Driver.objects.select_for_update().get(id=driver_id)
+            allowed = {'status', 'serves_all', 'can_assign', 'priority',
+                       'max_active_orders', 'current_active_orders', 'max_radius_km'}
+            for key, value in fields.items():
+                if key in allowed and value is not None:
+                    setattr(driver, key, value)
+            driver.save()
+            driver.refresh_from_db()
+            return driver

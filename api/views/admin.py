@@ -15,7 +15,8 @@ from apps.delivery.models import Driver
 from apps.wallets.models import Wallet
 
 from api.serializers.core import UserSerializer, RestaurantSerializer, OrderSerializer, DriverSerializer
-from domain.services.admin_services import PromoteUserService, DisputeOrderService
+from domain.services.admin_services import PromoteUserService, DisputeOrderService, UpdateDriverService
+
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
 
@@ -57,8 +58,7 @@ class AdminViewSet(viewsets.GenericViewSet):
         active_drivers = Driver.objects.filter(status='ONLINE').count()
         total_drivers = Driver.objects.count()
         total_restaurants = Restaurant.objects.count()
-        temp_drivers = Driver.objects.count()
-        
+
         # Total funds currently in the system wallets
         platform_balance = Wallet.objects.aggregate(Sum('balance'))['balance__sum'] or 0
 
@@ -71,7 +71,6 @@ class AdminViewSet(viewsets.GenericViewSet):
             'platform_balance': float(platform_balance),
             'active_drivers': active_drivers,
             'total_drivers': total_drivers,
-            'temp_drivers': temp_drivers,
             'total_restaurants': total_restaurants,
         }
         cache.set(cache_key, data, 60) # Cache for 60 seconds
@@ -178,14 +177,19 @@ class AdminViewSet(viewsets.GenericViewSet):
     def promote_driver(self, request):
         """
         Promote a registered user to permanent driver.
-        Body: { user_id }
+        Body: { user_id, ?serves_all, ?can_assign, ?priority, ?home_restaurant_id, ?max_active_orders }
         """
         user_id = request.data.get('user_id')
         if not user_id:
             return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
+        extra = {}
+        for key in ('serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders'):
+            if key in request.data:
+                extra[key] = request.data[key]
+
         try:
-            user, driver = PromoteUserService.to_driver(user_id=user_id)
+            user, driver = PromoteUserService.to_driver(user_id=user_id, **extra)
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except User.DoesNotExist:
@@ -196,6 +200,32 @@ class AdminViewSet(viewsets.GenericViewSet):
             'user': UserSerializer(user).data,
             'driver': DriverSerializer(driver).data,
         }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['POST'], url_path='update-driver')
+    def update_driver(self, request):
+        """
+        Update driver properties.
+        Body: { driver_id, ?serves_all, ?can_assign, ?priority, ?status, ?max_active_orders }
+        """
+        driver_id = request.data.get('driver_id')
+        if not driver_id:
+            return Response({'error': 'driver_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        fields = {}
+        for key in ('serves_all', 'can_assign', 'priority', 'status',
+                     'max_active_orders', 'current_active_orders', 'max_radius_km'):
+            if key in request.data:
+                fields[key] = request.data[key]
+
+        try:
+            driver = UpdateDriverService.execute(driver_id=driver_id, **fields)
+        except Driver.DoesNotExist:
+            return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            'message': f'Driver updated',
+            'driver': DriverSerializer(driver).data,
+        })
 
     @action(detail=False, methods=['POST'], url_path='dispute-order')
     def dispute_order(self, request):

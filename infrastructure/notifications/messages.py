@@ -300,3 +300,17 @@ def batch_dispatched_notification() -> tuple[str, str]:
         "Dereva Amepewa Oda",
         "Dereva amepewa oda zako na anaelekea kukusanya. Usisite kumwangalia.",
     )
+
+# ── Delegation ────────────────────────────────────────────────────────────────
+
+def batch_delegated_to_vendor(batch_short: str, old_driver_name: str, new_driver_name: str) -> tuple[str, str]:
+    return (
+        "Dereva Amekabidhi Oda",
+        f"Dereva {old_driver_name} amekabidhi kundi {batch_short} kwa {new_driver_name}. Dereva mpya anaelekea kukusanya oda zako.",
+    )
+
+def batch_delegated_to_driver(batch_short: str, restaurant_name: str) -> tuple[str, str]:
+    return (
+        "Umepewa Oda Kutoka kwa Mwenzako",
+        f"Dereva mwenzako amekukabidhi kundi {batch_short} la {restaurant_name}. Tafadhali angalia oda zako.",
+    )

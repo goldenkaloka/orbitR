@@ -7,6 +7,8 @@ from apps.orders.models import Order
 from apps.delivery.models import DeliveryAssignment
 from domain.fsm.order_fsm import OrderFSM
 from domain.fsm.driver_fsm import DriverFSM
+from domain.services.driver_service import release_driver
+from domain.services.permissions import check_restaurant_permission
 from domain.events.bus import EventBus
 from domain.events.types import OrderPreparing, FoodReady, OrderPicked, OrderDelivered
 
@@ -25,8 +27,8 @@ class StartPreparingService:
             order = Order.objects.select_for_update().get(id=order_id)
             if not order.restaurant:
                 raise ValueError("This order is not associated with a restaurant.")
-            if order.restaurant.owner != actor:
-                raise PermissionError("Only the restaurant owner can start preparing orders.")
+            if not check_restaurant_permission(actor, order.restaurant):
+                raise PermissionError("Only the restaurant owner or staff can prepare orders.")
 
             new_state = OrderFSM.transition(order.status, 'PREPARING')
             order.status = new_state
@@ -47,8 +49,8 @@ class MarkReadyService:
             order = Order.objects.select_for_update().get(id=order_id)
             if not order.restaurant:
                 raise ValueError("This order is not associated with a restaurant.")
-            if order.restaurant.owner != actor:
-                raise PermissionError("Only the restaurant owner can mark orders as ready.")
+            if not check_restaurant_permission(actor, order.restaurant):
+                raise PermissionError("Only the restaurant owner or staff can mark orders as ready.")
 
             new_state = OrderFSM.transition(order.status, 'READY')
             order.status = new_state

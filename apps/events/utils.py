@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 def broadcast_order_status(order_id, status, message="Status updated"):
     from apps.orders.models import Order
+    from apps.restaurants.models import SectionStaff
 
     try:
         order = Order.objects.select_related('restaurant', 'driver').prefetch_related(
@@ -25,6 +26,15 @@ def broadcast_order_status(order_id, status, message="Status updated"):
 
         if order.restaurant:
             channels.append(f'vendors:{order.restaurant.owner_id}')
+            # Also broadcast to all staff users of this restaurant
+            staff_user_ids = (
+                SectionStaff.objects
+                .filter(section__restaurant=order.restaurant)
+                .values_list('user_id', flat=True)
+                .distinct()
+            )
+            for uid in staff_user_ids:
+                channels.append(f'vendors:{uid}')
 
         if order.driver:
             channels.append(f'riders:{order.driver.user_id}')

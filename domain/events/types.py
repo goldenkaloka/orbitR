@@ -181,36 +181,6 @@ class PaymentFailed(DomainEvent):
     event_type = 'PaymentFailed'
 
 @dataclass
-class BatchOffered(DomainEvent):
-    aggregate_type = 'DeliveryBatch'
-    event_type = 'BatchOffered'
-
-@dataclass
-class BatchAccepted(DomainEvent):
-    aggregate_type = 'DeliveryBatch'
-    event_type = 'BatchAccepted'
-
-@dataclass
-class BatchCreated(DomainEvent):
-    aggregate_type = 'DeliveryBatch'
-    event_type = 'BatchCreated'
-
-    def __post_init__(self):
-        self.payload.setdefault('batch_type', 'UNKNOWN')
-        self.payload.setdefault('order_count', 0)
-        self.payload.setdefault('order_ids', [])
-
-@dataclass
-class BatchDeclined(DomainEvent):
-    aggregate_type = 'DeliveryBatch'
-    event_type = 'BatchDeclined'
-
-@dataclass
-class BatchExpired(DomainEvent):
-    aggregate_type = 'DeliveryBatch'
-    event_type = 'BatchExpired'
-
-@dataclass
 class RouteCalculated(DomainEvent):
     aggregate_type = 'DeliveryBatch'
     event_type = 'RouteCalculated'

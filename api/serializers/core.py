@@ -384,16 +384,23 @@ class DriverSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
+    is_platform = serializers.BooleanField(source='serves_all', read_only=True)
+    recommended = serializers.SerializerMethodField()
 
     class Meta:
         model = Driver
-        fields = ['id', 'user', 'status', 'location', 'latitude', 'longitude', 'rating']
+        fields = ['id', 'user', 'status', 'location', 'latitude', 'longitude',
+                  'rating', 'serves_all', 'is_platform', 'can_assign', 'priority',
+                  'max_active_orders', 'current_active_orders', 'recommended']
 
     def get_latitude(self, obj):
         return obj.location.y if obj.location else None
 
     def get_longitude(self, obj):
         return obj.location.x if obj.location else None
+
+    def get_recommended(self, obj):
+        return str(obj.id) == self.context.get('recommended_id', '')
 
 
 

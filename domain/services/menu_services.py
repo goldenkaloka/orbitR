@@ -59,7 +59,12 @@ class MenuService:
                 food = Food.objects.get(id=food_id, section__restaurant__owner=owner_user)
             except Food.DoesNotExist:
                 staff_sec = SectionStaff.objects.filter(user=owner_user).values_list('section_id', flat=True)
-                food = Food.objects.get(id=food_id, section_id__in=list(staff_sec))
+                if not staff_sec:
+                    raise ValueError("You do not have permission to delete this food item")
+                try:
+                    food = Food.objects.get(id=food_id, section_id__in=list(staff_sec))
+                except Food.DoesNotExist:
+                    raise ValueError("Food not found or you do not have permission to delete it")
 
             food_name = food.name
             restaurant_id = food.section.restaurant.id

@@ -5,6 +5,8 @@ from apps.delivery.models import Driver, DeliveryAssignment
 from domain.fsm.order_fsm import OrderFSM
 from domain.fsm.driver_fsm import DriverFSM
 from domain.services.batch_fsm import BatchFSM
+from domain.services.driver_service import release_driver
+from domain.services.permissions import check_restaurant_permission, can_serve_restaurant, can_driver_delegate
 from domain.events.bus import EventBus
 from domain.events.types import DriverAssigned
 from apps.events.utils import broadcast_order_status
@@ -13,6 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class AssignDriverService:
+    """
+    Single-order driver assignment (fallback path).
+    Used by the driver claim-job flow and temp-driver registration
+    when there is no batch or batching is not applicable.
+    """
+
     @staticmethod
     def execute(order_id, driver_id, actor):
         with transaction.atomic():
@@ -21,8 +29,8 @@ class AssignDriverService:
                 raise ValueError("Order already assigned to someone else.")
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
-            if driver.assigned_by_id != order.restaurant_id:
-                raise PermissionError("Driver not assigned to this restaurant.")
+            if not can_serve_restaurant(driver, order.restaurant_id):
+                raise PermissionError("Driver cannot serve this restaurant.")
 
             order.status = OrderFSM.transition(order.status, 'ASSIGNED')
             order.driver = driver
@@ -64,6 +72,13 @@ class AssignBatchService:
                     "expected CREATED, PENDING_DRIVER, or DISPATCHED."
                 )
 
+            # --- Race condition guard: prevent silent overwrite ---
+            if is_reassign and batch.driver and str(batch.driver.id) != str(driver_id):
+                raise ValueError(
+                    f"Batch {batch_id} already has driver '{batch.driver.user.username}' assigned. "
+                    "Refresh and confirm reassignment if you want to change drivers."
+                )
+
             # All sections must be READY before driver can be assigned
             unready = batch.section_statuses.exclude(status='READY').exists()
             if unready:
@@ -72,43 +87,32 @@ class AssignBatchService:
                     "cannot assign driver."
                 )
 
-            # Verify actor is authorized (is restaurant owner or section staff member)
-            from apps.restaurants.models import SectionStaff
-            is_owner = batch.restaurant.owner == actor
-            is_staff = SectionStaff.objects.filter(user=actor, section__restaurant=batch.restaurant).exists()
-            if not is_owner and not is_staff:
+            if not check_restaurant_permission(actor, batch.restaurant) and not can_driver_delegate(actor, batch):
                 raise PermissionError("You are not authorized to assign drivers for this restaurant's batches.")
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
 
-            # Verify driver belongs to the same restaurant as the batch orders
+            # Verify driver can serve this restaurant
             first_order = batch.orders.first()
-            if first_order and driver.assigned_by_id != first_order.restaurant_id:
-                raise PermissionError("Driver can only take orders from their assigned restaurant.")
+            if first_order and not can_serve_restaurant(driver, first_order.restaurant_id):
+                raise PermissionError("Driver cannot serve this restaurant.")
 
             orders = list(batch.orders.all())
             new_order_count = len(orders)
-            
-            # Count unique drop-off locations (physical stops) to allow pool orders
-            unique_stops = len(set(o.h3_index for o in orders if o.h3_index))
-            if unique_stops == 0:
-                unique_stops = new_order_count
 
+            # --- Capacity check uses new_order_count (not unique_stops) to match the increment ---
             current_load = driver.assignments.filter(delivered_at__isnull=True).count()
 
-            if current_load + unique_stops > driver.max_active_orders:
+            if current_load + new_order_count > driver.max_active_orders:
                 raise ValueError(
-                    f"Driver cannot take {unique_stops} more stops. "
+                    f"Driver cannot take {new_order_count} more orders. "
                     f"Current active assignments: {current_load}, Max: {driver.max_active_orders}"
                 )
 
             # --- Release old driver if reassigning ---
             if is_reassign and batch.driver:
-                old_driver = batch.driver
-                old_driver.current_active_orders = max(0, old_driver.current_active_orders - new_order_count)
-                if old_driver.current_active_orders == 0 and old_driver.status == 'DELIVERING':
-                    old_driver.status = 'ONLINE'
-                old_driver.save(update_fields=['current_active_orders', 'status'])
+                old_driver = Driver.objects.select_for_update().get(id=batch.driver.id)
+                release_driver(old_driver, new_order_count)
                 DeliveryAssignment.objects.filter(order__in=orders).delete()
 
             # --- Assign new driver ---
@@ -117,6 +121,9 @@ class AssignBatchService:
             batch.driver = driver
             batch.save(update_fields=['status', 'driver'])
 
+            # Handle OFFLINE driver: transition OFFLINE → AVAILABLE → DELIVERING
+            if driver.status == 'OFFLINE':
+                driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
             if driver.status != 'DELIVERING':
                 driver.status = DriverFSM.transition(driver.status, 'DELIVERING')
             driver.current_active_orders += new_order_count
@@ -124,7 +131,6 @@ class AssignBatchService:
 
             for order in orders:
                 if is_reassign:
-                    # Order may already be dispatched/re-assigned; skip FSM for reassign
                     order.status = 'ASSIGNED'
                 else:
                     order.status = OrderFSM.transition(order.status, 'ASSIGNED')

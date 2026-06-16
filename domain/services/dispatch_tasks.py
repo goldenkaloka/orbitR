@@ -40,7 +40,11 @@ def dispatch_batch_task(batch_id: str):
     Notify restaurants that their batch needs a driver assigned.
     One-shot — no retry needed (restaurants handle driver assignment).
     """
-    from domain.services.batch_dispatch_service import BatchDispatchService
+    from apps.orders.models import DeliveryBatch
+    from apps.restaurants.models import Restaurant
+    from domain.services.batch_fsm import BatchFSM, BatchFSMError
+    from infrastructure.notifications.messages import vendor_need_driver
+    from infrastructure.notifications.channels import default_channel
 
     lock_key = f'dispatch_batch_lock:{batch_id}'
     lock_ttl = 60
@@ -50,12 +54,48 @@ def dispatch_batch_task(batch_id: str):
         return
 
     try:
-        service = BatchDispatchService()
-        result = service.dispatch_batch(str(batch_id))
-        if result:
-            logger.info(f"[dispatch_batch_task] Batch {batch_id} → PENDING_DRIVER, restaurants notified")
-        else:
-            logger.warning(f"[dispatch_batch_task] Batch {batch_id} dispatch returned None")
+        batch = DeliveryBatch.objects.get(id=batch_id)
+        if batch.status != 'CREATED':
+            logger.warning(f"[dispatch_batch_task] Batch {batch_id} is in status '{batch.status}' — expected CREATED")
+            return
+
+        with transaction.atomic():
+            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            if batch.status != 'CREATED':
+                return
+            batch.status = BatchFSM.transition(batch, 'WAIT_FOR_DRIVER')
+            batch.waiting_since = timezone.now()
+            batch.save(update_fields=['status', 'waiting_since'])
+
+        logger.info(f"[dispatch_batch_task] Batch {batch_id} → PENDING_DRIVER. Orders: {batch.orders.count()}")
+
+        restaurant_ids = set(batch.orders.values_list('restaurant_id', flat=True))
+        owners = {
+            r.id: r.owner_id
+            for r in Restaurant.objects.filter(id__in=restaurant_ids)
+            .select_related('owner')
+            .only('id', 'owner_id')
+        }
+        for rid in restaurant_ids:
+            owner_id = owners.get(rid)
+            if not owner_id:
+                continue
+            order_count = batch.orders.filter(restaurant_id=rid).count()
+            if order_count == 0:
+                continue
+            title, body = vendor_need_driver(order_count)
+            default_channel.send_push(
+                user_id=str(owner_id),
+                title=title,
+                body=body,
+                data={
+                    "batch_id": batch_id,
+                    "restaurant_id": str(rid),
+                    "type": "batch_needs_driver",
+                },
+            )
+    except BatchFSMError as exc:
+        logger.error(f"[dispatch_batch_task] FSM error for batch {batch_id}: {exc}")
     except Exception as exc:
         logger.error(f"[dispatch_batch_task] Error dispatching batch {batch_id}: {exc}", exc_info=True)
     finally:

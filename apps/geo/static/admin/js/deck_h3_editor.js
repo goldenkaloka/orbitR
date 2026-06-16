@@ -200,6 +200,41 @@
             mapInstance.setCenter([cellCenter[1], cellCenter[0]]);
         }
 
+        // Load existing OperationalZone boundaries as a semi-transparent reference overlay
+        mapInstance.on('load', function () {
+            fetch('/geo/zones.geojson')
+                .then(function (r) { return r.json(); })
+                .then(function (geojson) {
+                    if (!geojson || !geojson.features || geojson.features.length === 0) return;
+                    mapInstance.addSource('existing-zones', {
+                        type: 'geojson',
+                        data: geojson
+                    });
+                    mapInstance.addLayer({
+                        id: 'existing-zones-fill',
+                        type: 'fill',
+                        source: 'existing-zones',
+                        paint: {
+                            'fill-color': ['get', 'color'],
+                            'fill-opacity': 0.15
+                        }
+                    });
+                    mapInstance.addLayer({
+                        id: 'existing-zones-outline',
+                        type: 'line',
+                        source: 'existing-zones',
+                        paint: {
+                            'line-color': ['get', 'color'],
+                            'line-width': 1.5,
+                            'line-opacity': 0.7
+                        }
+                    });
+                })
+                .catch(function (err) {
+                    console.warn('Failed to load existing zone boundaries as reference:', err);
+                });
+        });
+
         deckInstance = new deck.DeckGL({
             container: mapContainerDiv,
             maplibregl: maplibreGlobal,

@@ -218,14 +218,47 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         response = self.client.post(ready_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        # 3. Assign Driver (Creates DeliveryAssignment)
-        # Using a superuser/admin context if needed, but here vendor owner is fine for test
-        assign_url = f'/api/orders/{order_id}/assign-driver/'
+        # 3. Assign Driver to the Batch (creates DeliveryAssignment)
+        order.refresh_from_db()
+        batch = order.batch
+        self.assertIsNotNone(batch)
+
+        assign_url = f'/api/batches/{batch.id}/assign-driver/'
         response = self.client.post(assign_url, {'driver_id': str(self.driver.id)}, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-        # 4. Driver Pickups Order
+        # Try to delegate without delegation permission (should fail with 403)
         self.client.force_authenticate(user=self.driver_user)
+        second_driver_user = User.objects.create_user(
+            username='driver2',
+            phone='+255700000004',
+            password='password123',
+            role='driver'
+        )
+        second_driver = Driver.objects.create(
+            user=second_driver_user,
+            status='AVAILABLE',
+            location=Point(39.2083, -6.7924)
+        )
+        delegate_url = f'/api/batches/{batch.id}/delegate/'
+        response = self.client.post(delegate_url, {'new_driver_id': str(second_driver.id)}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Grant delegation permission (platform driver status) and delegate successfully
+        self.driver.serves_all = True
+        self.driver.save()
+        
+        response = self.client.post(delegate_url, {'new_driver_id': str(second_driver.id)}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Verify the batch and order are now assigned to the second driver
+        batch.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(batch.driver, second_driver)
+        self.assertEqual(order.driver, second_driver)
+
+        # 4. Driver Pickups Order (authenticate as second_driver)
+        self.client.force_authenticate(user=second_driver_user)
         pickup_url = f'/api/orders/{order_id}/pickup/'
         response = self.client.post(pickup_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)

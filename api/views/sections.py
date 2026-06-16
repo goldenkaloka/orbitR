@@ -9,6 +9,7 @@ from apps.restaurants.models import RestaurantSection, SectionStaff
 from apps.orders.models import BatchSectionStatus
 from api.serializers.core import RestaurantSectionSerializer, BatchSectionStatusSerializer
 from api.views.core import invalidate_restaurant_cache
+from domain.services.permissions import check_restaurant_permission
 
 
 class SectionViewSet(viewsets.ModelViewSet):
@@ -125,7 +126,6 @@ class SectionViewSet(viewsets.ModelViewSet):
                 'staff_id': str(s.id),
                 'user_id': str(s.user.id),
                 'username': s.user.username,
-                'phone': s.user.phone,
             }
             for s in staff_members
         ])
@@ -149,9 +149,7 @@ class BatchSectionStatusViewSet(viewsets.ReadOnlyModelViewSet):
         bss = self.get_object()
         user = request.user
 
-        is_owner = bss.section.restaurant.owner == user
-        is_staff = SectionStaff.objects.filter(user=user, section=bss.section).exists()
-        if not is_owner and not is_staff:
+        if not check_restaurant_permission(user, bss.section.restaurant):
             return Response({'error': 'Not authorized for this section'}, status=403)
 
         if bss.status == 'READY':
@@ -166,6 +164,8 @@ class BatchSectionStatusViewSet(viewsets.ReadOnlyModelViewSet):
             payload = {
                 'section_status': BatchSectionStatusSerializer(bss).data,
                 'batch_all_ready': all_ready,
+                'batch_id': str(batch.id),
+                'restaurant_id': str(batch.restaurant.id) if batch.restaurant else None,
             }
 
         return Response(payload)

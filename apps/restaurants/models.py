@@ -27,7 +27,7 @@ class RestaurantSection(models.Model):
 
 class SectionStaff(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='managed_stalls')
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='section_staff_assignments')
     section = models.ForeignKey(RestaurantSection, on_delete=models.CASCADE, related_name='staff')
 
     class Meta:

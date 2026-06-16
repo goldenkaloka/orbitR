@@ -188,11 +188,15 @@ class FoodViewSet(viewsets.ModelViewSet):
             raise ValidationError(str(e))
 
     def perform_update(self, serializer):
-        if serializer.instance.vendor.owner != self.request.user:
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied('Only the restaurant owner can edit food items')
+        user = self.request.user
+        food = serializer.instance
+        if food.vendor.owner != user:
+            from apps.restaurants.models import SectionStaff
+            if not SectionStaff.objects.filter(user=user, section=food.section).exists():
+                from rest_framework.exceptions import PermissionDenied
+                raise PermissionDenied('Only the restaurant owner or staff can edit food items')
         serializer.save()
-        invalidate_restaurant_cache(serializer.instance.vendor)
+        invalidate_restaurant_cache(food.vendor)
 
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
@@ -205,8 +209,6 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').filter(is_active=True)
-        if getattr(self, "action", None) in ("retrieve", "mine"):
-            pass
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
@@ -271,12 +273,23 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['GET'], url_path='drivers')
     def list_drivers(self, request, pk=None):
-        """List all drivers assigned to this restaurant (owner only)."""
+        """List all drivers visible to this restaurant (platform + assigned).
+        Each driver gets a `recommended` boolean — the best available platform driver
+        (highest priority, has capacity) is pre-selected in the UI.
+        """
+        from domain.services.permissions import check_restaurant_permission, restaurant_visible_drivers
         restaurant = self.get_object()
-        if restaurant.owner != request.user:
-            return Response({'error': 'Only the restaurant owner can view drivers'}, status=403)
-        drivers = restaurant.drivers.select_related('user').all()
-        return Response(DriverSerializer(drivers, many=True).data)
+        if not check_restaurant_permission(request.user, restaurant):
+            return Response({'error': 'Not authorized to view drivers'}, status=403)
+        drivers = restaurant_visible_drivers(restaurant)
+
+        recommended_id = None
+        for d in drivers:
+            if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
+                recommended_id = str(d.id)
+                break
+
+        return Response(DriverSerializer(drivers, many=True, context={'recommended_id': recommended_id}).data)
 
     @action(detail=True, methods=['POST'], url_path='register-temp-driver')
     def register_temp_driver(self, request, pk=None):
@@ -284,13 +297,14 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         Register a user as a temporary driver for this restaurant.
         Body: { user_id }
         """
+        from domain.services.permissions import check_restaurant_permission
         user_id = request.data.get('user_id')
         if not user_id:
             return Response({'error': 'user_id is required'}, status=400)
 
         restaurant = self.get_object()
-        if restaurant.owner != request.user:
-            return Response({'error': 'Only the restaurant owner can register temp drivers'}, status=403)
+        if not check_restaurant_permission(request.user, restaurant):
+            return Response({'error': 'Only the restaurant owner or staff can register temp drivers'}, status=403)
 
         try:
             from domain.services.admin_services import RegisterTempDriverService
@@ -426,7 +440,6 @@ class OrderViewSet(viewsets.ModelViewSet):
         end_of_day = start_of_day + timezone.timedelta(days=1)
         
         user = request.user
-        wallet, _ = Wallet.objects.get_or_create(user=user)
         
         data = {}
         try:
@@ -434,6 +447,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 from apps.restaurants.models import SectionStaff
                 staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
                 if staff_sections.exists():
+                    wallet, _ = Wallet.objects.get_or_create(section=staff_sections.first())
                     orders = Order.objects.filter(
                         items__section_id__in=list(staff_sections),
                         created_at__gte=start_of_day,
@@ -441,6 +455,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                         is_paid=True,
                     ).distinct()
                 else:
+                    wallet, _ = Wallet.objects.get_or_create(user=user)
                     orders = Order.objects.filter(
                         restaurant__owner=user,
                         created_at__gte=start_of_day,
@@ -449,14 +464,37 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
                 revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
                 count = orders.count()
+
+                prep_times = Order.objects.filter(
+                    confirmed_at__isnull=False,
+                    ready_at__isnull=False,
+                    created_at__gte=start_of_day,
+                    created_at__lt=end_of_day,
+                    is_paid=True,
+                ).exclude(
+                    models.Q(ready_at__lte=models.F('confirmed_at'))
+                ).annotate(
+                    prep_duration=models.F('ready_at') - models.F('confirmed_at')
+                ).values_list('prep_duration', flat=True)[:100]
+
+                avg_seconds = 0
+                if prep_times:
+                    total = sum(dt.total_seconds() for dt in prep_times if dt is not None)
+                    avg_seconds = total / len(prep_times)
+
+                avg_minutes = int(avg_seconds // 60)
+                avg_secs = int(avg_seconds % 60)
+                avg_prep = f"{avg_minutes:02d}:{avg_secs:02d}" if avg_seconds > 0 else "—"
+
                 data = {
                     "revenue_today": float(revenue),
                     "orders_today": count,
-                    "avg_prep_time": "08:45",
+                    "avg_prep_time": avg_prep,
                     "wallet_balance": float(wallet.balance),
                     "pending_payout": float(wallet.pending_balance)
                 }
             elif user.role == 'driver':
+                wallet, _ = Wallet.objects.get_or_create(user=user)
                 driver = user.driver_profile
                 orders = Order.objects.filter(
                     driver__user=user,
@@ -494,6 +532,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "total_earnings": float(driver.total_earnings or 0),
                     "today_earnings": float(driver.today_earnings or 0),
                     "rating": float(driver.rating),
+                    "can_assign": driver.can_assign,
                 }
             else:
                 return Response({"error": "Stats not available for this role"}, status=400)
@@ -553,8 +592,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 if order.status != 'READY':
                     return Response({"error": f"Cannot claim job in {order.status} state"}, status=400)
 
-                if not driver.assigned_by_id or driver.assigned_by_id != order.restaurant_id:
-                    return Response({"error": "Driver not assigned to this restaurant"}, status=403)
+                from domain.services.permissions import can_serve_restaurant
+                if not can_serve_restaurant(driver, order.restaurant_id):
+                    return Response({"error": "Driver cannot serve this restaurant"}, status=403)
 
                 if order.batch_id:
                     batch = AssignBatchService.execute(order.batch_id, driver.id, request.user)
@@ -580,10 +620,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         import logging
         _log = logging.getLogger(__name__)
         try:
-            # Security: Manual check if restaurant owner
             order = Order.objects.get(id=pk)
             if order.restaurant.owner != request.user:
-                return Response({"error": "Not authorized to confirm this order"}, status=403)
+                from apps.restaurants.models import SectionStaff
+                if not SectionStaff.objects.filter(user=request.user, section__restaurant=order.restaurant).exists():
+                    return Response({"error": "Not authorized to confirm this order"}, status=403)
                 
             _log.warning("CONFIRM_DEBUG: order=%s status=%s is_paid=%s", pk, order.status, order.is_paid)
             order = ConfirmOrderService.execute(pk, request.user)
@@ -598,11 +639,12 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'], url_path='start-preparing')
     def start_preparing(self, request, pk=None):
         try:
-            # Security: Manual check if restaurant owner
             order = Order.objects.get(id=pk)
             if order.restaurant.owner != request.user:
-                return Response({"error": "Not authorized to prepare this order"}, status=403)
-                
+                from apps.restaurants.models import SectionStaff
+                if not SectionStaff.objects.filter(user=request.user, section__restaurant=order.restaurant).exists():
+                    return Response({"error": "Not authorized to prepare this order"}, status=403)
+
             order = StartPreparingService.execute(pk, request.user)
             return Response(OrderSerializer(order).data)
         except InvalidStateTransitionError as e:
@@ -611,6 +653,11 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def ready(self, request, pk=None):
         try:
+            order = Order.objects.get(id=pk)
+            if order.restaurant.owner != request.user:
+                from apps.restaurants.models import SectionStaff
+                if not SectionStaff.objects.filter(user=request.user, section__restaurant=order.restaurant).exists():
+                    return Response({"error": "Not authorized to mark this order as ready"}, status=403)
             order = MarkReadyService.execute(pk, request.user)
             return Response(OrderSerializer(order).data)
         except InvalidStateTransitionError as e:
@@ -682,9 +729,9 @@ class OrderViewSet(viewsets.ModelViewSet):
         except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=404)
 
-        # Only the restaurant owner can assign temp drivers
-        if request.user.role != 'vendor' or order.restaurant.owner != request.user:
-            return Response({'error': 'Only the restaurant owner can assign temp drivers'}, status=403)
+        from domain.services.permissions import check_restaurant_permission
+        if not check_restaurant_permission(request.user, order.restaurant):
+            return Response({'error': 'Only the restaurant owner or staff can assign temp drivers'}, status=403)
 
         if order.status != 'READY':
             return Response({'error': 'Can only assign drivers to READY orders'}, status=400)

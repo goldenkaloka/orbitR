@@ -1,11 +1,18 @@
+import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from apps.orders.models import DeliveryBatch, Order
-from api.serializers.core import OrderSerializer
+from apps.delivery.models import Driver
+from api.serializers.core import OrderSerializer, DriverSerializer
 from domain.services.orders.order_assignment import AssignBatchService
+from domain.services.permissions import can_driver_delegate, can_serve_restaurant
+from infrastructure.notifications.messages import batch_delegated_to_vendor, batch_delegated_to_driver
+from infrastructure.notifications.service import NotificationService
+
+logger = logging.getLogger(__name__)
 
 
 class BatchViewSet(viewsets.ViewSet):
@@ -41,7 +48,7 @@ class BatchViewSet(viewsets.ViewSet):
     @action(detail=True, methods=['post'], url_path='assign-driver')
     def assign_driver(self, request, pk=None):
         """Restaurant owner or stall manager assigns a driver to a batch."""
-        if request.user.role not in ('vendor',):
+        if request.user.serialized_role not in ('vendor', 'vendor_staff'):
             return Response({'error': 'Only vendors or stall managers can assign drivers'}, status=403)
 
         driver_id = request.data.get('driver_id')
@@ -60,6 +67,110 @@ class BatchViewSet(viewsets.ViewSet):
             return Response({'error': str(e)}, status=403)
         except Exception as e:
             return Response({'error': f'Failed to assign driver: {str(e)}'}, status=400)
+
+    @action(detail=True, methods=['get'], url_path='delegate-candidates')
+    def delegate_candidates(self, request, pk=None):
+        """List drivers eligible for delegation (visible to the currently assigned driver)."""
+        try:
+            batch = DeliveryBatch.objects.get(id=pk)
+        except DeliveryBatch.DoesNotExist:
+            return Response({'error': 'Batch not found'}, status=404)
+
+        if not can_driver_delegate(request.user, batch):
+            return Response({'error': 'Only the assigned driver with delegation permissions can delegate'}, status=403)
+
+        first_order = batch.orders.first()
+        if not first_order:
+            return Response({'error': 'Batch has no orders'}, status=400)
+
+        from domain.services.permissions import restaurant_visible_drivers
+        drivers = restaurant_visible_drivers(first_order.restaurant)
+        available = [
+            d for d in drivers
+            if d.id != batch.driver.id
+            and d.status in ('AVAILABLE', 'ONLINE')
+            and d.current_active_orders < d.max_active_orders
+        ]
+        return Response(DriverSerializer(available, many=True).data)
+
+    @action(detail=True, methods=['post'], url_path='delegate')
+    def delegate(self, request, pk=None):
+        """
+        Currently assigned driver delegates this batch to another driver.
+        Body: { new_driver_id }
+        The restaurant owner is notified of the change.
+        """
+        new_driver_id = request.data.get('new_driver_id')
+        if not new_driver_id:
+            return Response({'error': 'new_driver_id is required'}, status=400)
+
+        try:
+            batch = DeliveryBatch.objects.get(id=pk)
+        except DeliveryBatch.DoesNotExist:
+            return Response({'error': 'Batch not found'}, status=404)
+
+        # Verify the acting driver is allowed to delegate
+        if not can_driver_delegate(request.user, batch):
+            return Response({
+                'error': 'Only the currently assigned driver with delegation permission (can_assign=True) can delegate this batch.'
+            }, status=403)
+
+        old_driver = batch.driver
+        old_driver_name = old_driver.user.username if old_driver else 'Unknown'
+
+        try:
+            batch = AssignBatchService.execute(str(pk), str(new_driver_id), request.user)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=400)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
+
+        # ── Notify the restaurant owner about the delegation ──
+        new_driver = batch.driver
+        new_driver_name = new_driver.user.username if new_driver else 'Unknown'
+        first_order = batch.orders.first()
+        restaurant_owner_id = str(first_order.restaurant.owner.id) if first_order else None
+
+        if restaurant_owner_id:
+            batch_short = str(batch.id)[:8].upper()
+            v_title, v_body = batch_delegated_to_vendor(batch_short, old_driver_name, new_driver_name)
+            NotificationService.send_push(
+                user_id=restaurant_owner_id,
+                title=v_title,
+                body=v_body,
+                data={
+                    "batch_id": str(batch.id),
+                    "type": "batch_delegated",
+                    "old_driver_name": old_driver_name,
+                    "new_driver_name": new_driver_name,
+                },
+            )
+
+            # Also notify via WebSocket
+            from apps.events.utils import broadcast_order_status
+            for order in batch.orders.all():
+                broadcast_order_status(str(order.id), 'ASSIGNED')
+
+        # ── Notify the new driver ──
+        if new_driver and first_order:
+            d_title, d_body = batch_delegated_to_driver(batch_short, first_order.restaurant.name)
+            NotificationService.send_push(
+                user_id=str(new_driver.user.id),
+                title=d_title,
+                body=d_body,
+                data={
+                    "batch_id": str(batch.id),
+                    "type": "batch_delegated_to_you",
+                },
+            )
+
+        logger.info(f"Batch {batch.id} delegated from {old_driver_name} to {new_driver_name}")
+
+        orders = batch.orders.all()
+        return Response({
+            'message': f'Batch delegated to {new_driver_name}',
+            'orders': OrderSerializer(orders, many=True).data,
+        })
 
     @action(detail=True, methods=['get'], url_path='metadata')
     def batch_metadata(self, request, pk=None):

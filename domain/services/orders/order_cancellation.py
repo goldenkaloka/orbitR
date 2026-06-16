@@ -3,7 +3,7 @@ from django.db import transaction
 from apps.orders.models import Order
 from apps.delivery.models import DeliveryAssignment
 from domain.fsm.order_fsm import OrderFSM
-from domain.fsm.driver_fsm import DriverFSM
+from domain.services.driver_service import release_driver
 from domain.events.bus import EventBus
 from domain.events.types import OrderCancelled
 from domain.services.payment_services import RefundPaymentService
@@ -39,18 +39,7 @@ class CancelOrderService:
                 RefundPaymentService.execute('order', order.id)
 
             if order.driver:
-                # Only return the driver to AVAILABLE if they have no other active deliveries
-                active_orders_count = Order.objects.filter(
-                    driver=order.driver, status__in=['ASSIGNED', 'PICKED']
-                ).exclude(id=order.id).count()
-                if active_orders_count == 0:
-                    order.driver.status = DriverFSM.transition(
-                        order.driver.status, 'AVAILABLE'
-                    )
-                order.driver.current_active_orders = max(
-                    0, order.driver.current_active_orders - 1
-                )
-                order.driver.save(update_fields=['status', 'current_active_orders'])
+                release_driver(order.driver, 1)
                 DeliveryAssignment.objects.filter(order=order).delete()
 
             order.save()

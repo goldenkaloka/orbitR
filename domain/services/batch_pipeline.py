@@ -476,8 +476,11 @@ class BatchPipeline:
         if route_dict and route_dict.get('total_distance_km'):
             route_distance = Decimal(str(route_dict['total_distance_km']))
 
+        first_restaurant_id = locked_orders[0].restaurant_id
+
         batch = DeliveryBatch.objects.create(
             batch_type=batch_type,
+            restaurant_id=first_restaurant_id,
             status='CREATED',
             route_optimization=route_dict,
             route_distance_km=route_distance,
@@ -684,6 +687,7 @@ class BatchPipeline:
 
         batch = DeliveryBatch.objects.create(
             batch_type='SINGLE_ORDER',
+            restaurant_id=locked_order.restaurant_id,
             status='CREATED',
             route_optimization=route_dict,
             route_distance_km=route_distance,

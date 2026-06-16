@@ -14,10 +14,31 @@ class Driver(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
     status = models.CharField(max_length=50, default='OFFLINE', db_index=True)
     last_heartbeat = models.DateTimeField(null=True, blank=True, db_index=True)
-    assigned_by = models.ForeignKey(
+    home_restaurant = models.ForeignKey(
         'restaurants.Restaurant', on_delete=models.CASCADE,
         related_name='drivers', null=True, blank=True,
-        help_text='Restaurant that owns this driver'
+        help_text='Home restaurant this driver is affiliated with'
+    )
+    serves_all = models.BooleanField(
+        default=False,
+        help_text='Platform driver — can serve orders from any restaurant'
+    )
+    can_assign = models.BooleanField(
+        default=False,
+        help_text='Can assign other drivers to batches'
+    )
+    managed_by = models.ForeignKey(
+        'self', on_delete=models.SET_NULL,
+        null=True, blank=True,
+        help_text='Supervisor driver who manages this driver'
+    )
+    priority = models.IntegerField(
+        default=0,
+        help_text='Higher priority = chosen first for dispatch, shown first in lists'
+    )
+    max_radius_km = models.DecimalField(
+        max_digits=5, decimal_places=1, default=15.0,
+        help_text='Maximum km from current location the driver will travel'
     )
 
     # PostGIS Location Field
