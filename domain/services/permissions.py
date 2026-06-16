@@ -13,9 +13,30 @@ def can_serve_restaurant(driver, restaurant_id):
 
 def restaurant_visible_drivers(restaurant):
     from apps.delivery.models import Driver
-    return Driver.objects.filter(
+    from apps.core.geo_utils import get_neighbors
+    from django.db.models import Case, When, Value, IntegerField
+
+    # Get neighbors (k=1 covers immediate surrounding cell hexes)
+    neighbor_cells = []
+    if restaurant.h3_index:
+        neighbor_cells = get_neighbors(restaurant.h3_index, k=1)
+
+    queryset = Driver.objects.filter(
         models.Q(home_restaurant=restaurant) | models.Q(serves_all=True)
-    ).select_related('user').order_by('-priority')
+    ).select_related('user')
+
+    if neighbor_cells:
+        queryset = queryset.annotate(
+            is_nearby=Case(
+                When(h3_index__in=neighbor_cells, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            )
+        ).order_by('-is_nearby', '-priority')
+    else:
+        queryset = queryset.order_by('-priority')
+
+    return queryset
 
 
 def can_driver_delegate(actor, batch):

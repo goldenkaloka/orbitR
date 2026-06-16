@@ -530,4 +530,54 @@ def expire_stale_picked_orders_task():
         )
 
 
+@shared_task(name='domain.services.dispatch_tasks.auto_assign_pending_batches_task')
+def auto_assign_pending_batches_task():
+    """
+    Finds batches in PENDING_DRIVER status for more than 3 minutes (180 seconds)
+    and automatically assigns them to the highest-priority, available platform driver.
+    """
+    from apps.orders.models import DeliveryBatch
+    from domain.services.permissions import restaurant_visible_drivers
+    from domain.services.orders.order_assignment import AssignBatchService
+
+    cutoff = timezone.now() - timedelta(minutes=3)
+
+    system_user, _ = User.objects.get_or_create(
+        username='system_dispatcher',
+        defaults={'role': 'admin', 'is_staff': True},
+    )
+
+    pending_batches = DeliveryBatch.objects.filter(
+        status='PENDING_DRIVER',
+        waiting_since__lt=cutoff
+    )
+
+    assigned_count = 0
+    for batch in pending_batches:
+        try:
+            # Find the best available platform driver for this restaurant
+            drivers = restaurant_visible_drivers(batch.restaurant)
+            recommended_driver = None
+            for d in drivers:
+                if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
+                    recommended_driver = d
+                    break
+            
+            if recommended_driver:
+                AssignBatchService.execute(
+                    batch_id=str(batch.id),
+                    driver_id=str(recommended_driver.id),
+                    actor=system_user
+                )
+                assigned_count += 1
+                logger.info(f"[AutoAssign] Automatically assigned driver {recommended_driver.user.username} to batch {batch.id}")
+            else:
+                logger.warning(f"[AutoAssign] No available platform driver found for batch {batch.id}")
+        except Exception as exc:
+            logger.error(f"[AutoAssign] Failed to auto-assign batch {batch.id}: {exc}")
+
+    if assigned_count:
+        logger.info(f"[AutoAssign] Automatically assigned {assigned_count} pending batches.")
+
+
 
