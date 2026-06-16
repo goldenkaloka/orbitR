@@ -447,7 +447,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 from apps.restaurants.models import SectionStaff
                 staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
                 if staff_sections.exists():
-                    wallet, _ = Wallet.objects.get_or_create(section=staff_sections.first())
+                    wallet, _ = Wallet.objects.get_or_create(section_id=staff_sections.first())
                     orders = Order.objects.filter(
                         items__section_id__in=list(staff_sections),
                         created_at__gte=start_of_day,
