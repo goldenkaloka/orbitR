@@ -167,6 +167,7 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
                 "success": True,
                 "payment_id": str(payment.id),
                 "status": payment.status,
+                "is_push": result.get('is_push', False),
                 **gateway_data
             })
         except PoolMember.DoesNotExist:
