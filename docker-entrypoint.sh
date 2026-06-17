@@ -42,7 +42,7 @@ fi
 # The volume mount .:/app may overlay host directories owned by root,
 # preventing the non-root django user from writing at import time.
 mkdir -p /app/logs
-chown django:django /app/logs
+chown -R django:django /app/logs
 find /app -path '*/migrations' -type d -exec chown django:django {} +
 find /app -path '*/migrations' -type f -exec chown django:django {} +
 
