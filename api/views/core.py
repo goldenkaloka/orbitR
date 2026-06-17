@@ -722,6 +722,19 @@ class OrderViewSet(viewsets.ModelViewSet):
         except Exception as e:
             return Response({"error": str(e)}, status=500)
 
+    @action(detail=True, methods=['POST'])
+    def cancel(self, request, pk=None):
+        try:
+            from domain.services.order_services import CancelOrderService
+            order = CancelOrderService.execute(pk, request.user, reason=request.data.get('reason', 'Cancelled by customer'))
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (InvalidStateTransitionError, ValueError) as e:
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
     @action(detail=True, methods=['POST'], url_path='assign-temp-driver')
     def assign_temp_driver(self, request, pk=None):
         """

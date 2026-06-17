@@ -19,7 +19,7 @@ class CancelOrderService:
 
             # Role-based validation
             if actor.role == 'customer' and order.customer == actor:
-                if order.status not in ['CREATED', 'CONFIRMED']:
+                if order.status not in ['PENDING_PAYMENT', 'CREATED', 'CONFIRMED']:
                     raise PermissionError("Cannot cancel after preparation started.")
             elif actor.role == 'vendor':
                 if order.restaurant.owner != actor:
