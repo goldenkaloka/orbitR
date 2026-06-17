@@ -22,7 +22,7 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             status__in=['OPEN', 'LOCKED', 'PAID', 'READY', 'DISPATCHING', 'DELIVERING']
         ).distinct().prefetch_related(
             'members', 'members__user',
-            'restaurant__foods',
+            'restaurant__sections__foods',
             'final_orders',
         )
 
@@ -205,7 +205,7 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         from django.utils import timezone
         queryset = OrderPool.objects.filter(status='OPEN', expires_at__gt=timezone.now()).prefetch_related(
             'members', 'members__user',
-            'restaurant__foods',
+            'restaurant__sections__foods',
             'final_orders',
         )
         
