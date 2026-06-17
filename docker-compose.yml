@@ -103,7 +103,7 @@ services:
     env_file:
       - .env
     environment: *env
-    command: gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 4
+    command: gunicorn config.wsgi:application -b 0.0.0.0:8000 --workers 4 --timeout 120 --keep-alive 5
     depends_on:
       db:
         condition: service_healthy
