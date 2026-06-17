@@ -147,6 +147,7 @@ class OrderSerializer(serializers.ModelSerializer):
     # Pre-fetched route geometry embedded in the order response so the client
     # never needs a second HTTP round-trip to Mapbox Directions on page open.
     route_geometry = serializers.SerializerMethodField()
+    payment_status = serializers.ReadOnlyField(source='payment.status')
 
     rider_name = serializers.ReadOnlyField(source='driver.user.username')
     rider_phone = serializers.ReadOnlyField(source='driver.user.phone')
@@ -170,7 +171,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone',
             'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
-            'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry',
+            'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry', 'payment_status',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
