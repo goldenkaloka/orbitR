@@ -651,32 +651,25 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "formatter": "default",
         },
-        "file": {
-            "class": "logging.handlers.RotatingFileHandler",
-            "filename": BASE_DIR / "logs" / "mwanachuo.log",
-            "maxBytes": 10485760,
-            "backupCount": 5,
-            "formatter": "default",
-        },
     },
     "loggers": {
         "django": {
-            "handlers": ["console", "file"],
+            "handlers": ["console"],
             "level": config("DJANGO_LOG_LEVEL", default="INFO"),
             "propagate": False,
         },
         "django.request": {
-            "handlers": ["console", "file"],
+            "handlers": ["console"],
             "level": "ERROR",
             "propagate": False,
         },
         "perf.request": {
-            "handlers": ["console", "file"],
+            "handlers": ["console"],
             "level": config("PERF_REQUEST_LOG_LEVEL", default="WARNING"),
             "propagate": False,
         },
         "perf.celery": {
-            "handlers": ["console", "file"],
+            "handlers": ["console"],
             "level": config("PERF_CELERY_LOG_LEVEL", default="INFO"),
             "propagate": False,
         },
