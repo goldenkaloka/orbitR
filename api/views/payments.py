@@ -46,14 +46,30 @@ class InitiatePaymentView(APIView):
             
             payment = result['payment']
             gateway_data = result.get('gateway_response', {})
-            
-            return Response({
-                "success": True,
+
+            push_sent = gateway_data.get('success', False)
+
+            base_response = {
+                "success": push_sent,
                 "payment_id": str(payment.id),
                 "status": payment.status,
                 "is_push": result.get('is_push', False),
-                **gateway_data
-            })
+            }
+
+            if push_sent:
+                base_response["provider_reference"] = gateway_data.get('provider_reference')
+                base_response["message"] = gateway_data.get('message')
+                base_response["raw_data"] = gateway_data.get('raw_data')
+                base_response["instant_success"] = gateway_data.get('instant_success')
+                if gateway_data.get('params'):
+                    base_response["params"] = gateway_data['params']
+                if gateway_data.get('endpoint'):
+                    base_response["endpoint"] = gateway_data['endpoint']
+            else:
+                base_response["error"] = gateway_data.get('error', 'Payment initiation failed')
+                base_response["code"] = gateway_data.get('code')
+
+            return Response(base_response)
         except Exception as e:
             return Response({"error": str(e)}, status=400)
 

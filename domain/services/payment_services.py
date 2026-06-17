@@ -106,7 +106,7 @@ class InitiatePaymentService:
             return {
                 'payment': payment,
                 'gateway_response': response,
-                'is_push': not response.get('instant_success')
+                'is_push': response.get('success') and not response.get('instant_success')
             }
 
 class CompletePaymentService:
