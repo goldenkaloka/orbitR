@@ -35,6 +35,12 @@ class CancelOrderService:
             new_state = OrderFSM.transition(order.status, 'CANCELLED')
             order.status = new_state
 
+            if hasattr(order, 'payment') and order.payment:
+                from domain.fsm.payment_fsm import PaymentFSM
+                if order.payment.status in ['INITIATED', 'INPROCESS']:
+                    order.payment.status = PaymentFSM.transition(order.payment.status, 'FAILED')
+                    order.payment.save(update_fields=['status'])
+
             if order.is_paid:
                 RefundPaymentService.execute('order', order.id)
 

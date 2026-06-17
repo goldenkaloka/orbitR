@@ -8,15 +8,14 @@ from infrastructure.payment_gateways.airpay_utils import AirpayTransformer
 from django.conf import settings
 import logging
 import json
+import os
 import hashlib
 import hmac
 
 logger = logging.getLogger(__name__)
 
 # Airpay known server IPs (update as provided by Airpay)
-AIRPAY_ALLOWED_IPS = getattr(settings, 'AIRPAY_ALLOWED_IPS', [
-    '41.59.0.0/16',    # Airpay Tanzania IP range placeholder
-])
+AIRPAY_ALLOWED_IPS = (os.getenv('AIRPAY_ALLOWED_IPS') or '41.59.0.0/16').split(',')
 
 class InitiatePaymentView(APIView):
     """

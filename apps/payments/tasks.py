@@ -56,7 +56,8 @@ def retry_failed_payouts():
 @shared_task(name='apps.payments.tasks.cleanup_expired_payments')
 def cleanup_expired_payments():
     """
-    Cancel payments that have been stuck in INITIATED for more than 30 mins.
+    Cancel payments stuck in INITIATED or INPROCESS for more than 5 mins
+    (USSD push timeout is ~120s, so 5min is a generous safety net).
     Before cancelling, poll the payment gateway status. If it was completed, recover it.
     """
     from apps.payments.models import Payment
@@ -65,8 +66,8 @@ def cleanup_expired_payments():
     from infrastructure.payment_gateways.factory import get_payment_gateway
     from domain.services.payment_services import CompletePaymentService
     
-    expiry_time = timezone.now() - timedelta(minutes=30)
-    stuck_payments = Payment.objects.filter(status='INITIATED', created_at__lt=expiry_time)
+    expiry_time = timezone.now() - timedelta(minutes=5)
+    stuck_payments = Payment.objects.filter(status__in=['INITIATED', 'INPROCESS'], created_at__lt=expiry_time)
     
     expired_count = 0
     recovered_count = 0

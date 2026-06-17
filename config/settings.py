@@ -562,9 +562,9 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.payments.tasks.retry_failed_payouts',
         'schedule': crontab(minute='*/15'),
     },
-    'cleanup-expired-payments-hourly': {
+    'cleanup-expired-payments': {
         'task': 'apps.payments.tasks.cleanup_expired_payments',
-        'schedule': crontab(minute=0, hour='*'),
+        'schedule': crontab(minute='*/2'),
     },
     'recover-stuck-pools-hourly': {
         'task': 'domain.services.dispatch_tasks.recover_stuck_pools_task',
