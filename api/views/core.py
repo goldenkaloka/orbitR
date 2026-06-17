@@ -59,10 +59,11 @@ def build_restaurant_mine_data(user):
         data = RestaurantSerializer(restaurant).data
         data['staff_section_ids'] = []
     else:
-        staff_section_ids = list(SectionStaff.objects.filter(user=user).values_list('section_id', flat=True))
+        staff_section_ids = set(SectionStaff.objects.filter(user=user).values_list('section_id', flat=True))
         data = RestaurantSerializer(restaurant).data
-        data['foods'] = [f for f in data.get('foods', []) if f.get('section') in staff_section_ids or f.get('section') is None]
-        data['staff_section_ids'] = [str(sid) for sid in staff_section_ids]
+        str_staff_section_ids = {str(sid) for sid in staff_section_ids}
+        data['foods'] = [f for f in data.get('foods', []) if str(f.get('section')) in str_staff_section_ids or f.get('section') is None]
+        data['staff_section_ids'] = list(str_staff_section_ids)
 
     data['is_owner'] = is_owner
 
