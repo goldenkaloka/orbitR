@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('products', '0004_trigram_index'),
-        ('restaurants', '0012_restaurant_average_prep_time'),
+        ('restaurants', '0014_restaurantsection_sectionstaff'),
     ]
 
     operations = [
