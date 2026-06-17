@@ -1,11 +1,10 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import BasePermission, IsAuthenticated
 
 from api.serializers.core import DriverSerializer, DeliveryProofSerializer
 from apps.delivery.models import Driver, DeliveryProof
-
 from domain.fsm.driver_fsm import DriverFSM
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, haversine_distance
 from django.contrib.gis.geos import Point
@@ -14,10 +13,17 @@ from django.utils import timezone
 from apps.orders.models import Order
 import math
 
+
+class IsDriver(BasePermission):
+    message = "User has no driver profile"
+
+    def has_permission(self, request, view):
+        return hasattr(request.user, 'driver_profile')
+
 class DriverViewSet(viewsets.ModelViewSet):
     queryset = Driver.objects.all()
     serializer_class = DriverSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsDriver]
 
     def get_queryset(self):
         if self.request.user.role == 'driver':
@@ -144,7 +150,7 @@ class DriverViewSet(viewsets.ModelViewSet):
 class DeliveryProofViewSet(viewsets.ModelViewSet):
     queryset = DeliveryProof.objects.all()
     serializer_class = DeliveryProofSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsDriver]
 
     def perform_create(self, serializer):
         # Ensure only the assigned driver can submit proof
