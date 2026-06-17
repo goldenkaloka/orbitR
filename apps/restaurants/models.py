@@ -87,5 +87,16 @@ class Restaurant(models.Model):
         super().save(*args, **kwargs)
 
 
+    @property
+    def foods(self):
+        from apps.products.models import Food
+        # Performance: Reuse prefetch cache of sections__foods if available to prevent N+1 queries
+        if hasattr(self, '_prefetched_objects_cache') and 'sections' in self._prefetched_objects_cache:
+            foods_list = []
+            for section in self.sections.all():
+                foods_list.extend(section.foods.all())
+            return foods_list
+        return Food.objects.filter(section__restaurant=self)
+
     def __str__(self):
         return self.name
