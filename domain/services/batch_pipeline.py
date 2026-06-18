@@ -42,7 +42,7 @@ NEIGHBOR_RING_K = 3         # H3 rings to expand from delivery cell for clusteri
 CLUSTER_RESOLUTION = 9      # fine resolution for delivery-proximity clustering
 MAX_2OPT_ITERATIONS = 20    # hard cap — prevents unbounded loops inside transactions
 CLUSTER_RING_K = 2          # H3 rings for delivery-proximity clustering
-SINGLE_ORDER_GRACE_SECONDS = 30  # how long a lone order waits before getting its own batch
+SINGLE_ORDER_GRACE_SECONDS = 15  # how long a lone order waits before getting its own batch
 
 # Fallback route estimation constants
 TRAVEL_TIME_PER_KM = 3      # minutes per km

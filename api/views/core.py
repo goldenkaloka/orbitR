@@ -128,15 +128,16 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['GET'])
     def search(self, request):
         query = request.query_params.get('q', '')
+        role = request.query_params.get('role')
         if len(query) < 3:
             return Response([])
         
         # Optimize for "billions": istartswith is faster than icontains on indexed fields
         # Also limit results and only return relevant fields if necessary
-        users = User.objects.filter(
-            models.Q(username__icontains=query) | 
-            models.Q(phone__istartswith=query)
-        ).only('id', 'username', 'phone', 'role').order_by('username')[:10]
+        filters = models.Q(username__icontains=query) | models.Q(phone__istartswith=query)
+        if role:
+            filters &= models.Q(role=role)
+        users = User.objects.filter(filters).only('id', 'username', 'phone', 'role').order_by('username')[:10]
         
         serializer = self.get_serializer(users, many=True)
         return Response(serializer.data)

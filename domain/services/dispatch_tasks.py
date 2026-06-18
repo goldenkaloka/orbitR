@@ -94,6 +94,27 @@ def dispatch_batch_task(batch_id: str):
                     "type": "batch_needs_driver",
                 },
             )
+
+            # Also notify stall staff whose sections are in this batch
+            from apps.restaurants.models import SectionStaff
+            section_ids = batch.section_statuses.filter(
+                section__restaurant_id=rid
+            ).values_list('section_id', flat=True)
+            staff_users = list(
+                SectionStaff.objects.filter(section_id__in=section_ids)
+                .select_related('user')
+            )
+            for staff in staff_users:
+                default_channel.send_push(
+                    user_id=str(staff.user.id),
+                    title=title,
+                    body=body,
+                    data={
+                        "batch_id": batch_id,
+                        "restaurant_id": str(rid),
+                        "type": "batch_needs_driver",
+                    },
+                )
     except BatchFSMError as exc:
         logger.error(f"[dispatch_batch_task] FSM error for batch {batch_id}: {exc}")
     except Exception as exc:

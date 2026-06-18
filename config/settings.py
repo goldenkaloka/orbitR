@@ -595,9 +595,9 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(minute='*/10'),
     },
 
-    'batch-poll-every-30-seconds': {
+    'batch-poll-every-15-seconds': {
         'task': 'domain.services.dispatch_tasks.batch_poll_task',
-        'schedule': 30.0,
+        'schedule': 15.0,
     },
     'auto-assign-pending-batches-every-minute': {
         'task': 'domain.services.dispatch_tasks.auto_assign_pending_batches_task',
