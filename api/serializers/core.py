@@ -20,9 +20,24 @@ class NotificationSerializer(serializers.ModelSerializer):
 
 
 class UserSerializer(serializers.ModelSerializer):
+    is_driver = serializers.SerializerMethodField()
+    driver_id = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'phone', 'role']
+        fields = ['id', 'username', 'email', 'phone', 'role', 'is_driver', 'driver_id']
+
+    def get_is_driver(self, obj):
+        from apps.delivery.models import Driver
+        return Driver.objects.filter(user=obj).exists()
+
+    def get_driver_id(self, obj):
+        from apps.delivery.models import Driver
+        try:
+            driver = Driver.objects.only('id').get(user=obj)
+            return str(driver.id)
+        except Driver.DoesNotExist:
+            return None
 
 class FoodSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()

@@ -226,7 +226,7 @@ class RegisterTempDriverService:
             )
 
             if not created:
-                raise ValueError('This user is already a driver')
+                return driver
 
             if user.role == 'customer':
                 user.role = 'driver'
