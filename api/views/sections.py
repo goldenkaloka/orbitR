@@ -168,4 +168,9 @@ class BatchSectionStatusViewSet(viewsets.ReadOnlyModelViewSet):
                 'restaurant_id': str(batch.restaurant.id) if batch.restaurant else None,
             }
 
+        # Trigger batch progression checks outside the transaction
+        from domain.services.batch_pipeline import BatchPipeline
+        BatchPipeline._check_all_sections_ready(batch)
+        BatchPipeline._try_pre_assign(batch)
+
         return Response(payload)

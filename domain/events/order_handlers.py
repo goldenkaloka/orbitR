@@ -123,30 +123,43 @@ def _notify_order_event(event):
     fire_order_webhook.delay(event.event_type, payload)
 
 
-def on_food_ready_cross_batching(event):
+def on_order_confirmed(event):
+    """
+    When an order is confirmed by the restaurant, add it to an ACCUMULATING
+    batch or create a new one. This is the primary batching trigger.
+    """
     from apps.orders.models import Order
     from domain.services.batch_pipeline import BatchPipeline
-    from domain.services.dispatch_tasks import dispatch_order_task
 
     try:
         order = Order.objects.select_related('restaurant').get(id=event.aggregate_id)
         if getattr(order, 'is_pool_order', False):
+            logger.info(f"[OrderHandler] Order {order.id} is pool order — skipping batch join")
             return
 
-        batched = False
-        if order.h3_index:
-            result = BatchPipeline.run(order)
-            if result:
-                logger.info(f"Batching succeeded: created {result.batch_type} batch {result.id} for order {order.id}")
-                batched = True
-            else:
-                logger.info(f"No batch created for order {order.id} — falling back to direct dispatch")
-
-        if not batched:
-            logger.info(f"Direct dispatch triggered for order {order.id}")
-            dispatch_order_task.delay(str(order.id))
+        batch = BatchPipeline.on_order_confirmed(order)
+        if batch:
+            logger.info(f"[OrderHandler] Order {order.id} → batch {batch.id} (status={batch.status})")
+        else:
+            logger.warning(f"[OrderHandler] Failed to create/join batch for order {order.id}")
     except Exception as e:
-        logger.error(f"Error in batching handler: {str(e)}")
+        logger.error(f"[OrderHandler] Error in batch-on-confirmed handler: {str(e)}")
+
+
+def on_food_ready(event):
+    """
+    When an order is marked READY (cooked), auto-update section statuses
+    and advance the batch lifecycle.
+    """
+    from apps.orders.models import Order
+    from domain.services.batch_pipeline import BatchPipeline
+
+    try:
+        order = Order.objects.select_related('restaurant').get(id=event.aggregate_id)
+        BatchPipeline.on_order_marked_ready(order)
+        logger.info(f"[OrderHandler] Auto section-update for order {order.id} in batch {order.batch_id}")
+    except Exception as e:
+        logger.error(f"[OrderHandler] Error in food-ready handler: {str(e)}")
 
 
 def on_order_delivered(event):
@@ -241,4 +254,7 @@ def register_handlers():
 
     EventBus.subscribe(OrderDelivered, on_order_delivered)
     EventBus.subscribe(DispatchFailed, on_dispatch_failed)
-    EventBus.subscribe(FoodReady, on_food_ready_cross_batching)
+
+    # New batching lifecycle handlers
+    EventBus.subscribe(OrderConfirmed, on_order_confirmed)
+    EventBus.subscribe(FoodReady, on_food_ready)

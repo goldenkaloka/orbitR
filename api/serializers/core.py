@@ -94,7 +94,7 @@ class BatchSectionStatusSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BatchSectionStatus
-        fields = ['id', 'section', 'section_name', 'section_specialization', 'status', 'updated_at']
+        fields = ['id', 'batch', 'section', 'section_name', 'section_specialization', 'status', 'estimated_ready_at', 'started_prepping_at', 'updated_at']
         read_only_fields = ['id', 'section', 'section_name', 'section_specialization', 'updated_at']
 
 

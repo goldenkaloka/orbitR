@@ -31,29 +31,11 @@ class PlaceOrderService:
         if delivery_location:
             delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
             
-            # --- Gate 1: OperationalZone check ---
-            op_zone = ZoneH3Index.objects.filter(
-                h3_index=delivery_h3,
-                resolution=ZONE_RESOLUTION,
-                zone__is_active=True
-            ).exists()
-
-            if not op_zone:
-                raise ValueError("Delivery location is not within an operational zone.")
+            # --- Gate 1: OperationalZone check (Bypassed) ---
+            # op_zone = ZoneH3Index.objects.filter(...)
             
-            # --- Gate 2: Restaurant delivery radius check ---
-            if restaurant.geo_location:
-                restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
-                if restaurant_h3 and delivery_h3:
-                    r_lat, r_lng = h3.cell_to_latlng(restaurant_h3)
-                    d_lat, d_lng = h3.cell_to_latlng(delivery_h3)
-                    distance_km = h3.great_circle_distance((r_lat, r_lng), (d_lat, d_lng))
-                    
-                    if distance_km > restaurant.max_delivery_radius_km:
-                        raise ValueError(
-                            f"{restaurant.name} does not deliver beyond {restaurant.max_delivery_radius_km}km. "
-                            f"Your location is {distance_km:.1f}km away."
-                        )
+            # --- Gate 2: Restaurant delivery radius check (Bypassed for limitless delivery) ---
+            # We bypass the max_delivery_radius_km check so delivery can happen anywhere.
         
         # Calculate dynamic delivery and service fees
         dynamic_fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)

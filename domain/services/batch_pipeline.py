@@ -1,536 +1,451 @@
 """
-BatchPipeline — Single, unified batching entry point.
+BatchPipeline — New order-time batching system.
 
-Replaces: BatchingEngine, BatchingService.
-
-Pipeline steps:
-  1. Zone check  — order must be inside an active operational zone
-  2. Zone lock   — Redis lock scoped to the zone (not an H3 prefix)
-  3. Candidates  — fetch READY, un-batched orders in the zone via DB row lock
-  4. Cluster     — group by delivery proximity and restaurant constraints
-  5. Validate    — min/max orders, distance, restaurant count
-  6. Route       — Mapbox first, bounded 2-opt fallback (outside transaction)
-  7. Persist     — atomic: create batch + link orders + batch_restaurants
-  8. Pricing     — compute fees and driver payout
-  9. Dispatch    — on_commit: dispatch_batch_task fires
+Pipeline:
+  1. Order confirmed → create or join an ACCUMULATING batch
+  2. ACCUMULATING → SOFT_LOCK (timer or max orders reached)
+  3. SOFT_LOCK → FINALIZING (timer expired)
+  4. FINALIZING → PRE_ASSIGNING (80%+ sections ready, driver pre-warm)
+  5. FINALIZING/PRE_ASSIGNING → PENDING_DRIVER (all sections ready)
+  6. PENDING_DRIVER → DISPATCHED (driver assigned)
+  7. Auto: section becomes READY when last item in that section is marked ready
 """
 from __future__ import annotations
 
 import logging
-import math
 from decimal import Decimal
 
-import h3
-from django.core.cache import cache
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
-
-from apps.core.geo_utils import (
-    get_zone_from_h3,
-    get_zone_h3_cells,
-    latlng_to_h3,
-)
 
 logger = logging.getLogger(__name__)
 
 # ─── Constants ────────────────────────────────────────────────────────────────
-ZONE_LOCK_TTL = 60          # seconds — how long to hold the zone-level Redis lock
-MAX_CANDIDATES = 50         # max orders to fetch per batching cycle
-MAX_ORDERS_PER_BATCH = 5
-MIN_ORDERS_FOR_BATCH = 2
-NEIGHBOR_RING_K = 3         # H3 rings to expand from delivery cell for clustering
-CLUSTER_RESOLUTION = 9      # fine resolution for delivery-proximity clustering
-MAX_2OPT_ITERATIONS = 20    # hard cap — prevents unbounded loops inside transactions
-CLUSTER_RING_K = 2          # H3 rings for delivery-proximity clustering
-SINGLE_ORDER_GRACE_SECONDS = 15  # how long a lone order waits before getting its own batch
+ACCUMULATE_WINDOW_MINUTES = 10       # Default: 10 min in ACCUMULATING
+SOFT_LOCK_WINDOW_SECONDS = 60        # 60s in SOFT_LOCK before FINALIZING
+MAX_ORDERS_PER_BATCH = 5             # Hard limit
+MIN_ORDERS_FOR_BATCH = 2             # Minimum to form a batch
+PRE_ASSIGN_THRESHOLD = 0.8           # 80% sections ready → PRE_ASSIGNING
+SECTION_TIMEOUT_MINUTES = 20         # If a section takes >20 min, escalate
+AUTO_ASSIGN_GRACE_MINUTES = 3        # 3 min in PENDING_DRIVER before auto-assign
 
-# Fallback route estimation constants
-TRAVEL_TIME_PER_KM = 3      # minutes per km
-RESTAURANT_PICKUP_TIME = 4  # minutes per pickup stop
-DELIVERY_STOP_TIME = 2      # minutes per delivery stop
-
-
-# ─── Public API ───────────────────────────────────────────────────────────────
 
 class BatchPipeline:
     """
-    Single entry point for all batching logic.
-    Call BatchPipeline.run(order) when an order becomes READY.
+    New order-time batching entry point.
+    Call BatchPipeline.on_order_confirmed(order) when a vendor confirms an order.
     """
 
     @staticmethod
-    def run(order):
+    def on_order_confirmed(order):
         """
-        Attempt to batch a READY order.
-
-        Returns the created DeliveryBatch, or None if no batch was formed.
-        This call is safe to invoke from inside a transaction — the actual
-        batch dispatch is deferred via on_commit.
+        Called when an order is confirmed by the restaurant.
+        Creates a new ACCUMULATING batch or joins an existing one.
         """
-        if not order.h3_index:
-            logger.debug(f"[BatchPipeline] Order {order.id} has no h3_index — skipping")
-            return None
+        from apps.orders.models import DeliveryBatch
 
-        # ── Pool order fast-path ───────────────────────────────────────────────
-        # Pool orders are batched collectively via run_for_pool() when the pool
-        # is marked ready. Individual pool orders must not be batched singly here.
-        if getattr(order, 'is_pool_order', False):
-            logger.info(
-                f"[BatchPipeline] Order {order.id} is a pool order — skipping "
-                f"individual batching (handled via pool dispatch)"
-            )
-            return None
+        order_h3 = order.h3_index
+        if not order_h3:
+            logger.warning(f"[BatchPipeline] Order {order.id} has no h3_index — creating single batch")
+            return BatchPipeline._create_single_batch(order)
 
-        # ── Regular order path ────────────────────────────────────────────────
-        # Check the order is inside an active operational zone, then attempt
-        # to form a multi-order cluster.  If no cluster is found the order is
-        # left for the poll cycle (batch_poll_task) which runs every N seconds
-        # and forms denser batches across all pending orders in the zone.
-        zone = get_zone_from_h3(order.h3_index)
-        if not zone:
-            logger.warning(
-                f"[BatchPipeline] Order {order.id} h3_index={order.h3_index} "
-                f"is not inside any active operational zone — skipping batching"
-            )
-            return None
+        # Look for an existing ACCUMULATING or SOFT_LOCK batch for this restaurant
+        candidate = BatchPipeline._find_compatible_batch(order)
+        if candidate:
+            return BatchPipeline._join_batch(order, candidate)
 
-        # Zone-scoped lock — one worker per zone at a time
-        lock_key = f"batch_zone_lock:{zone.id}"
-        acquired = cache.add(lock_key, "1", ZONE_LOCK_TTL)
-        if not acquired:
-            logger.debug(
-                f"[BatchPipeline] Zone {zone.id} locked by another worker — "
-                f"order {order.id} will be picked up in next cycle"
-            )
-            return None
-
-        try:
-            return BatchPipeline._run_pipeline(order, zone)
-        except Exception as exc:
-            logger.error(
-                f"[BatchPipeline] Unhandled error for order {order.id}: {exc}",
-                exc_info=True,
-            )
-            return None
-        finally:
-            cache.delete(lock_key)
+        # No compatible batch found — create a new ACCUMULATING batch
+        return BatchPipeline._create_single_batch(order)
 
     @staticmethod
-    def run_for_pool(pool):
+    def on_pool_ready(pool):
         """
-        Create a dedicated batch for a pool and dispatch it immediately.
-        Pools always dispatch as a single unit — no clustering with other orders.
+        Create a dedicated batch for a pool. Pools always dispatch as a single unit.
         """
-        if not pool.h3_index:
-            logger.debug(f"[BatchPipeline] Pool {pool.id} has no h3_index — skipping")
-            return None
-
-        logger.info(f"[BatchPipeline] Creating dedicated batch for pool {pool.id}")
-        return BatchPipeline._create_single_pool_batch(pool)
-
-
-    # ─── Batch polling ────────────────────────────────────────────────────────
+        return BatchPipeline._create_pool_batch(pool)
 
     @staticmethod
-    def poll_all_zones():
+    def _find_compatible_batch(order):
         """
-        Poll all active zones for READY, unbatched orders and form optimal batches.
-        Called periodically by Celery beat.
-
-        Designed as a complement to per-order triggering: this picks up orders
-        that arrived shortly after earlier orders were already batched, forming
-        denser multi-order clusters.
+        Find an existing ACCUMULATING or SOFT_LOCK batch for the same restaurant
+        that can accept this order.
         """
-        from apps.geo.models import OperationalZone
+        from apps.orders.models import DeliveryBatch, Order
 
-        zones = OperationalZone.objects.filter(is_active=True)
-        total_batches = 0
-        total_orders = 0
+        restaurant_id = order.restaurant_id
 
-        for zone in zones:
-            lock_key = f"batch_zone_lock:{zone.id}"
-            acquired = cache.add(lock_key, "1", ZONE_LOCK_TTL)
-            if not acquired:
-                continue
-
-            try:
-                created = BatchPipeline._poll_zone(zone)
-                total_batches += len(created)
-                total_orders += sum(b.orders.count() for b in created if b)
-            except Exception as exc:
-                logger.error(
-                    f"[BatchPipeline] Poll zone {zone.id} failed: {exc}",
-                    exc_info=True,
-                )
-            finally:
-                cache.delete(lock_key)
-
-        if total_batches:
-            logger.info(
-                f"[BatchPipeline] Poll cycle complete — {total_batches} batch(es) "
-                f"formed with {total_orders} order(s)"
+        # Prefer ACCUMULATING first, then SOFT_LOCK
+        accumulating = list(
+            DeliveryBatch.objects.filter(
+                restaurant_id=restaurant_id,
+                status='ACCUMULATING',
             )
-        return total_batches
-
-    @staticmethod
-    def _poll_zone(zone):
-        """Collect and batch all READY unbatched orders in a single zone."""
-        from apps.orders.models import Order
-        from apps.core.geo_utils import get_zone_h3_cells
-
-        zone_h3_cells = get_zone_h3_cells([zone.id])
-        if not zone_h3_cells:
-            return []
-
-        candidates = list(
-            Order.objects.filter(
-                status='READY',
-                h3_index__in=zone_h3_cells,
-                batch__isnull=True,
-            )
-            .select_related('restaurant', 'customer')
-            .order_by('ready_at')[:MAX_CANDIDATES]
+            .annotate(order_count=models.Count('orders'))
+            .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
+            .order_by('accumulating_since')
         )
 
-        if not candidates:
-            return []
+        for batch in accumulating:
+            if BatchPipeline._is_compatible(order, batch):
+                return batch
 
-        created = []
-
-        # ── Pass 1: Multi-order clusters ───────────────────────────────────────
-        clusters = BatchPipeline._form_clusters_from_pool(candidates)
-        batched_ids = set()
-        for cluster in clusters:
-            if len(cluster) < MIN_ORDERS_FOR_BATCH:
-                continue
-            route_dict = BatchPipeline._optimize_route(cluster)
-            batch = BatchPipeline._create_multi_order_batch_atomic(
-                cluster, route_dict, zone_id=zone.id
+        soft_lock = list(
+            DeliveryBatch.objects.filter(
+                restaurant_id=restaurant_id,
+                status='SOFT_LOCK',
             )
-            if batch:
-                created.append(batch)
-                for o in cluster:
-                    batched_ids.add(o.id)
-
-        # ── Pass 2: Stale singles (grace period expired) ───────────────────────
-        remaining = [o for o in candidates if o.id not in batched_ids]
-        cutoff = timezone.now() - timezone.timedelta(seconds=SINGLE_ORDER_GRACE_SECONDS)
-        stale = [o for o in remaining if (o.ready_at or o.created_at) < cutoff]
-        for order in stale:
-            route_dict = BatchPipeline._optimize_route([order])
-            batch = BatchPipeline._create_single_order_batch_atomic(order, route_dict=route_dict)
-            if batch:
-                created.append(batch)
-
-        return created
-
-    @staticmethod
-    def _form_clusters_from_pool(candidates: list) -> list:
-        """
-        Form clusters of orders from the same restaurant.
-        Single-restaurant only — no cross-restaurant batching.
-        """
-        from collections import defaultdict
-
-        by_restaurant = defaultdict(list)
-        for o in candidates:
-            by_restaurant[o.restaurant_id].append(o)
-
-        clusters = []
-        batched_ids = set()
-
-        for rest_id, orders in by_restaurant.items():
-            by_customer = defaultdict(list)
-            for o in orders:
-                by_customer[o.customer_id].append(o)
-
-            for cust_id, cust_orders in by_customer.items():
-                cust_orders.sort(key=lambda o: o.ready_at or o.created_at)
-                while cust_orders:
-                    cluster = cust_orders[:MAX_ORDERS_PER_BATCH]
-                    if len(cluster) >= MIN_ORDERS_FOR_BATCH:
-                        clusters.append(cluster)
-                        batched_ids.update(o.id for o in cluster)
-                    cust_orders = cust_orders[MAX_ORDERS_PER_BATCH:]
-
-            # Cross-customer orders from same restaurant batched together
-            sorted_orders = sorted(orders, key=lambda o: o.ready_at or o.created_at)
-            remaining = [o for o in sorted_orders if o.id not in batched_ids]
-            while remaining:
-                cluster = remaining[:MAX_ORDERS_PER_BATCH]
-                if len(cluster) >= MIN_ORDERS_FOR_BATCH:
-                    clusters.append(cluster)
-                    batched_ids.update(o.id for o in cluster)
-                remaining = remaining[MAX_ORDERS_PER_BATCH:]
-
-        return clusters
-
-
-    # ─── Internal pipeline ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _run_pipeline(order, zone):
-        """Execute the full pipeline for one zone-locked order."""
-        zone_h3_cells = get_zone_h3_cells([zone.id])
-        if not zone_h3_cells:
-            logger.warning(f"[BatchPipeline] Zone {zone.id} has no H3 cells seeded")
-            return None
-
-        # Expand search to neighbor cells within the zone boundary
-        neighbor_cells = set(h3.grid_disk(order.h3_index, NEIGHBOR_RING_K))
-        valid_cells = neighbor_cells & zone_h3_cells
-
-        if not valid_cells:
-            valid_cells = {order.h3_index}
-
-        candidates = BatchPipeline._fetch_candidates(valid_cells)
-
-        if not candidates:
-            # No other orders — defer to poll cycle for denser batching
-            logger.debug(
-                f"[BatchPipeline] Order {order.id} has no candidates — "
-                f"deferring to poll cycle"
-            )
-            return None
-
-        # Try to form a multi-order cluster
-        cluster = BatchPipeline._find_best_cluster(order, candidates)
-
-        if cluster and len(cluster) >= MIN_ORDERS_FOR_BATCH:
-            # Route optimization happens OUTSIDE the DB transaction
-            route_dict = BatchPipeline._optimize_route(cluster)
-            return BatchPipeline._create_multi_order_batch_atomic(
-                cluster, route_dict, zone_id=zone.id
-            )
-
-        # No suitable cluster — defer to poll cycle for denser batching
-        logger.debug(
-            f"[BatchPipeline] Order {order.id} has no cluster — "
-            f"deferring to poll cycle"
-        )
-        return None
-
-
-    # ─── Candidate fetching ───────────────────────────────────────────────────
-
-    @staticmethod
-    def _fetch_candidates(valid_cells: set) -> list:
-        """
-        Fetch READY, un-batched orders in the valid H3 cells.
-        NOTE: This is an optimistic read — no row locks are held here.
-        The real concurrency guard is select_for_update(skip_locked=True)
-        inside _create_multi_order_batch_atomic. Candidates here may
-        include orders grabbed by another worker; they will simply be
-        skipped when the atomic method tries to lock them.
-        """
-        from apps.orders.models import Order
-
-        return list(
-            Order.objects.filter(
-                status='READY',
-                h3_index__in=valid_cells,
-                batch__isnull=True,
-            )
-            .select_related('restaurant', 'customer')
-            .order_by('ready_at')[:MAX_CANDIDATES]
+            .annotate(order_count=models.Count('orders'))
+            .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
+            .order_by('soft_lock_at')
         )
 
-
-    # ─── Clustering ───────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _find_best_cluster(trigger_order, candidates: list) -> list | None:
-        """
-        Find the best cluster of orders from the same restaurant.
-        Single-restaurant batching only — no cross-restaurant.
-        """
-        same_restaurant = [
-            o for o in candidates
-            if o.restaurant_id == trigger_order.restaurant_id
-        ]
-        if len(same_restaurant) >= MIN_ORDERS_FOR_BATCH:
-            same_restaurant.sort(key=lambda o: (
-                0 if o.customer_id == trigger_order.customer_id else 1,
-                o.ready_at or o.created_at,
-            ))
-            return _dedup_by_pk(same_restaurant)[:MAX_ORDERS_PER_BATCH]
+        for batch in soft_lock:
+            if BatchPipeline._is_compatible(order, batch, is_soft_lock=True):
+                return batch
 
         return None
 
+    @staticmethod
+    def _is_compatible(order, batch, is_soft_lock=False):
+        """
+        Check if an order is compatible with a batch.
+        Criteria: H3 delivery proximity via disk rings.
+        ACCUMULATING: k=3 ring. SOFT_LOCK: k=1 ring (stricter).
+        Also checks that the order isn't too distant from existing batch orders.
+        """
+        from apps.orders.models import OrderItem
+        import h3
 
-    # ─── Route optimization ───────────────────────────────────────────────────
+        first_order = batch.orders.first()
+        if not first_order or not order.h3_index or not first_order.h3_index:
+            return True
+
+        ring_k = 1 if is_soft_lock else 3
+        neighbor_cells = set(h3.grid_disk(first_order.h3_index, ring_k))
+        if order.h3_index not in neighbor_cells:
+            return False
+
+        return True
 
     @staticmethod
-    def _optimize_route(orders: list) -> dict | None:
+    def _join_batch(order, batch):
         """
-        Compute the optimal delivery route.
-        Tries Mapbox first, falls back to bounded nearest-neighbour + 2-opt.
-        This is intentionally called OUTSIDE any database transaction.
+        Add an order to an existing batch atomically.
         """
-        from domain.services.mapbox_routing_service import MapboxRoutingService
+        from apps.orders.models import DeliveryBatch, Order
 
-        try:
-            route = MapboxRoutingService.get_route_for_batch(orders)
-            if route:
-                return route.to_dict() if hasattr(route, 'to_dict') else route
-        except Exception as exc:
-            logger.warning(f"[BatchPipeline] Mapbox routing failed: {exc} — using fallback")
+        with transaction.atomic():
+            locked_batch = DeliveryBatch.objects.select_for_update().get(id=batch.id)
+            if locked_batch.status not in ('ACCUMULATING', 'SOFT_LOCK'):
+                logger.warning(f"[BatchPipeline] Batch {batch.id} status '{locked_batch.status}' — cannot join")
+                return None
+            if locked_batch.orders.count() >= MAX_ORDERS_PER_BATCH:
+                logger.warning(f"[BatchPipeline] Batch {batch.id} is full — cannot join")
+                return None
 
-        return BatchPipeline._fallback_route(orders)
+            order.batch = locked_batch
+            order.route_sequence = locked_batch.orders.count() + 1
+            order.save(update_fields=['batch', 'route_sequence'])
+            locked_batch.last_order_confirmed_at = timezone.now()
 
-    @staticmethod
-    def _fallback_route(orders: list) -> dict:
-        """Bounded nearest-neighbour + 2-opt with hard iteration cap."""
-        restaurant_locs: dict = {}
-        for o in orders:
-            rid = o.restaurant_id
-            if rid not in restaurant_locs and o.restaurant.geo_location:
-                restaurant_locs[rid] = {
-                    'type': 'pickup',
-                    'restaurant_id': str(rid),
-                    'restaurant_name': o.restaurant.name,
-                    'lat': o.restaurant.geo_location.y,
-                    'lng': o.restaurant.geo_location.x,
-                }
+            # Update pricing incrementally
+            locked_batch.user_paid_total += Decimal(str(order.delivery_fee or 0)) + Decimal(str(order.service_fee or 0))
+            locked_batch.original_total_fee += Decimal(str(order.delivery_fee or 0))
+            locked_batch.discounted_total_fee += Decimal(str(order.delivery_fee or 0))
+            locked_batch.save(update_fields=[
+                'last_order_confirmed_at',
+                'user_paid_total', 'original_total_fee', 'discounted_total_fee',
+            ])
 
-        delivery_locs = [
-            {
-                'type': 'delivery',
-                'order_id': str(o.id),
-                'address': o.delivery_address or '',
-                'lat': o.delivery_location.y,
-                'lng': o.delivery_location.x,
-            }
-            for o in orders
-            if o.delivery_location
-        ]
-
-        pickups = list(restaurant_locs.values())
-        
-        # Optimize pickups and deliveries separately to guarantee all pickups happen before all deliveries
-        pickups_route = _nearest_neighbour_single(pickups)
-        pickups_route = _two_opt(pickups_route, pickups)
-        
-        deliveries_route = _nearest_neighbour_single(delivery_locs)
-        deliveries_route = _two_opt(deliveries_route, delivery_locs)
-        
-        route = pickups_route + deliveries_route
-
-        total_km = _route_distance_km(route, pickups + delivery_locs)
-        num_pickups = sum(1 for s in route if s['type'] == 'pickup')
-        num_deliveries = sum(1 for s in route if s['type'] == 'delivery')
-        est_time = int(
-            total_km * TRAVEL_TIME_PER_KM
-            + num_pickups * RESTAURANT_PICKUP_TIME
-            + num_deliveries * DELIVERY_STOP_TIME
-        )
-
-        return {
-            'stop_sequence': route,
-            'total_distance_km': round(total_km, 2),
-            'total_duration_min': est_time,
-        }
-
-
-    # ─── Batch persistence ────────────────────────────────────────────────────
-
-    @staticmethod
-    @transaction.atomic
-    def _create_multi_order_batch_atomic(
-        orders: list, route_dict: dict | None, zone_id
-    ):
-        """
-        Atomically create a multi-order batch.
-        Uses select_for_update(skip_locked=True) to prevent double-batching.
-        """
-        from apps.orders.models import Order, DeliveryBatch, BatchRestaurant
-        from domain.services.pricing_service import PricingService
-
-        order_ids = [str(o.id) for o in orders]
-
-        # Acquire DB-level row locks — skip any orders already grabbed
-        locked_orders = list(
-            Order.objects.select_for_update(skip_locked=True)
-            .filter(id__in=order_ids, batch__isnull=True)
-            .select_related('restaurant')
-        )
-
-        if len(locked_orders) < MIN_ORDERS_FOR_BATCH:
-            logger.info("[BatchPipeline] Not enough orders after locking — skipping batch")
-            return None
-
-        # Single-restaurant batch — no cross-restaurant discount
-        batch_type = 'SINGLE_RESTAURANT'
-        discount_rate = Decimal('0')
-
-        # Pricing
-        pricing = BatchPipeline._calculate_pricing(locked_orders)
-        driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
-            locked_orders, route_dict, pricing
-        )
-
-        company_profit = max(Decimal('0'), user_paid_total - driver_payout)
-
-        # Route metadata
-        route_distance = Decimal('0')
-        if route_dict and route_dict.get('total_distance_km'):
-            route_distance = Decimal(str(route_dict['total_distance_km']))
-
-        first_restaurant_id = locked_orders[0].restaurant_id
-
-        batch = DeliveryBatch.objects.create(
-            batch_type=batch_type,
-            restaurant_id=first_restaurant_id,
-            status='CREATED',
-            route_optimization=route_dict,
-            route_distance_km=route_distance,
-            discount_rate=discount_rate,
-            user_paid_total=user_paid_total,
-            original_total_fee=pricing['original_total'],
-            discounted_total_fee=pricing['discounted_total'],
-            driver_payout=driver_payout,
-            company_profit=company_profit,
-            zone_ids=[str(zone_id)],
-            is_inter_zone=False,
-            offer_attempt=0,
-            waiting_since=timezone.now(),
-        )
-
-        # Build delivery sequence map from route
-        delivery_seq_map = _build_delivery_seq_map(route_dict)
-
-        # Link orders to batch
-        for order in locked_orders:
-            order.batch = batch
-            order.route_sequence = delivery_seq_map.get(str(order.id))
-
-        Order.objects.bulk_update(locked_orders, ['batch', 'route_sequence'])
-
-        # Pickup sequence — spatially sorted by nearest-first from first pickup
-        BatchPipeline._create_batch_restaurants(batch, locked_orders, route_dict)
-
-        # Fire dispatch after transaction commits
-        batch_id_str = str(batch.id)
-        transaction.on_commit(
-            lambda: _schedule_dispatch(batch_id_str)
-        )
-
-        BatchPipeline._create_section_statuses_from_orders(batch, locked_orders)
+            BatchPipeline._create_section_statuses_from_orders(locked_batch, [order])
 
         logger.info(
-            f"[BatchPipeline] Created {batch_type} batch {batch.id} "
-            f"orders={len(locked_orders)} distance={route_distance}km "
-            f"payout={driver_payout} profit={company_profit}"
+            f"[BatchPipeline] Order {order.id} joined batch {batch.id} "
+            f"(status={locked_batch.status}, total_orders={locked_batch.orders.count()})"
+        )
+
+        # If batch reached max orders while ACCUMULATING, close it
+        if locked_batch.status == 'ACCUMULATING' and locked_batch.orders.count() >= MAX_ORDERS_PER_BATCH:
+            BatchPipeline._close_accumulating_batch(locked_batch.id)
+
+        return locked_batch
+
+    @staticmethod
+    def _create_single_batch(order):
+        """
+        Create a new ACCUMULATING batch with this order as the first member.
+        """
+        from apps.orders.models import DeliveryBatch, Order
+
+        now = timezone.now()
+
+        with transaction.atomic():
+            locked_order = (
+                Order.objects.select_for_update(skip_locked=True)
+                .filter(id=order.id, batch__isnull=True)
+                .first()
+            )
+            if not locked_order:
+                logger.info(f"[BatchPipeline] Order {order.id} already batched by another worker")
+                return None
+
+            batch = DeliveryBatch.objects.create(
+                batch_type='SINGLE_RESTAURANT',
+                restaurant_id=locked_order.restaurant_id,
+                status='ACCUMULATING',
+                accumulating_since=now,
+                first_order_confirmed_at=now,
+                last_order_confirmed_at=now,
+                user_paid_total=Decimal(str(locked_order.delivery_fee or 0)) + Decimal(str(locked_order.service_fee or 0)),
+                original_total_fee=Decimal(str(locked_order.delivery_fee or 0)),
+                discounted_total_fee=Decimal(str(locked_order.delivery_fee or 0)),
+                driver_payout=Decimal('0'),
+                company_profit=Decimal('0'),
+                offer_attempt=0,
+                max_orders=MAX_ORDERS_PER_BATCH,
+                accumulate_window_minutes=ACCUMULATE_WINDOW_MINUTES,
+            )
+
+            locked_order.batch = batch
+            locked_order.route_sequence = 1
+            locked_order.save(update_fields=['batch', 'route_sequence'])
+
+            BatchPipeline._create_section_statuses_from_orders(batch, [locked_order])
+
+        logger.info(
+            f"[BatchPipeline] Created ACCUMULATING batch {batch.id} for order {order.id}"
         )
         return batch
 
     @staticmethod
-    def _create_single_pool_batch(pool, route_dict=None):
+    def _close_accumulating_batch(batch_id: str):
         """
-        Create a single batch for a pool (no Order involvement).
-        Pools always dispatch as a single unit.
+        Move a batch from ACCUMULATING → SOFT_LOCK.
+        Called by timer task or when max orders reached.
         """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.batch_fsm import BatchFSM
+
+        try:
+            with transaction.atomic():
+                batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+                if batch.status != 'ACCUMULATING':
+                    return
+                batch.status = BatchFSM.transition(batch, 'TIMER_SOFT_LOCK')
+                batch.soft_lock_at = timezone.now()
+                batch.save(update_fields=['status', 'soft_lock_at', 'updated_at'])
+            logger.info(f"[BatchPipeline] Batch {batch_id}: ACCUMULATING → SOFT_LOCK ({batch.orders.count()} orders)")
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] Failed to close accumulating batch {batch_id}: {exc}")
+
+    @staticmethod
+    def _finalize_batch(batch_id: str):
+        """
+        Move a batch from SOFT_LOCK → FINALIZING.
+        Called by timer task when SOFT_LOCK window expires.
+        Computes optimal route and recalculates pricing OUTSIDE the
+        DB transaction (no locks held during Mapbox network calls).
+        """
+        from apps.orders.models import DeliveryBatch, Order
+        from domain.services.batch_fsm import BatchFSM
         from domain.services.mapbox_routing_service import MapboxRoutingService
+
+        # Step 1: Fetch orders and compute route outside transaction
+        try:
+            batch_pre = DeliveryBatch.objects.get(id=batch_id)
+            if batch_pre.status != 'SOFT_LOCK':
+                return
+
+            orders = list(batch_pre.orders.select_related('restaurant').all())
+            if not orders:
+                logger.warning(f"[BatchPipeline] Batch {batch_id} has no orders — skipping finalize")
+                return
+
+            route_dict = None
+            route_distance = Decimal('0')
+            try:
+                route = MapboxRoutingService.get_route_for_batch(orders)
+                if route:
+                    route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
+            except Exception as exc:
+                logger.warning(f"[BatchPipeline] Mapbox routing failed for batch {batch_id}: {exc}")
+
+            if route_dict and route_dict.get('total_distance_km'):
+                route_distance = Decimal(str(route_dict['total_distance_km']))
+
+            # Recalculate pricing with all orders now known
+            pricing = BatchPipeline._calculate_pricing(orders)
+            driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
+                orders, route_dict, pricing
+            )
+            company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+
+            # Step 2: Persist atomically inside transaction
+            with transaction.atomic():
+                batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+                if batch.status != 'SOFT_LOCK':
+                    return
+                batch.status = BatchFSM.transition(batch, 'TIMER_FINALIZE')
+                batch.finalized_at = timezone.now()
+                batch.route_optimization = route_dict
+                batch.route_distance_km = route_distance
+                batch.user_paid_total = user_paid_total
+                batch.original_total_fee = pricing['original_total']
+                batch.discounted_total_fee = pricing['discounted_total']
+                batch.driver_payout = driver_payout
+                batch.company_profit = company_profit
+                batch.save(update_fields=[
+                    'status', 'finalized_at', 'route_optimization', 'route_distance_km',
+                    'user_paid_total', 'original_total_fee', 'discounted_total_fee',
+                    'driver_payout', 'company_profit', 'updated_at',
+                ])
+
+                # Update route sequence for each order
+                delivery_seq_map = _build_delivery_seq_map(route_dict)
+                for order in orders:
+                    seq = delivery_seq_map.get(str(order.id))
+                    if seq is not None:
+                        Order.objects.filter(id=order.id).update(route_sequence=seq)
+
+            logger.info(
+                f"[BatchPipeline] Batch {batch_id}: SOFT_LOCK → FINALIZING "
+                f"({len(orders)} orders, {route_distance}km, payout={driver_payout})"
+            )
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] Failed to finalize batch {batch_id}: {exc}", exc_info=True)
+
+    @staticmethod
+    def _try_pre_assign(batch):
+        """
+        Check if the batch meets the pre-assignment threshold (80%+ sections ready).
+        If so, move to PRE_ASSIGNING and ping drivers early.
+        """
+        from domain.services.batch_fsm import BatchFSM
+        from domain.services.dispatch_tasks import pre_assign_drivers_for_batch
+
+        try:
+            with transaction.atomic():
+                batch_ref = batch.__class__.objects.select_for_update().get(id=batch.id)
+                if batch_ref.status not in ('FINALIZING', 'PARTIAL_BATCH'):
+                    return
+                pct = BatchFSM.sections_ready_pct(batch_ref)
+                if pct >= PRE_ASSIGN_THRESHOLD:
+                    batch_ref.status = BatchFSM.transition(batch_ref, 'THRESHOLD_PRE_ASSIGN')
+                    batch_ref.pre_assigned_at = timezone.now()
+                    batch_ref.save(update_fields=['status', 'pre_assigned_at', 'updated_at'])
+                    transaction.on_commit(
+                        lambda bid=str(batch_ref.id): pre_assign_drivers_for_batch.delay(bid)
+                    )
+                    logger.info(f"[BatchPipeline] Batch {batch_ref.id}: → PRE_ASSIGNING ({pct:.0%} sections ready)")
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] Pre-assign check failed for batch {batch.id}: {exc}")
+
+    @staticmethod
+    def _check_all_sections_ready(batch):
+        """
+        Check if all sections for a batch are READY.
+        If so, transition to PENDING_DRIVER.
+        """
+        from domain.services.batch_fsm import BatchFSM
+        from domain.services.dispatch_tasks import dispatch_batch_task
+
+        try:
+            with transaction.atomic():
+                batch_ref = batch.__class__.objects.select_for_update().get(id=batch.id)
+                if not BatchFSM.sections_all_ready(batch_ref):
+                    return
+                if batch_ref.status in ('FINALIZING', 'PRE_ASSIGNING', 'PARTIAL_BATCH'):
+                    batch_ref.status = BatchFSM.transition(batch_ref, 'ALL_SECTIONS_READY')
+                    batch_ref.waiting_since = timezone.now()
+                    batch_ref.save(update_fields=['status', 'waiting_since', 'updated_at'])
+                    transaction.on_commit(
+                        lambda bid=str(batch_ref.id): dispatch_batch_task.delay(bid)
+                    )
+                    logger.info(f"[BatchPipeline] Batch {batch_ref.id}: → PENDING_DRIVER (all sections ready)")
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] All-sections-ready check failed for batch {batch.id}: {exc}")
+
+
+    # ─── Section auto-readiness ───────────────────────────────────────────────
+
+    @staticmethod
+    def on_order_marked_ready(order):
+        """
+        Called when an order is marked READY (cooked).
+        Auto-updates BatchSectionStatus for sections where ALL items are now ready.
+        If all sections become READY, triggers batch progression.
+        """
+        from apps.orders.models import OrderItem, BatchSectionStatus
+
+        batch = order.batch
+        if not batch:
+            logger.debug(f"[BatchPipeline] Order {order.id} has no batch — skipping section auto-ready")
+            return
+
+        order_item_sections = set(
+            OrderItem.objects.filter(order=order)
+            .exclude(section__isnull=True)
+            .values_list('section_id', flat=True)
+        )
+        if not order_item_sections:
+            return
+
+        for section_id in order_item_sections:
+            bss = BatchSectionStatus.objects.filter(
+                batch=batch,
+                section_id=section_id,
+            ).first()
+            if not bss or bss.status == 'READY':
+                continue
+
+            unready_items = OrderItem.objects.filter(
+                order__batch=batch,
+                section_id=section_id,
+                order__status__in=['CONFIRMED', 'PREPARING'],
+            ).exclude(order__status='READY').exists()
+
+            if not unready_items:
+                bss.status = 'READY'
+                bss.updated_at = timezone.now()
+                bss.save(update_fields=['status', 'updated_at'])
+                logger.info(
+                    f"[BatchPipeline] Auto-marked section {section_id} READY "
+                    f"in batch {batch.id} (last item cooked)"
+                )
+
+                # Check if we should pre-assign or go to PENDING_DRIVER
+                BatchPipeline._check_all_sections_ready(batch)
+                BatchPipeline._try_pre_assign(batch)
+
+    @staticmethod
+    def on_section_started_prepping(batch_id, section_id):
+        """
+        Called when a section starts cooking items from this batch.
+        Updates BSS to PREPARING and sets estimated_ready_at.
+        """
+        from apps.orders.models import BatchSectionStatus
+        from django.utils import timezone
+
+        updated = BatchSectionStatus.objects.filter(
+            batch_id=batch_id,
+            section_id=section_id,
+            status='PENDING',
+        ).update(
+            status='PREPARING',
+            started_prepping_at=timezone.now(),
+            estimated_ready_at=timezone.now() + timezone.timedelta(minutes=15),
+        )
+        if updated:
+            logger.info(f"[BatchPipeline] Section {section_id} in batch {batch_id}: PENDING → PREPARING")
+
+
+    # ─── Pool batching ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _create_pool_batch(pool, route_dict=None):
+        """Create a batch for a pool and dispatch it immediately."""
+        from domain.services.mapbox_routing_service import MapboxRoutingService
+        from apps.orders.models import DeliveryBatch, Order
 
         route_distance = Decimal('0')
         if route_dict is None:
@@ -540,183 +455,67 @@ class BatchPipeline:
                     route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
             except Exception as exc:
                 logger.warning(f"[BatchPipeline] Mapbox failed for pool {pool.id}: {exc}")
+
         if route_dict and route_dict.get('total_distance_km'):
             route_distance = Decimal(str(route_dict['total_distance_km']))
 
-        return BatchPipeline._persist_single_pool_batch(pool.id, pool, route_dict, route_distance)
+        with transaction.atomic():
+            from domain.services.pricing_service import PricingService
+            policy = PricingService.get_active_policy()
+            min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
+            per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
+            per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
 
-    @staticmethod
-    @transaction.atomic
-    def _persist_single_pool_batch(pool_id, pool, route_dict, route_distance):
-        """Atomically create a single batch for a pool."""
-        from apps.orders.models import DeliveryBatch, Order
-        from domain.services.pricing_service import PricingService
+            delivery_fee = Decimal(str(pool.total_delivery_fee or 0))
+            service_fee = Decimal(str(pool.service_fee or 0))
+            user_paid_total = delivery_fee + service_fee
 
-        policy = PricingService.get_active_policy()
-        min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
-        per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
-        per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
+            driver_share = policy.single_order_driver_share if policy else Decimal('0.90')
+            driver_payout = delivery_fee * driver_share
+            if route_distance > 0:
+                calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
+                driver_payout = max(driver_payout, calc)
+            driver_payout = min(driver_payout, user_paid_total)
+            driver_payout = max(driver_payout, Decimal('0'))
+            company_profit = user_paid_total - driver_payout
 
-        delivery_fee = Decimal(str(pool.total_delivery_fee or 0))
-        service_fee = Decimal(str(pool.service_fee or 0))
-        user_paid_total = delivery_fee + service_fee
+            batch = DeliveryBatch.objects.create(
+                batch_type='SINGLE_RESTAURANT',
+                restaurant_id=pool.restaurant_id,
+                status='PENDING_DRIVER',
+                route_optimization=route_dict,
+                route_distance_km=route_distance,
+                user_paid_total=user_paid_total,
+                original_total_fee=delivery_fee,
+                discounted_total_fee=delivery_fee,
+                driver_payout=driver_payout,
+                company_profit=company_profit,
+                offer_attempt=0,
+                waiting_since=timezone.now(),
+                accumulating_since=timezone.now(),
+                finalized_at=timezone.now(),
+            )
 
-        driver_share = policy.single_order_driver_share if policy else Decimal('0.90')
-        driver_payout = delivery_fee * driver_share
-        if route_distance > 0:
-            calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
-            driver_payout = max(driver_payout, calc)
+            pool_orders = list(Order.objects.filter(pool_id=pool.id))
+            for i, order in enumerate(pool_orders, 1):
+                order.batch = batch
+                order.status = 'READY'
+                order.route_sequence = i
+                order.save(update_fields=['batch', 'status', 'route_sequence'])
 
-        driver_payout = min(driver_payout, user_paid_total)
-        driver_payout = max(driver_payout, Decimal('0'))
-        company_profit = user_paid_total - driver_payout
+            BatchPipeline._create_section_statuses_from_orders(batch, pool_orders)
 
-        batch = DeliveryBatch.objects.create(
-            batch_type='SINGLE_RESTAURANT',
-            restaurant_id=pool.restaurant_id,
-            status='CREATED',
-            route_optimization=route_dict,
-            route_distance_km=route_distance,
-            user_paid_total=user_paid_total,
-            original_total_fee=delivery_fee,
-            discounted_total_fee=delivery_fee,
-            driver_payout=driver_payout,
-            company_profit=company_profit,
-            offer_attempt=0,
-            waiting_since=timezone.now(),
-        )
-
-        # Link individual pool orders to the batch and set their status to READY
-        pool_orders = list(Order.objects.filter(pool_id=pool_id))
-        for i, order in enumerate(pool_orders, 1):
-            order.batch = batch
-            order.status = 'READY'
-            order.route_sequence = i
-            order.save(update_fields=['batch', 'status', 'route_sequence'])
-
-        # Create BatchSectionStatus (stall preparation status) for all sections in pool orders
-        BatchPipeline._create_section_statuses_from_orders(batch, pool_orders)
-
-        batch_id_str = str(batch.id)
-        transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
+            batch_id_str = str(batch.id)
+            transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
 
         logger.info(
-            f"[BatchPipeline] Created POOL batch {batch.id} for pool {pool_id} "
-            f"distance={route_distance}km payout={driver_payout} profit={company_profit}"
+            f"[BatchPipeline] Created POOL batch {batch.id} for pool {pool.id} "
+            f"distance={route_distance}km"
         )
         return batch
 
-    @staticmethod
-    def _create_single_order_batch_atomic(order, route_dict=None):
-        """
-        Create a batch for a single order.
 
-        Accepts an optional pre-computed route_dict to avoid a redundant
-        Mapbox call when the caller already fetched it (e.g., the poll cycle).
-
-        Fix #8: Mapbox network call is now OUTSIDE the DB transaction.
-        The old version called MapboxRoutingService inside @transaction.atomic,
-        holding row locks for the entire duration of the network call (2-5s).
-
-        Steps:
-          1. Optimistic existence check (no lock)
-          2. Mapbox route call (outside any transaction) — skipped if route_dict provided
-          3. Atomic persist with row lock
-        """
-        from apps.orders.models import Order
-        from domain.services.mapbox_routing_service import MapboxRoutingService
-
-        # Step 1: Optimistic check — skip early if clearly not batchable
-        if not Order.objects.filter(
-            id=order.id, batch__isnull=True, status='READY'
-        ).exists():
-            logger.info(f"[BatchPipeline] Order {order.id} not batchable — skipping")
-            return None
-
-        # Step 2: Route outside transaction (no locks held during network call)
-        route_distance = Decimal('0')
-        if route_dict is None:
-            try:
-                route = MapboxRoutingService.get_route_for_batch([order])
-                if route:
-                    route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
-            except Exception as exc:
-                logger.warning(f"[BatchPipeline] Mapbox failed for single order {order.id}: {exc}")
-        if route_dict and route_dict.get('total_distance_km'):
-            route_distance = Decimal(str(route_dict['total_distance_km']))
-
-        # Step 3: Persist atomically with a fresh row lock
-        return BatchPipeline._persist_single_order_batch(order.id, route_dict, route_distance)
-
-    @staticmethod
-    @transaction.atomic
-    def _persist_single_order_batch(order_id, route_dict, route_distance):
-        """Atomically create and link a single-order batch (short transaction)."""
-        from apps.orders.models import Order, DeliveryBatch
-        from domain.services.pricing_service import PricingService
-
-        locked_order = (
-            Order.objects.select_for_update(skip_locked=True)
-            .filter(id=order_id, batch__isnull=True)
-            .select_related('restaurant')
-            .first()
-        )
-
-        if not locked_order:
-            logger.info(f"[BatchPipeline] Order {order_id} was batched by another worker")
-            return None
-
-        policy = PricingService.get_active_policy()
-        min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
-        per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
-        per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
-        driver_share = policy.single_order_driver_share if policy else Decimal('0.90')
-
-        delivery_fee = Decimal(str(locked_order.delivery_fee or 0))
-        service_fee = Decimal(str(locked_order.service_fee or 0))
-        user_paid_total = delivery_fee + service_fee
-
-        driver_payout = delivery_fee * driver_share
-        if route_distance > 0:
-            calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
-            driver_payout = max(driver_payout, calc)
-
-        driver_payout = min(driver_payout, user_paid_total)
-        driver_payout = max(driver_payout, Decimal('0'))
-        company_profit = user_paid_total - driver_payout
-
-        batch = DeliveryBatch.objects.create(
-            batch_type='SINGLE_ORDER',
-            restaurant_id=locked_order.restaurant_id,
-            status='CREATED',
-            route_optimization=route_dict,
-            route_distance_km=route_distance,
-            user_paid_total=user_paid_total,
-            original_total_fee=delivery_fee,
-            discounted_total_fee=delivery_fee,
-            driver_payout=driver_payout,
-            company_profit=company_profit,
-            offer_attempt=0,
-            waiting_since=timezone.now(),
-        )
-
-        locked_order.batch = batch
-        locked_order.route_sequence = 1
-        locked_order.save(update_fields=['batch', 'route_sequence'])
-
-        batch_id_str = str(batch.id)
-        transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
-
-        logger.info(
-            f"[BatchPipeline] Created SINGLE_ORDER batch {batch.id} "
-            f"order={locked_order.id} distance={route_distance}km "
-            f"payout={driver_payout} profit={company_profit}"
-        )
-        BatchPipeline._create_section_statuses_from_orders(batch, [locked_order])
-        return batch
-
-
-    # ─── Section statuses ─────────────────────────────────────────────────────
+    # ─── Section status helpers ───────────────────────────────────────────────
 
     @staticmethod
     def _create_section_statuses_from_orders(batch, orders):
@@ -740,8 +539,121 @@ class BatchPipeline:
                 defaults={'status': 'PENDING'},
             )
 
+    @staticmethod
+    def check_and_close_full_batches():
+        """
+        Periodic check: close ACCUMULATING batches that have hit max orders.
+        """
+        from apps.orders.models import DeliveryBatch
 
-    # ─── Helpers ──────────────────────────────────────────────────────────────
+        full_batches = DeliveryBatch.objects.filter(
+            status='ACCUMULATING',
+        ).annotate(
+            order_count=models.Count('orders')
+        ).filter(
+            order_count__gte=MAX_ORDERS_PER_BATCH,
+        )
+        for batch in full_batches:
+            BatchPipeline._close_accumulating_batch(str(batch.id))
+
+    @staticmethod
+    def check_and_expire_accumulating():
+        """
+        Periodic check: move ACCUMULATING batches past their window to SOFT_LOCK.
+        Also cleans up stale ACCUMULATING batches where no order has progressed
+        to PREPARING or READY after more than 2x the accumulate window.
+        Uses efficient batch-queries — never loads all batches into Python memory.
+        """
+        from apps.orders.models import DeliveryBatch
+        from django.db.models import Exists, OuterRef
+
+        now = timezone.now()
+
+        # ── Pass 1: Batches past their accumulate window → SOFT_LOCK ──
+        expired = DeliveryBatch.objects.filter(
+            status='ACCUMULATING',
+            accumulating_since__isnull=False,
+            accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES),
+        ).only('id')
+        for batch in expired:
+            BatchPipeline._close_accumulating_batch(str(batch.id))
+
+        # ── Pass 2: Batches > 2x window with no cooking progress → cancel ──
+        from apps.orders.models import Order
+        has_progress = Exists(
+            Order.objects.filter(
+                batch=OuterRef('pk'),
+                status__in=['PREPARING', 'READY'],
+            )
+        )
+        stale_no_progress = DeliveryBatch.objects.filter(
+            status='ACCUMULATING',
+            accumulating_since__isnull=False,
+            accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES * 2),
+        ).annotate(
+            has_progress=has_progress
+        ).filter(has_progress=False).only('id')
+
+        for batch in stale_no_progress:
+            logger.warning(f"[BatchPipeline] Batch {batch.id} stale with no cooking progress — cancelling")
+            from domain.services.batch_fsm import BatchFSM
+            try:
+                with transaction.atomic():
+                    locked = DeliveryBatch.objects.select_for_update().get(id=batch.id)
+                    if locked.status == 'ACCUMULATING':
+                        locked.status = BatchFSM.transition(locked, 'CANCEL')
+                        locked.save(update_fields=['status', 'updated_at'])
+            except Exception as exc:
+                logger.error(f"[BatchPipeline] Failed to cancel stale batch {batch.id}: {exc}")
+
+    @staticmethod
+    def check_and_expire_soft_lock():
+        """
+        Periodic check: move SOFT_LOCK batches past their window to FINALIZING.
+        """
+        from apps.orders.models import DeliveryBatch
+
+        cutoff = timezone.now() - timezone.timedelta(seconds=SOFT_LOCK_WINDOW_SECONDS)
+        stale = DeliveryBatch.objects.filter(
+            status='SOFT_LOCK',
+            soft_lock_at__lt=cutoff,
+        )
+        for batch in stale:
+            BatchPipeline._finalize_batch(str(batch.id))
+
+    @staticmethod
+    def check_section_timeouts():
+        """
+        Periodic check: find sections stuck in PENDING/PREPARING past timeout.
+        Escalates by transitioning the batch to PARTIAL_BATCH.
+        Uses the bss_status_updated_idx index for efficient filtering.
+        """
+        from apps.orders.models import DeliveryBatch, BatchSectionStatus
+        from domain.services.batch_fsm import BatchFSM
+
+        cutoff = timezone.now() - timezone.timedelta(minutes=SECTION_TIMEOUT_MINUTES)
+        stuck = BatchSectionStatus.objects.filter(
+            status__in=['PENDING', 'PREPARING'],
+            updated_at__lt=cutoff,
+            batch__status__in=['FINALIZING', 'PRE_ASSIGNING', 'SOFT_LOCK', 'PARTIAL_BATCH'],
+        ).select_related('batch').only('id', 'section_id', 'batch_id', 'batch__status')
+
+        for bss in stuck:
+            try:
+                with transaction.atomic():
+                    batch = DeliveryBatch.objects.select_for_update().get(id=bss.batch_id)
+                    if batch.status in ('FINALIZING', 'SOFT_LOCK', 'PARTIAL_BATCH'):
+                        batch.status = BatchFSM.transition(batch, 'SECTION_FAIL')
+                        batch.save(update_fields=['status', 'updated_at'])
+                    logger.warning(
+                        f"[BatchPipeline] Section {bss.section_id} in batch {bss.batch_id} "
+                        f"stuck for >{SECTION_TIMEOUT_MINUTES}min — batch → PARTIAL_BATCH"
+                    )
+            except Exception as exc:
+                logger.error(f"[BatchPipeline] Section timeout escalation failed: {exc}")
+
+
+    # ─── Pricing helpers ───────────────────────────────────────────────────────
 
     @staticmethod
     def _calculate_pricing(orders: list) -> dict:
@@ -752,7 +664,7 @@ class BatchPipeline:
 
         for order in orders:
             fee = Decimal(str(order.delivery_fee or 0))
-            if fee == Decimal('0') and order.restaurant and order.delivery_location:
+            if fee == Decimal('0') and order.restaurant and hasattr(order, 'delivery_location') and order.delivery_location:
                 fee, _, _ = PricingService.calculate_delivery_fee(
                     order.restaurant, order.delivery_location,
                     order=order, skip_log=True
@@ -801,54 +713,8 @@ class BatchPipeline:
             )
         return driver_payout, user_paid_total
 
-    @staticmethod
-    def _create_batch_restaurants(batch, orders, route_dict):
-        """
-        Create BatchRestaurant records in spatial order.
-        Fix #11: uses bulk_create instead of N individual INSERT calls.
-        """
-        from apps.orders.models import BatchRestaurant
 
-        to_create = []
-        if route_dict:
-            seen: set = set()
-            seq = 1
-            for stop in route_dict.get('stop_sequence', []):
-                if stop.get('type') == 'pickup':
-                    rid = stop.get('restaurant_id')
-                    if rid and rid not in seen:
-                        to_create.append(BatchRestaurant(
-                            batch=batch,
-                            restaurant_id=rid,
-                            pickup_sequence=seq,
-                        ))
-                        seen.add(rid)
-                        seq += 1
-        else:
-            unique = {o.restaurant_id for o in orders}
-            for seq, rid in enumerate(unique, 1):
-                to_create.append(BatchRestaurant(
-                    batch=batch,
-                    restaurant_id=rid,
-                    pickup_sequence=seq,
-                ))
-
-        if to_create:
-            BatchRestaurant.objects.bulk_create(to_create, ignore_conflicts=True)
-
-
-# ─── Module-level helpers (private) ───────────────────────────────────────────
-
-def _dedup_by_pk(orders: list) -> list:
-    """Deduplicate orders by primary key — never by Python id()."""
-    seen: set = set()
-    result = []
-    for o in orders:
-        if o.id not in seen:
-            result.append(o)
-            seen.add(o.id)
-    return result
-
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _build_delivery_seq_map(route_dict: dict | None) -> dict:
     """Build {order_id_str: sequence_number} from route stop_sequence."""
@@ -870,77 +736,3 @@ def _schedule_dispatch(batch_id: str):
         dispatch_batch_task.apply_async(args=[batch_id], countdown=0)
     except Exception as exc:
         logger.error(f"[BatchPipeline] Failed to schedule dispatch for batch {batch_id}: {exc}")
-
-
-def _haversine_km(lat1, lng1, lat2, lng2) -> float:
-    R = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlng = math.radians(lng2 - lng1)
-    a = (math.sin(dlat / 2) ** 2
-         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
-         * math.sin(dlng / 2) ** 2)
-    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _route_distance_km(route: list, all_locs: list) -> float:
-    loc_map = {}
-    for loc in all_locs:
-        key = loc.get('restaurant_id') or loc.get('order_id')
-        if key:
-            loc_map[key] = loc
-
-    total = 0.0
-    for i in range(len(route) - 1):
-        k1 = route[i].get('restaurant_id') or route[i].get('order_id')
-        k2 = route[i + 1].get('restaurant_id') or route[i + 1].get('order_id')
-        l1, l2 = loc_map.get(k1), loc_map.get(k2)
-        if l1 and l2:
-            total += _haversine_km(l1['lat'], l1['lng'], l2['lat'], l2['lng'])
-    return total
-
-
-def _nearest_neighbour_single(locs: list) -> list:
-    """Helper to optimize a single list of locations using nearest-neighbour."""
-    if not locs:
-        return []
-    route = [locs[0]]
-    remaining = list(locs[1:])
-    current_lat = locs[0]['lat']
-    current_lng = locs[0]['lng']
-    while remaining:
-        nearest = min(
-            remaining,
-            key=lambda l: _haversine_km(current_lat, current_lng, l['lat'], l['lng'])
-        )
-        route.append(nearest)
-        current_lat, current_lng = nearest['lat'], nearest['lng']
-        remaining.remove(nearest)
-    return route
-
-
-def _two_opt(route: list, all_locs: list) -> list:
-    """
-    2-opt improvement with a hard iteration cap.
-    Fix #2: best_distance is computed ONCE per outer iteration, not once
-    per pair. The old code recomputed _route_distance_km(best, ...) on
-    every inner loop pair, making it O(n³) instead of O(n²) per iteration.
-    """
-    if len(route) < 4:
-        return route
-
-    best = list(route)
-    for _ in range(MAX_2OPT_ITERATIONS):
-        improved = False
-        best_distance = _route_distance_km(best, all_locs)  # compute once per iteration
-        for i in range(len(best) - 2):
-            for j in range(i + 2, len(best)):
-                candidate = best[:i + 1] + best[i + 1:j + 1][::-1] + best[j + 1:]
-                candidate_distance = _route_distance_km(candidate, all_locs)
-                if candidate_distance < best_distance:
-                    best = candidate
-                    best_distance = candidate_distance  # update for remaining pairs
-                    improved = True
-        if not improved:
-            break
-
-    return best

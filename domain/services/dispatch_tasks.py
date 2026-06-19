@@ -38,6 +38,7 @@ def dispatch_order_task(self, order_id):
 def dispatch_batch_task(batch_id: str):
     """
     Notify restaurants that their batch needs a driver assigned.
+    Expects batch in PENDING_DRIVER status (all sections READY).
     One-shot — no retry needed (restaurants handle driver assignment).
     """
     from apps.orders.models import DeliveryBatch
@@ -55,19 +56,11 @@ def dispatch_batch_task(batch_id: str):
 
     try:
         batch = DeliveryBatch.objects.get(id=batch_id)
-        if batch.status != 'CREATED':
-            logger.warning(f"[dispatch_batch_task] Batch {batch_id} is in status '{batch.status}' — expected CREATED")
+        if batch.status != 'PENDING_DRIVER':
+            logger.info(f"[dispatch_batch_task] Batch {batch_id} status '{batch.status}' — skipping (already notified or dispatched)")
             return
 
-        with transaction.atomic():
-            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
-            if batch.status != 'CREATED':
-                return
-            batch.status = BatchFSM.transition(batch, 'WAIT_FOR_DRIVER')
-            batch.waiting_since = timezone.now()
-            batch.save(update_fields=['status', 'waiting_since'])
-
-        logger.info(f"[dispatch_batch_task] Batch {batch_id} → PENDING_DRIVER. Orders: {batch.orders.count()}")
+        logger.info(f"[dispatch_batch_task] Batch {batch_id} in PENDING_DRIVER. Orders: {batch.orders.count()}")
 
         restaurant_ids = set(batch.orders.values_list('restaurant_id', flat=True))
         owners = {
@@ -122,21 +115,61 @@ def dispatch_batch_task(batch_id: str):
     finally:
         cache.delete(lock_key)
 
-@shared_task(name='domain.services.dispatch_tasks.batch_poll_task')
-def batch_poll_task():
+@shared_task(name='domain.services.dispatch_tasks.batch_lifecycle_poll_task')
+def batch_lifecycle_poll_task():
     """
-    Periodic task that polls all active zones for READY, unbatched orders
-    and forms optimal multi-order batches.
-
-    Complements the per-order trigger in BatchPipeline.run() — captures orders
-    that became READY shortly after their neighbors were already batched,
-    dramatically increasing multi-order batch density.
+    Periodic task that advances batches through their lifecycle:
+    1. Close ACCUMULATING batches that hit max orders or window expired
+    2. FINALIZING for batches past SOFT_LOCK window
+    3. Check section timeouts → PARTIAL_BATCH
+    4. Check for all-sections-ready → PENDING_DRIVER
     """
     from domain.services.batch_pipeline import BatchPipeline
-    total = BatchPipeline.poll_all_zones()
-    if total:
-        logger.info(f"[batch_poll_task] Formed {total} batch(es) via poll cycle")
-    return total
+    BatchPipeline.check_and_close_full_batches()
+    BatchPipeline.check_and_expire_accumulating()
+    BatchPipeline.check_and_expire_soft_lock()
+    BatchPipeline.check_section_timeouts()
+
+
+@shared_task(name='domain.services.dispatch_tasks.pre_assign_drivers_for_batch')
+def pre_assign_drivers_for_batch(batch_id: str):
+    """
+    Pre-warm: find available drivers for a batch that has entered PRE_ASSIGNING.
+    Pings the top candidate driver so they start moving before food is fully ready.
+    """
+    from apps.orders.models import DeliveryBatch
+    from domain.services.permissions import restaurant_visible_drivers
+    from infrastructure.notifications.messages import vendor_need_driver
+    from infrastructure.notifications.channels import default_channel
+
+    try:
+        batch = DeliveryBatch.objects.get(id=batch_id)
+        if batch.status != 'PRE_ASSIGNING':
+            return
+
+        drivers = restaurant_visible_drivers(batch.restaurant)
+        candidate = None
+        for d in drivers:
+            if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
+                candidate = d
+                break
+
+        if candidate:
+            default_channel.send_push(
+                user_id=str(candidate.user.id),
+                title="Upcoming Delivery",
+                body=f"A batch at {batch.restaurant.name} will be ready soon. Stand by.",
+                data={
+                    "batch_id": batch_id,
+                    "restaurant_id": str(batch.restaurant.id) if batch.restaurant else None,
+                    "type": "batch_pre_assign",
+                },
+            )
+            logger.info(f"[PreAssign] Pre-warmed driver {candidate.user.username} for batch {batch_id}")
+        else:
+            logger.info(f"[PreAssign] No available driver to pre-warm for batch {batch_id}")
+    except Exception as exc:
+        logger.error(f"[PreAssign] Failed for batch {batch_id}: {exc}")
 
 
 @shared_task(name='domain.services.dispatch_tasks.expire_unassigned_orders_task')
@@ -163,7 +196,7 @@ def expire_unassigned_orders_task():
         # nullable side of an outer join, which is what .exclude(batch__status__in=[...])
         # generates. Fetching the IDs separately avoids that entirely.
         active_batch_order_ids = Order.objects.filter(
-            batch__status__in=['CREATED', 'PENDING_DRIVER', 'DISPATCHED']
+            batch__status__in=['ACCUMULATING', 'SOFT_LOCK', 'FINALIZING', 'PRE_ASSIGNING', 'PENDING_DRIVER', 'DISPATCHED']
         ).values_list('id', flat=True)
 
         stale_orders = list(
@@ -554,14 +587,15 @@ def expire_stale_picked_orders_task():
 @shared_task(name='domain.services.dispatch_tasks.auto_assign_pending_batches_task')
 def auto_assign_pending_batches_task():
     """
-    Finds batches in PENDING_DRIVER status for more than 3 minutes (180 seconds)
+    Finds batches in PENDING_DRIVER status for more than AUTO_ASSIGN_GRACE_MINUTES
     and automatically assigns them to the highest-priority, available platform driver.
     """
     from apps.orders.models import DeliveryBatch
     from domain.services.permissions import restaurant_visible_drivers
     from domain.services.orders.order_assignment import AssignBatchService
+    from domain.services.batch_pipeline import AUTO_ASSIGN_GRACE_MINUTES
 
-    cutoff = timezone.now() - timedelta(minutes=3)
+    cutoff = timezone.now() - timedelta(minutes=AUTO_ASSIGN_GRACE_MINUTES)
 
     system_user, _ = User.objects.get_or_create(
         username='system_dispatcher',
@@ -576,7 +610,6 @@ def auto_assign_pending_batches_task():
     assigned_count = 0
     for batch in pending_batches:
         try:
-            # Find the best available platform driver for this restaurant
             drivers = restaurant_visible_drivers(batch.restaurant)
             recommended_driver = None
             for d in drivers:

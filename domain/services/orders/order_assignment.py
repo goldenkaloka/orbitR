@@ -54,7 +54,7 @@ class AssignDriverService:
 class AssignBatchService:
     """
     Restaurant assigns (or reassigns) a driver to a batch.
-    First assignment: CREATED/PENDING_DRIVER → DISPATCHED.
+    First assignment: PENDING_DRIVER/PRE_ASSIGNING → DISPATCHED.
     Reassignment: DISPATCHED → DISPATCHED (releases old driver first).
     """
 
@@ -63,13 +63,13 @@ class AssignBatchService:
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
 
-            is_dispatch = batch.status in ('CREATED', 'PENDING_DRIVER')
+            is_dispatch = batch.status in ('PENDING_DRIVER', 'PRE_ASSIGNING')
             is_reassign = batch.status == 'DISPATCHED'
 
             if not is_dispatch and not is_reassign:
                 raise ValueError(
                     f"Batch {batch_id} is in '{batch.status}' state — "
-                    "expected CREATED, PENDING_DRIVER, or DISPATCHED."
+                    "expected PENDING_DRIVER or DISPATCHED."
                 )
 
             # --- Race condition guard: prevent silent overwrite ---

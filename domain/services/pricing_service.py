@@ -166,8 +166,14 @@ class PricingService:
 
             final_fee = base_fee + variable_fee + fuel_adjustment
 
+            # Limitless delivery fee cap to protect users against excessive rates
+            MAX_DELIVERY_FEE = Decimal('25000.00')
             adjustments = {}
-            
+
+            if final_fee > MAX_DELIVERY_FEE:
+                final_fee = MAX_DELIVERY_FEE
+                adjustments['cap_applied'] = 'true'
+
             if distance_tier_multiplier != Decimal('1.00'):
                 adjustments['distance_tier'] = str(distance_tier_multiplier)
             

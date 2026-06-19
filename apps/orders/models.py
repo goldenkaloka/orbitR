@@ -276,10 +276,16 @@ class PoolItem(models.Model):
 
 class DeliveryBatch(models.Model):
     STATUS_CHOICES = (
-        ('CREATED', 'Batch Created'),
+        ('ACCUMULATING', 'Collecting orders'),
+        ('SOFT_LOCK', 'Closing window — limited joins'),
+        ('FINALIZING', 'Closed to new orders, waiting for sections'),
+        ('PRE_ASSIGNING', 'Early driver ping — sections nearly ready'),
         ('PENDING_DRIVER', 'Waiting for Restaurant to Assign Driver'),
         ('DISPATCHED', 'Driver Assigned'),
+        ('DELIVERED', 'All orders delivered'),
+        ('PARTIAL_BATCH', 'Some sections cancelled, remainder proceeding'),
         ('CANCELLED', 'Cancelled'),
+        ('EXPIRED', 'Expired'),
     )
 
     BATCH_TYPE_CHOICES = (
@@ -292,7 +298,7 @@ class DeliveryBatch(models.Model):
 
     batch_type = models.CharField(max_length=20, choices=BATCH_TYPE_CHOICES, default='SINGLE_RESTAURANT', db_index=True)
 
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='CREATED', db_index=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACCUMULATING', db_index=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
@@ -313,6 +319,19 @@ class DeliveryBatch(models.Model):
     zone_ids = models.JSONField(null=True, blank=True, help_text="List of zone IDs this batch spans")
     is_inter_zone = models.BooleanField(default=False, help_text="True if batch spans multiple zones")
 
+    # ── New lifecycle timing fields ──────────────────────────────────────────
+    accumulating_since = models.DateTimeField(null=True, blank=True, help_text="When batch entered ACCUMULATING")
+    soft_lock_at = models.DateTimeField(null=True, blank=True, help_text="When batch entered SOFT_LOCK")
+    finalized_at = models.DateTimeField(null=True, blank=True, help_text="When batch entered FINALIZING")
+    pre_assigned_at = models.DateTimeField(null=True, blank=True, help_text="When batch entered PRE_ASSIGNING")
+    delivered_at = models.DateTimeField(null=True, blank=True, help_text="When batch entered DELIVERED")
+
+    max_orders = models.PositiveIntegerField(default=5, help_text="Max orders before batch closes to new joins")
+    accumulate_window_minutes = models.PositiveIntegerField(default=10, help_text="Minutes to stay in ACCUMULATING before SOFT_LOCK")
+
+    first_order_confirmed_at = models.DateTimeField(null=True, blank=True, help_text="When first order was confirmed into this batch")
+    last_order_confirmed_at = models.DateTimeField(null=True, blank=True, help_text="When last order was confirmed into this batch")
+
     def __str__(self):
         if self.restaurant:
             return f"Batch {self.id} - {self.restaurant.name} ({self.status})"
@@ -332,9 +351,15 @@ class BatchSectionStatus(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING', db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    estimated_ready_at = models.DateTimeField(null=True, blank=True, help_text="Estimated completion time for this section")
+    started_prepping_at = models.DateTimeField(null=True, blank=True, help_text="When cooking started for this section in this batch")
+
     class Meta:
         unique_together = ('batch', 'section')
         verbose_name_plural = 'Batch section statuses'
+        indexes = [
+            models.Index(fields=['status', 'updated_at'], name='bss_status_updated_idx'),
+        ]
 
     def __str__(self):
         return f"{self.section.name} @ {self.batch.id}: {self.status}"

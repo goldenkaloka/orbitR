@@ -502,7 +502,7 @@ class PoolOrderService:
         from apps.orders.models import DeliveryBatch
         from domain.services.driver_free_service import DriverFreeService
 
-        CANCELLABLE_STATES = {'CREATED', 'PENDING_DRIVER', 'DISPATCHED'}
+        CANCELLABLE_STATES = {'ACCUMULATING', 'SOFT_LOCK', 'PENDING_DRIVER', 'DISPATCHED'}
 
         try:
             with transaction.atomic():
