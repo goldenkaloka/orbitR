@@ -12,18 +12,21 @@ from apps.pricing.models import ZonePricingTier
 logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
-    help = 'Auto-creates operational zones by fetching sub-ward (admin_level=10) boundaries from OpenStreetMap Overpass API.'
+    help = 'Auto-creates operational zones by fetching ward (admin_level=8) or sub-ward (admin_level=10) boundaries from OpenStreetMap Overpass API.'
 
     def add_arguments(self, parser):
         parser.add_argument('--bbox', type=str, default='-6.82,39.15,-6.72,39.28',
                             help='Bounding box coordinates (south, west, north, east). Default covers central Dar.')
+        parser.add_argument('--level', type=int, default=8, choices=[8, 10],
+                            help='OSM administrative boundary level to query: 8 for Wards (Kata), 10 for Sub-wards (Mitaa). Default is 8.')
         parser.add_argument('--limit', type=int, default=0,
-                            help='Limit the number of sub-wards to import (default: 0 for unlimited)')
+                            help='Limit the number of elements to import (default: 0 for unlimited)')
         parser.add_argument('--clear', action='store_true',
                             help='Clear all existing operational zones and pricing tiers before importing')
 
     def handle(self, *args, **options):
         bbox = options['bbox']
+        level = options['level']
         limit = options['limit']
         clear = options['clear']
 
@@ -34,10 +37,10 @@ class Command(BaseCommand):
                 OperationalZone.objects.all().delete()
             self.stdout.write(self.style.SUCCESS("Database cleared successfully."))
 
-        # Query Overpass for admin_level=10 relations
+        # Query Overpass for admin_level relations
         query = f"""
         [out:json][timeout:90];
-        relation["boundary"="administrative"]["admin_level"="10"]({bbox});
+        relation["boundary"="administrative"]["admin_level"="{level}"]({bbox});
         out geom;
         """
 
@@ -55,8 +58,9 @@ class Command(BaseCommand):
 
         response = None
         success = False
+        level_name = "Ward" if level == 8 else "Sub-ward"
 
-        self.stdout.write(f"Querying sub-wards inside bounding box: {bbox}")
+        self.stdout.write(f"Querying {level_name}s inside bounding box: {bbox}")
         for url in endpoints:
             self.stdout.write(f"Connecting to: {url}...")
             try:
@@ -80,7 +84,7 @@ class Command(BaseCommand):
             return
 
         elements = data.get("elements", [])
-        self.stdout.write(f"Found {len(elements)} sub-ward boundaries in OpenStreetMap.")
+        self.stdout.write(f"Found {len(elements)} {level_name} boundaries in OpenStreetMap.")
 
         if limit > 0:
             self.stdout.write(f"Applying limit: only importing first {limit} elements.")
@@ -95,7 +99,7 @@ class Command(BaseCommand):
                 continue
 
             osm_id = element.get("id")
-            self.stdout.write(f"Processing sub-ward: {name} (OSM ID: {osm_id})...")
+            self.stdout.write(f"Processing {level_name.lower()}: {name} (OSM ID: {osm_id})...")
 
             # Extract way coordinate arrays
             ways = []
@@ -133,7 +137,7 @@ class Command(BaseCommand):
                         name=name,
                         defaults={
                             "boundary": boundary,
-                            "description": f"Sub-ward imported from OSM (OSM ID: {osm_id})",
+                            "description": f"{level_name} imported from OSM (OSM ID: {osm_id})",
                             "is_active": True
                         }
                     )
@@ -148,13 +152,13 @@ class Command(BaseCommand):
                     )
 
                 status_text = "Created" if created else "Updated"
-                self.stdout.write(self.style.SUCCESS(f"  ✓ {status_text} zone: {name} with 1500 TSh base fee override."))
+                self.stdout.write(self.style.SUCCESS(f"  ✓ {status_text} zone: {name} as a {level_name} with 1500 TSh base fee override."))
                 imported_count += 1
 
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"  ✗ Failed to save zone {name}: {e}"))
 
-        self.stdout.write(self.style.SUCCESS(f"\nImport finished! Successfully imported/updated {imported_count} zones."))
+        self.stdout.write(self.style.SUCCESS(f"\nImport finished! Successfully imported/updated {imported_count} {level_name.lower()} zones."))
 
     def stitch_ways(self, ways):
         """
