@@ -12,13 +12,13 @@ from apps.pricing.models import ZonePricingTier
 logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
-    help = 'Auto-creates operational zones by fetching ward (admin_level=8) or sub-ward (admin_level=10) boundaries from OpenStreetMap Overpass API.'
+    help = 'Auto-creates operational zones by fetching ward (admin_level=9) or sub-ward (admin_level=10) boundaries from OpenStreetMap Overpass API.'
 
     def add_arguments(self, parser):
         parser.add_argument('--bbox', type=str, default='-6.82,39.15,-6.72,39.28',
                             help='Bounding box coordinates (south, west, north, east). Default covers central Dar.')
-        parser.add_argument('--level', type=int, default=8, choices=[8, 10],
-                            help='OSM administrative boundary level to query: 8 for Wards (Kata), 10 for Sub-wards (Mitaa). Default is 8.')
+        parser.add_argument('--level', type=int, default=9, choices=[9, 10],
+                            help='OSM administrative boundary level to query: 9 for Wards (Kata), 10 for Sub-wards (Mitaa). Default is 9.')
         parser.add_argument('--limit', type=int, default=0,
                             help='Limit the number of elements to import (default: 0 for unlimited)')
         parser.add_argument('--clear', action='store_true',
@@ -58,7 +58,7 @@ class Command(BaseCommand):
 
         response = None
         success = False
-        level_name = "Ward" if level == 8 else "Sub-ward"
+        level_name = "Ward" if level == 9 else "Sub-ward"
 
         self.stdout.write(f"Querying {level_name}s inside bounding box: {bbox}")
         for url in endpoints:
