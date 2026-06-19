@@ -15,8 +15,10 @@ class Command(BaseCommand):
     help = 'Auto-creates operational zones by fetching ward (admin_level=9) or sub-ward (admin_level=10) boundaries from OpenStreetMap Overpass API.'
 
     def add_arguments(self, parser):
-        parser.add_argument('--bbox', type=str, default='-6.82,39.15,-6.72,39.28',
-                            help='Bounding box coordinates (south, west, north, east). Default covers central Dar.')
+        parser.add_argument('--bbox', type=str, default=None,
+                            help='Bounding box coordinates (south, west, north, east). If provided, area is ignored.')
+        parser.add_argument('--area', type=str, default='Dar es Salaam',
+                            help='OSM administrative area name (e.g. "Dar es Salaam"). Default is "Dar es Salaam".')
         parser.add_argument('--level', type=int, default=9, choices=[9, 10],
                             help='OSM administrative boundary level to query: 9 for Wards (Kata), 10 for Sub-wards (Mitaa). Default is 9.')
         parser.add_argument('--limit', type=int, default=0,
@@ -26,6 +28,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         bbox = options['bbox']
+        area = options['area']
         level = options['level']
         limit = options['limit']
         clear = options['clear']
@@ -37,12 +40,24 @@ class Command(BaseCommand):
                 OperationalZone.objects.all().delete()
             self.stdout.write(self.style.SUCCESS("Database cleared successfully."))
 
-        # Query Overpass for admin_level relations
-        query = f"""
-        [out:json][timeout:90];
-        relation["boundary"="administrative"]["admin_level"="{level}"]({bbox});
-        out geom;
-        """
+        level_name = "Ward" if level == 9 else "Sub-ward"
+
+        # Query Overpass either by administrative area boundary or bounding box
+        if bbox:
+            query = f"""
+            [out:json][timeout:90];
+            relation["boundary"="administrative"]["admin_level"="{level}"]({bbox});
+            out geom;
+            """
+            self.stdout.write(f"Querying {level_name}s inside bounding box: {bbox}")
+        else:
+            query = f"""
+            [out:json][timeout:180];
+            area["name"="{area}"]->.searchArea;
+            relation["boundary"="administrative"]["admin_level"="{level}"](area.searchArea);
+            out geom;
+            """
+            self.stdout.write(f"Querying {level_name}s inside area boundary: {area}")
 
         endpoints = [
             "https://lz4.overpass-api.de/api/interpreter",
@@ -58,9 +73,7 @@ class Command(BaseCommand):
 
         response = None
         success = False
-        level_name = "Ward" if level == 9 else "Sub-ward"
 
-        self.stdout.write(f"Querying {level_name}s inside bounding box: {bbox}")
         for url in endpoints:
             self.stdout.write(f"Connecting to: {url}...")
             try:
