@@ -216,6 +216,12 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             return RestaurantListSerializer
         return RestaurantSerializer
 
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if hasattr(self, '_list_busy_ids'):
+            context['busy_ids'] = self._list_busy_ids
+        return context
+
     def get_queryset(self):
         queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').filter(is_active=True)
         category = self.request.query_params.get('category')
@@ -254,7 +260,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         restaurant_ids = list(base_qs.values_list('id', flat=True))
         busy_ids = compute_busy_restaurant_ids(restaurant_ids)
 
-        self.serializer_context['busy_ids'] = busy_ids
+        self._list_busy_ids = busy_ids
 
         version = cache.get('restaurant_list_cache_version', 0)
         cache_key = stable_cache_key(
