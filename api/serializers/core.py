@@ -132,8 +132,10 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         return None
 
     def get_foods(self, obj):
-        request = self.context.get('request')
-        user = getattr(request, 'user', None) if request else None
+        user = self.context.get('_user')
+        if user is None:
+            request = self.context.get('request')
+            user = getattr(request, 'user', None) if request else None
         role = getattr(user, 'serialized_role', None) if user else None
         if user and role in ('vendor', 'vendor_staff', 'admin'):
             qs = obj.foods.all()
