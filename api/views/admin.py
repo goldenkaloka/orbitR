@@ -177,14 +177,14 @@ class AdminViewSet(viewsets.GenericViewSet):
     def promote_driver(self, request):
         """
         Promote a registered user to permanent driver.
-        Body: { user_id, ?serves_all, ?can_assign, ?priority, ?home_restaurant_id, ?max_active_orders }
+        Body: { user_id, ?serves_all, ?can_assign, ?priority, ?home_restaurant_id, ?max_active_orders, ?vehicle_type }
         """
         user_id = request.data.get('user_id')
         if not user_id:
             return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         extra = {}
-        for key in ('serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders'):
+        for key in ('serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders', 'vehicle_type'):
             if key in request.data:
                 extra[key] = request.data[key]
 

@@ -69,7 +69,7 @@ class PromoteUserService:
             user.save(update_fields=['role'])
 
             defaults = {'status': 'OFFLINE'}
-            allowed_fields = {'serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders'}
+            allowed_fields = {'serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders', 'vehicle_type'}
             for key in allowed_fields:
                 if key in extra_fields and extra_fields[key] is not None:
                     defaults[key] = extra_fields[key]
