@@ -1,10 +1,11 @@
-from celery import shared_task
-from django.utils import timezone
-from django.db.models import Q
-from datetime import timedelta
-from apps.delivery.models import Driver
-from domain.fsm.driver_fsm import DriverFSM
 import logging
+from datetime import timedelta
+
+from apps.delivery.models import Driver
+from celery import shared_task
+from django.db.models import Q
+from django.utils import timezone
+from domain.fsm.driver_fsm import DriverFSM
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +69,11 @@ def broadcast_driver_location(order_id: str, lat: float, lng: float, heading: fl
     to Celery so the request-response cycle is not blocked.
     """
     from apps.events.utils import broadcast_order_location
-    from infrastructure.notifications.service import NotificationService
-    from django.core.cache import cache
     from apps.orders.models import Order
     from django.contrib.gis.geos import Point
+    from django.core.cache import cache
+    from infrastructure.notifications.service import NotificationService
+
     # 1. WebSocket broadcast
     broadcast_order_location(
         order_id=order_id,
@@ -109,9 +111,9 @@ def notify_nearby_pool_created(pool_id: str, restaurant_name: str):
     Finds users with active order/pool activity within 1 km of the new pool
     and sends them a push notification so they can discover and join.
     """
-    from apps.orders.models import OrderPool, Order
-    from infrastructure.notifications.service import NotificationService
+    from apps.orders.models import Order, OrderPool
     from django.contrib.gis.measure import D
+    from infrastructure.notifications.service import NotificationService
 
     try:
         pool = OrderPool.objects.get(id=pool_id)

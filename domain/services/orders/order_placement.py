@@ -1,17 +1,18 @@
 import logging
 import random
 from decimal import Decimal
-from django.db import transaction
-from django.utils import timezone
+
 import h3
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from apps.geo.models import ZoneH3Index
 from apps.orders.models import Order, OrderItem
 from apps.restaurants.models import Restaurant
-from apps.geo.models import ZoneH3Index
+from django.db import transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
-from domain.events.types import OrderCreated, OrderConfirmed
-from domain.services.pricing_service import PricingService
+from domain.events.types import OrderConfirmed, OrderCreated
 from domain.fsm.order_fsm import OrderFSM
-from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from domain.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
 

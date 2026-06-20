@@ -1,9 +1,11 @@
-from django.db import models
-from apps.users.models import User
+import uuid
+
+from apps.delivery.models import Driver
 from apps.orders.models import Order
 from apps.restaurants.models import Restaurant
-from apps.delivery.models import Driver
-import uuid
+from apps.users.models import User
+from django.db import models
+
 
 class Review(models.Model):
     REVIEW_TYPE_CHOICES = (

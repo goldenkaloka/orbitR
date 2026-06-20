@@ -1,7 +1,9 @@
-from django.db.models.signals import pre_save, post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
+
 from .models import Food
 from .tasks import process_food_image
+
 
 @receiver(pre_save, sender=Food)
 def check_food_image_changed(sender, instance, **kwargs):

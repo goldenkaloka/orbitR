@@ -1,9 +1,9 @@
-from django.test import TestCase
-from decimal import Decimal
-from unittest.mock import patch, MagicMock
 import json
+from decimal import Decimal
+from unittest.mock import MagicMock, patch
 
-from domain.entities.route import Route, GeoCoordinate, Stop
+from django.test import TestCase
+from domain.entities.route import GeoCoordinate, Route, Stop
 from domain.services.mapbox_routing_service import MapboxRoutingService
 
 

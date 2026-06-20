@@ -1,15 +1,18 @@
 import logging
 from datetime import timedelta
-from celery import shared_task
-from django.utils import timezone
-from django.db import transaction
-from django.db.models import Q
-from django.core.cache import cache
-from django.contrib.auth import get_user_model
 
 from apps.orders.models import Order
+from celery import shared_task
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.db import transaction
+from django.db.models import Q
+from django.utils import timezone
 from domain.services.order_services import CancelOrderService
-from infrastructure.notifications.messages import vendor_order_overdue, order_cancelled_restaurant_delay
+from infrastructure.notifications.messages import (
+    order_cancelled_restaurant_delay,
+    vendor_order_overdue,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -44,8 +47,8 @@ def dispatch_batch_task(batch_id: str):
     from apps.orders.models import DeliveryBatch
     from apps.restaurants.models import Restaurant
     from domain.services.batch_fsm import BatchFSM, BatchFSMError
-    from infrastructure.notifications.messages import vendor_need_driver
     from infrastructure.notifications.channels import default_channel
+    from infrastructure.notifications.messages import vendor_need_driver
 
     lock_key = f'dispatch_batch_lock:{batch_id}'
     lock_ttl = 60
@@ -141,8 +144,8 @@ def pre_assign_drivers_for_batch(batch_id: str):
     """
     from apps.orders.models import DeliveryBatch
     from domain.services.permissions import restaurant_visible_drivers
-    from infrastructure.notifications.messages import vendor_need_driver
     from infrastructure.notifications.channels import default_channel
+    from infrastructure.notifications.messages import vendor_need_driver
 
     try:
         batch = DeliveryBatch.objects.get(id=batch_id)
@@ -251,8 +254,8 @@ def expire_stale_locked_pools_task():
     Uses lock_expires_at set by lock_pool for precision.
     Auto-refunds any members who already paid.
     """
-    from apps.orders.models import OrderPool
     from apps.events.utils import broadcast_pool_status
+    from apps.orders.models import OrderPool
     from domain.events.bus import EventBus
     from domain.events.types import PoolExpired
     from domain.fsm.pool_fsm import PoolFSM
@@ -302,8 +305,8 @@ def expire_stale_pools_task():
     Broadcasts EXPIRED status to all connected members via WebSocket.
     LOCKED pools are handled by expire_stale_locked_pools_task.
     """
-    from apps.orders.models import OrderPool
     from apps.events.utils import broadcast_pool_status
+    from apps.orders.models import OrderPool
 
     expired_pools = OrderPool.objects.filter(
         status='OPEN',
@@ -337,7 +340,8 @@ def recover_stuck_pools_task():
     but no master Order was ever created (e.g. due to a crash during finalize_pool).
     Re-triggers finalize_pool to recover these orphaned pools.
     """
-    from apps.orders.models import OrderPool, Order as MasterOrder
+    from apps.orders.models import Order as MasterOrder
+    from apps.orders.models import OrderPool
     from domain.services.order_services import PoolOrderService
 
     # Find LOCKED pools where every member has PAID
@@ -400,9 +404,9 @@ def expire_stale_preparing_orders_task():
     This ensures orders don't get "stuck" at the restaurant indefinitely.
     """
     from django.conf import settings
-    from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
-    from infrastructure.notifications.service import NotificationService
+    from domain.fsm.order_fsm import InvalidStateTransitionError, OrderFSM
     from domain.services.order_services import CancelOrderService
+    from infrastructure.notifications.service import NotificationService
 
     confirmed_grace = getattr(settings, 'CONFIRMED_TO_PREPARING_GRACE_MINUTES', 20)
     preparing_timeout = getattr(settings, 'PREPARING_ORDER_TIMEOUT_MINUTES', 45)

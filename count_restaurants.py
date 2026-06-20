@@ -1,5 +1,6 @@
 import os
 import sys
+
 import django
 
 # Set up Django environment
@@ -7,6 +8,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
 from apps.restaurants.models import Restaurant
+
 
 def check_restaurants():
     print("=" * 70)

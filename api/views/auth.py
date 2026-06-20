@@ -1,17 +1,19 @@
 import random
-import uuid
 import re
 import secrets
-from rest_framework.views import APIView
-from rest_framework.response import Response
+import uuid
+
+from apps.users.models import OTPCode, User
+from django.core.cache import cache
+from django.db import transaction
+from domain.events.bus import EventBus
+from domain.events.types import AuthOTPRequested, AuthUserRegistered, AuthUserVerified
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from apps.users.models import User, OTPCode
-from domain.events.bus import EventBus
-from domain.events.types import AuthOTPRequested, AuthUserVerified, AuthUserRegistered
-from django.db import transaction
-from django.core.cache import cache
+
 
 def normalize_phone(phone):
     """

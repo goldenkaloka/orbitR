@@ -1,5 +1,6 @@
 import os
 import sys
+
 import django
 import h3
 
@@ -9,6 +10,7 @@ django.setup()
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from apps.geo.models import OperationalZone, ZoneH3Index
 from apps.restaurants.models import Restaurant
+
 
 def check_zone(lat, lng):
     print("=========================================")

@@ -26,9 +26,9 @@ class GeoUtilsTests(unittest.TestCase):
         self.assertGreaterEqual(len(neighbors), 1)
 
     def test_polygon_to_h3_cells_converts_geos_polygon(self):
-        from django.contrib.gis.geos import Polygon
         from apps.core.geo_utils import polygon_to_h3_cells
-        
+        from django.contrib.gis.geos import Polygon
+
         # Small square polygon in Dar es Salaam
         # (min_lng, min_lat, max_lng, max_lat)
         poly = Polygon.from_bbox((39.20, -6.80, 39.21, -6.79))

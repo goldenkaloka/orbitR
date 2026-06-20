@@ -1,14 +1,16 @@
 import os
-import django
 import sys
+
+import django
 
 # Setup Django environment
 sys.path.append(os.getcwd())
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from infrastructure.payment_gateways.factory import get_payment_gateway
 from django.conf import settings
+from infrastructure.payment_gateways.factory import get_payment_gateway
+
 
 def test_easypay_init():
     print("🚀 Initializing EasyPay Gateway Test...")

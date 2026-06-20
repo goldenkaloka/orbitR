@@ -1,9 +1,10 @@
+from apps.pricing.models import ZonePricingTier
 from django.contrib import admin
-from unfold.admin import ModelAdmin, TabularInline
 from leaflet.admin import LeafletGeoAdminMixin
+from unfold.admin import ModelAdmin, TabularInline
+
 from .models import OperationalZone, ZoneH3Index
 
-from apps.pricing.models import ZonePricingTier
 
 class ZonePricingTierInline(TabularInline):
     model = ZonePricingTier

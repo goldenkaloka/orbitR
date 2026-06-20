@@ -1,5 +1,6 @@
 from domain.fsm.order_fsm import InvalidStateTransitionError
 
+
 class DriverFSM:
     STATES = [
         'ONLINE',

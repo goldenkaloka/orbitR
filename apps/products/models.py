@@ -1,6 +1,8 @@
-from django.db import models
-from apps.restaurants.models import Restaurant
 import uuid
+
+from apps.restaurants.models import Restaurant
+from django.db import models
+
 
 class Food(models.Model):
     CATEGORY_CHOICES = (

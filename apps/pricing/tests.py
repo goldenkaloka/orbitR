@@ -1,11 +1,18 @@
-from django.test import TestCase
-from django.contrib.gis.geos import Point
 from decimal import Decimal
-from apps.restaurants.models import Restaurant
+
 from apps.geo.models import OperationalZone
-from apps.pricing.models import PricingPolicy, ZonePricingTier, DeliveryFeeLog, DistanceTier
-from domain.services.pricing_service import PricingService
+from apps.pricing.models import (
+    DeliveryFeeLog,
+    DistanceTier,
+    PricingPolicy,
+    ZonePricingTier,
+)
+from apps.restaurants.models import Restaurant
 from apps.users.models import User
+from django.contrib.gis.geos import Point
+from django.test import TestCase
+from domain.services.pricing_service import PricingService
+
 
 class PricingServiceTest(TestCase):
     def setUp(self):

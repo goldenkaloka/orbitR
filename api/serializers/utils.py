@@ -1,5 +1,7 @@
 import json
+
 from django.contrib.gis.geos import Point
+
 
 def parse_coordinate_dict(data, key='location'):
     """

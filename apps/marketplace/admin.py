@@ -1,7 +1,9 @@
 from django.contrib import admin
-from unfold.admin import ModelAdmin
 from leaflet.admin import LeafletGeoAdminMixin
-from .models import MarketplaceProduct, MarketplaceCategory, ProductImage
+from unfold.admin import ModelAdmin
+
+from .models import MarketplaceCategory, MarketplaceProduct, ProductImage
+
 
 class ProductImageInline(admin.TabularInline):
     model = ProductImage

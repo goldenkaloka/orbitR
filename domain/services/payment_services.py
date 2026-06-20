@@ -1,12 +1,20 @@
-from apps.payments.models import Payment, Transaction, FailedPayout
-from django.db import transaction
 from decimal import Decimal
-from django.utils import timezone
+
 from apps.orders.models import Order
+from apps.payments.models import FailedPayout, Payment, Transaction
+from django.db import transaction
+from django.utils import timezone
+from domain.events.bus import EventBus
+from domain.events.types import (
+    PaymentCollected,
+    PaymentDisbursed,
+    PaymentFailed,
+    PaymentInitiated,
+    PaymentRefunded,
+)
 from domain.fsm.payment_fsm import PaymentFSM
 from infrastructure.payment_gateways.factory import get_payment_gateway
-from domain.events.bus import EventBus
-from domain.events.types import PaymentCollected, PaymentInitiated, PaymentDisbursed, PaymentRefunded, PaymentFailed
+
 
 class PaymentTargetResolver:
     @staticmethod
@@ -194,7 +202,7 @@ class CompletePaymentService:
 
     @staticmethod
     def _handle_pool_payment(payment):
-        from apps.orders.models import PoolMember, OrderPool
+        from apps.orders.models import OrderPool, PoolMember
         member = PoolMember.objects.get(id=payment.payable_id)
         pool = OrderPool.objects.select_for_update().get(id=member.pool_id)
         
@@ -446,9 +454,10 @@ class ReleasePaymentService:
         Distributes the restaurant payout among the sections (stalls) that prepared the items.
         If any items have no section, their share goes to the restaurant owner's wallet.
         """
+        from decimal import Decimal
+
         from apps.wallets.models import Wallet
         from domain.services.wallet_services import WalletDomainService
-        from decimal import Decimal
 
         items = list(order.items.select_related('food', 'section').all())
         if not items:

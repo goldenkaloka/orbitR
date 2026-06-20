@@ -1,13 +1,13 @@
-import requests
 import json
 import logging
 from decimal import Decimal
-from django.core.management.base import BaseCommand
-from django.contrib.gis.geos import Polygon, MultiPolygon, LineString, MultiLineString
-from django.db import transaction
 
+import requests
 from apps.geo.models import OperationalZone
 from apps.pricing.models import ZonePricingTier
+from django.contrib.gis.geos import LineString, MultiLineString, MultiPolygon, Polygon
+from django.core.management.base import BaseCommand
+from django.db import transaction
 
 logger = logging.getLogger(__name__)
 

@@ -1,16 +1,16 @@
-from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.exceptions import ValidationError
-from apps.marketplace.models import MarketplaceProduct, MarketplaceCategory
 from api.serializers.marketplace import (
-    MarketplaceProductSerializer,
-    MarketplaceProductListSerializer,
     MarketplaceCategorySerializer,
+    MarketplaceProductListSerializer,
+    MarketplaceProductSerializer,
 )
-from domain.services.marketplace_services import MarketplaceService
-from django.core.cache import cache
 from apps.core.cache_keys import stable_cache_key
+from apps.marketplace.models import MarketplaceCategory, MarketplaceProduct
+from django.core.cache import cache
+from domain.services.marketplace_services import MarketplaceService
+from rest_framework import permissions, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 
 class MarketplaceCategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -50,7 +50,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         if lat and lng:
             from django.contrib.gis.db.models.functions import Distance
             from django.contrib.gis.geos import Point
-            from django.db.models import Case, Value, FloatField, When
+            from django.db.models import Case, FloatField, Value, When
             user_location = Point(float(lng), float(lat), srid=4326)
             queryset = queryset.annotate(
                 distance=Case(
@@ -78,6 +78,18 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
 
         return queryset
 
+    @action(detail=False, methods=['GET'])
+    def mine(self, request):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    def invalidate_list_cache(self):
+        try:
+            cache.incr('marketplace_list_cache_version')
+        except ValueError:
+            cache.set('marketplace_list_cache_version', 1)
+
     def list(self, request, *args, **kwargs):
         lat = request.query_params.get('lat')
         lng = request.query_params.get('lng')
@@ -86,8 +98,13 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
 
+        try:
+            version = cache.get('marketplace_list_cache_version') or 0
+        except Exception:
+            version = 0
+
         cache_key = stable_cache_key(
-            "marketplace_list",
+            f"marketplace_list:v{version}",
             {
                 "lat": lat or "none",
                 "lng": lng or "none",
@@ -104,12 +121,6 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         response = super().list(request, *args, **kwargs)
         cache.set(cache_key, response.data, 900)
         return response
-
-    @action(detail=False, methods=['GET'])
-    def mine(self, request):
-        queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
 
     MAX_IMAGE_SIZE_MB = 5
     MAX_IMAGES_COUNT = 10
@@ -135,6 +146,15 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             images=images
         )
         serializer.instance = product
+        self.invalidate_list_cache()
+
+    def perform_update(self, serializer):
+        serializer.save()
+        self.invalidate_list_cache()
+
+    def perform_destroy(self, instance):
+        instance.delete()
+        self.invalidate_list_cache()
 
     def create(self, request, *args, **kwargs):
         """
@@ -219,6 +239,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
 
         if response.get('success'):
             if response.get('instant_success'):
+                self.invalidate_list_cache()
                 return Response({
                     'payment_id': payment.id,
                     'message': 'Mock Payment Successful! Product is now ACTIVE.',
@@ -265,6 +286,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
 
         if response.get('success'):
             if response.get('instant_success'):
+                self.invalidate_list_cache()
                 return Response({
                     'payment_id': payment.id,
                     'message': 'Mock Reactivation Successful! Product is now ACTIVE.',

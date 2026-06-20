@@ -1,7 +1,8 @@
-import requests
 import logging
-from django.conf import settings
+
+import requests
 from celery import shared_task
+from django.conf import settings
 
 logger = logging.getLogger(__name__)
 

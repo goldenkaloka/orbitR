@@ -1,10 +1,12 @@
 import os
+
 import django
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
 from apps.marketplace.models import MarketplaceCategory
+
 
 def seed_categories():
     categories = [

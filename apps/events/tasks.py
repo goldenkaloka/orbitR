@@ -1,6 +1,9 @@
 import logging
+
 from celery import shared_task
-from .centrifugo import publish as _publish, broadcast as _broadcast
+
+from .centrifugo import broadcast as _broadcast
+from .centrifugo import publish as _publish
 
 logger = logging.getLogger(__name__)
 
@@ -17,10 +20,11 @@ def retry_stuck_events():
     """
     Find event logs stuck in PENDING status for > 2 minutes and retry dispatch.
     """
-    from apps.events.models import EventLog
-    from domain.events.tasks import dispatch_event_task
-    from django.utils import timezone
     from datetime import timedelta
+
+    from apps.events.models import EventLog
+    from django.utils import timezone
+    from domain.events.tasks import dispatch_event_task
 
     threshold = timezone.now() - timedelta(minutes=2)
     stuck_events = EventLog.objects.filter(status='PENDING', created_at__lt=threshold)

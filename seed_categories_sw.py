@@ -1,7 +1,9 @@
 import os
 import sys
+
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 import django
+
 django.setup()
 from apps.marketplace.models import MarketplaceCategory
 

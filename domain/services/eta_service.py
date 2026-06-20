@@ -1,7 +1,8 @@
 import logging
 from decimal import Decimal
-from django.utils import timezone
+
 from django.conf import settings
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 

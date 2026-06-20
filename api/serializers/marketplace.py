@@ -1,6 +1,10 @@
-from rest_framework import serializers
-from apps.marketplace.models import MarketplaceProduct, ProductImage, MarketplaceCategory
 from api.serializers.utils import parse_coordinate_dict
+from apps.marketplace.models import (
+    MarketplaceCategory,
+    MarketplaceProduct,
+    ProductImage,
+)
+from rest_framework import serializers
 
 
 class MarketplaceCategorySerializer(serializers.ModelSerializer):

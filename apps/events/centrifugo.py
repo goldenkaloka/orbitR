@@ -1,7 +1,8 @@
 import logging
 import time
-import jwt
+
 import httpx
+import jwt
 from django.conf import settings
 
 logger = logging.getLogger(__name__)

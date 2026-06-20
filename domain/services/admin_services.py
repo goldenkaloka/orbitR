@@ -1,21 +1,22 @@
 from decimal import Decimal
-from django.db import transaction
-from django.utils import timezone
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
+
 from apps.delivery.models import Driver
 from apps.orders.models import Order
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
+from django.db import transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import (
-    UserPromotedToVendor,
-    UserPromotedToDriver,
-    TempDriverRegistered,
     OrderDisputed,
     OrderResolved,
+    TempDriverRegistered,
+    UserPromotedToDriver,
+    UserPromotedToVendor,
 )
+from domain.fsm.order_fsm import InvalidStateTransitionError, OrderFSM
 from domain.fsm.payment_fsm import PaymentFSM
-from domain.fsm.order_fsm import OrderFSM, InvalidStateTransitionError
-from domain.fsm.payment_fsm import PaymentFSM
+
 
 class PromoteUserService:
     @staticmethod

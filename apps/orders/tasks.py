@@ -1,12 +1,13 @@
-from celery import shared_task
-from django.utils import timezone
-from django.db import transaction
+import logging
 from datetime import timedelta
-from apps.orders.models import Order, Dispute
-from domain.fsm.order_fsm import OrderFSM
+
+from apps.orders.models import Dispute, Order
+from celery import shared_task
+from django.db import transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import OrderCancelled
-import logging
+from domain.fsm.order_fsm import OrderFSM
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,8 @@ def cleanup_unpaid_orders():
 
     for order in cancelled_orders:
         try:
-            from infrastructure.notifications.service import NotificationService
             from infrastructure.notifications.messages import order_expired_unpaid
+            from infrastructure.notifications.service import NotificationService
             eu_title, eu_body = order_expired_unpaid(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.customer.id),
@@ -92,8 +93,12 @@ def dispute_sla_check():
                         d.escalated_at = now
                         d.save(update_fields=['status', 'escalated_at'])
                         escalated_count += 1
-                        from infrastructure.notifications.service import NotificationService
-                        from infrastructure.notifications.messages import dispute_escalated_admin
+                        from infrastructure.notifications.messages import (
+                            dispute_escalated_admin,
+                        )
+                        from infrastructure.notifications.service import (
+                            NotificationService,
+                        )
                         de_title, de_body = dispute_escalated_admin(str(d.id)[:8], 'PENDING > 1h')
                         NotificationService.notify_admins(
                             title=de_title,

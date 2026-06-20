@@ -1,9 +1,9 @@
-from django.db import transaction
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant, RestaurantSection
-from apps.restaurants.models import SectionStaff
+from apps.restaurants.models import Restaurant, RestaurantSection, SectionStaff
+from django.db import transaction
 from domain.events.bus import EventBus
 from domain.events.types import FoodCreated, FoodDeleted
+
 
 class MenuService:
     @staticmethod

@@ -1,11 +1,13 @@
-from django.db import models
-from apps.users.models import User
-from django.contrib.gis.db import models as gis_models
-from apps.core.geo_utils import latlng_to_h3
+import datetime
 import uuid
 from decimal import Decimal
+
+from apps.core.geo_utils import latlng_to_h3
+from apps.users.models import User
+from django.contrib.gis.db import models as gis_models
+from django.db import models
 from django.utils import timezone
-import datetime
+
 
 class MarketplaceCategory(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

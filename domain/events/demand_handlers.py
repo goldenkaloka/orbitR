@@ -1,22 +1,27 @@
 import logging
+
+from apps.events.utils import (
+    broadcast_demand_update,
+    broadcast_new_demand_to_sellers,
+)
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from domain.events.bus import EventBus
 from domain.events.types import (
-    BuyerDemandCreated, BuyerDemandExpired,
-    BuyerDemandAccepted, SellerOfferCreated,
+    BuyerDemandAccepted,
     BuyerDemandCancelled,
+    BuyerDemandCreated,
+    BuyerDemandExpired,
+    SellerOfferCreated,
 )
-from apps.events.utils import (
-    broadcast_demand_update, broadcast_new_demand_to_sellers,
-)
-from infrastructure.notifications.service import NotificationService
 from infrastructure.notifications.messages import (
-    get_demand_message, get_offer_message,
     get_demand_accepted_message_for_buyer,
     get_demand_cancelled_message,
+    get_demand_message,
+    get_offer_message,
 )
+from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 

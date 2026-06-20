@@ -1,6 +1,8 @@
+from django.conf import settings
+
 from .airpay import AirpayGateway
 from .mock import MockGateway
-from django.conf import settings
+
 
 def get_payment_gateway(provider=None, phone=None):
     """

@@ -12,9 +12,9 @@ def can_serve_restaurant(driver, restaurant_id):
 
 
 def restaurant_visible_drivers(restaurant):
-    from apps.delivery.models import Driver
     from apps.core.geo_utils import get_neighbors
-    from django.db.models import Case, When, Value, IntegerField
+    from apps.delivery.models import Driver
+    from django.db.models import Case, IntegerField, Value, When
 
     # Get neighbors (k=1 covers immediate surrounding cell hexes)
     neighbor_cells = []

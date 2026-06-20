@@ -1,24 +1,39 @@
+from api.views.admin import AdminViewSet
+from api.views.auth import (
+    MeView,
+    RegisterView,
+    RequestOTPView,
+    VerifyOTPView,
+    WsTicketView,
+)
+from api.views.batches import BatchViewSet
+from api.views.core import (
+    AppConfigView,
+    DisputeViewSet,
+    FoodViewSet,
+    NotificationViewSet,
+    OrderViewSet,
+    RestaurantViewSet,
+    UniversalSearchView,
+    UserViewSet,
+)
+from api.views.demands import BuyerDemandViewSet, ShopViewSet
+from api.views.driver import DeliveryProofViewSet, DriverViewSet
+from api.views.geo import OperationalZoneViewSet
+from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet
+from api.views.payments import AirpayWebhookView, InitiatePaymentView
+from api.views.pools import PoolOrderViewSet
+from api.views.pricing import (
+    DeliveryFeeLogViewSet,
+    PricingPolicyViewSet,
+    ZonePricingTierViewSet,
+)
+from api.views.reviews import ReviewViewSet
+from api.views.sections import BatchSectionStatusViewSet, SectionViewSet
+from api.views.subscribe_check import ws_subscribe_check
+from api.views.wallets import WalletViewSet
 from django.urls import path
 from rest_framework.routers import DefaultRouter
-from api.views.core import (
-    UserViewSet, RestaurantViewSet, OrderViewSet, 
-    FoodViewSet, NotificationViewSet, DisputeViewSet,
-    UniversalSearchView, AppConfigView
-)
-from api.views.driver import DriverViewSet, DeliveryProofViewSet
-from api.views.wallets import WalletViewSet
-from api.views.admin import AdminViewSet
-from api.views.reviews import ReviewViewSet
-from api.views.pools import PoolOrderViewSet
-from api.views.payments import AirpayWebhookView, InitiatePaymentView
-from api.views.auth import RequestOTPView, VerifyOTPView, RegisterView, MeView, WsTicketView
-from api.views.marketplace import MarketplaceProductViewSet, MarketplaceCategoryViewSet
-from api.views.demands import ShopViewSet, BuyerDemandViewSet
-from api.views.geo import OperationalZoneViewSet
-from api.views.pricing import PricingPolicyViewSet, ZonePricingTierViewSet, DeliveryFeeLogViewSet
-from api.views.batches import BatchViewSet
-from api.views.sections import SectionViewSet, BatchSectionStatusViewSet
-from api.views.subscribe_check import ws_subscribe_check
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')

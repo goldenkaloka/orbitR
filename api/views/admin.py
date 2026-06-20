@@ -1,23 +1,28 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, BasePermission
-
-from django.db import transaction
-from django.db.models import Sum, Count, Q
-from django.utils import timezone
-from django.core.cache import cache
-
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
-from apps.orders.models import Order
+from api.serializers.core import (
+    DriverSerializer,
+    OrderSerializer,
+    RestaurantSerializer,
+    UserSerializer,
+)
 from apps.delivery.models import Driver
+from apps.orders.models import Order
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
 from apps.wallets.models import Wallet
-
-from api.serializers.core import UserSerializer, RestaurantSerializer, OrderSerializer, DriverSerializer
-from domain.services.admin_services import PromoteUserService, DisputeOrderService, UpdateDriverService
-
+from django.core.cache import cache
+from django.db import transaction
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
+from domain.services.admin_services import (
+    DisputeOrderService,
+    PromoteUserService,
+    UpdateDriverService,
+)
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.response import Response
 
 
 class IsAdmin(BasePermission):

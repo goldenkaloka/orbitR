@@ -1,16 +1,19 @@
 import logging
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
 
-from apps.orders.models import DeliveryBatch, Order
+from api.serializers.core import DriverSerializer, OrderSerializer
 from apps.delivery.models import Driver
-from api.serializers.core import OrderSerializer, DriverSerializer
+from apps.orders.models import DeliveryBatch, Order
 from domain.services.orders.order_assignment import AssignBatchService
 from domain.services.permissions import can_driver_delegate, can_serve_restaurant
-from infrastructure.notifications.messages import batch_delegated_to_vendor, batch_delegated_to_driver
+from infrastructure.notifications.messages import (
+    batch_delegated_to_driver,
+    batch_delegated_to_vendor,
+)
 from infrastructure.notifications.service import NotificationService
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
 

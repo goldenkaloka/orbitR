@@ -1,6 +1,7 @@
+from apps.payments.models import Payment
 from django.core.management.base import BaseCommand
 from django.db import transaction
-from apps.payments.models import Payment
+
 
 class Command(BaseCommand):
     help = 'Backfill payable_type and payable_id for existing Payment records'

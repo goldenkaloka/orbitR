@@ -1,13 +1,13 @@
 import math
-from decimal import Decimal
 from abc import ABC, abstractmethod
-from django.contrib.gis.geos import Point
-from django.contrib.gis.db.models.functions import Distance
-from django.contrib.gis.measure import D
-from django.db.models import Count, Q, F
-from django.db import transaction
-from apps.delivery.models import Driver
+from decimal import Decimal
 
+from apps.delivery.models import Driver
+from django.contrib.gis.db.models.functions import Distance
+from django.contrib.gis.geos import Point
+from django.contrib.gis.measure import D
+from django.db import transaction
+from django.db.models import Count, F, Q
 
 
 class LocationMatcher(ABC):
@@ -26,8 +26,9 @@ class SimpleProximityStrategy(LocationMatcher):
     Works with standard float latitude/longitude.
     """
     def find_best_driver(self, restaurant_lat, restaurant_lng, max_radius_km=10):
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
         threshold = timezone.now() - timedelta(minutes=5)
         available_drivers = Driver.objects.filter(
             status='AVAILABLE',
@@ -73,8 +74,9 @@ class PostgisRadiusStrategy(LocationMatcher):
         restriction that forbids FOR UPDATE with GROUP BY. We first find candidates
         without a lock, then lock only the chosen driver's row.
         """
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
         threshold = timezone.now() - timedelta(minutes=5)
         restaurant_point = Point(float(restaurant_lng), float(restaurant_lat), srid=4326)
 

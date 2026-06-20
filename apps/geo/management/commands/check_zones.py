@@ -1,6 +1,6 @@
-from django.core.management.base import BaseCommand
+from apps.core.geo_utils import ZONE_RESOLUTION, get_neighbors, latlng_to_h3
 from apps.geo.models import OperationalZone, ZoneH3Index
-from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION, get_neighbors
+from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):

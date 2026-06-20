@@ -1,9 +1,10 @@
 from django.contrib import admin
 from django.utils.html import format_html
+from leaflet.admin import LeafletGeoAdminMixin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
-from leaflet.admin import LeafletGeoAdminMixin
-from .models import Driver, DeliveryAssignment, DeliveryProof
+
+from .models import DeliveryAssignment, DeliveryProof, Driver
 
 
 class DeliveryAssignmentInline(TabularInline):

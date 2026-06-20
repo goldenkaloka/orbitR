@@ -1,8 +1,10 @@
+import logging
+
 from celery import shared_task
 from django.db import transaction
-from .models import FailedPayout
 from domain.services.payment_services import ReleasePaymentService
-import logging
+
+from .models import FailedPayout
 
 logger = logging.getLogger(__name__)
 RETRY_BATCH_SIZE = 100
@@ -60,11 +62,12 @@ def cleanup_expired_payments():
     (USSD push timeout is ~120s, so 5min is a generous safety net).
     Before cancelling, poll the payment gateway status. If it was completed, recover it.
     """
+    from datetime import timedelta
+
     from apps.payments.models import Payment
     from django.utils import timezone
-    from datetime import timedelta
-    from infrastructure.payment_gateways.factory import get_payment_gateway
     from domain.services.payment_services import CompletePaymentService
+    from infrastructure.payment_gateways.factory import get_payment_gateway
     
     expiry_time = timezone.now() - timedelta(minutes=5)
     stuck_payments = Payment.objects.filter(status__in=['INITIATED', 'INPROCESS'], created_at__lt=expiry_time)

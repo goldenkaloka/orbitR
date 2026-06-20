@@ -1,22 +1,30 @@
 import logging
 import random
 import string
-from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
-from django.db import transaction, IntegrityError
-from django.utils import timezone
-from apps.orders.models import OrderPool, PoolMember, Order, OrderItem
+from decimal import ROUND_HALF_UP, Decimal
+
+import h3
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from apps.delivery.tasks import notify_nearby_pool_created
+from apps.events.utils import broadcast_pool_status
+from apps.geo.models import ZoneH3Index
+from apps.orders.models import Order, OrderItem, OrderPool, PoolMember
 from apps.products.models import Food
 from apps.restaurants.models import Restaurant
-from apps.geo.models import ZoneH3Index
-from apps.events.utils import broadcast_pool_status
-from apps.delivery.tasks import notify_nearby_pool_created
-from domain.services.pricing_service import PricingService
-from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
-from domain.events.types import OrderCreated, PoolLocked, PoolPaid, PoolReady, PoolCompleted, PoolCancelled
-from domain.fsm.pool_fsm import PoolFSM, InvalidPoolTransitionError
-import h3
+from domain.events.types import (
+    OrderCreated,
+    PoolCancelled,
+    PoolCompleted,
+    PoolLocked,
+    PoolPaid,
+    PoolReady,
+)
+from domain.fsm.pool_fsm import InvalidPoolTransitionError, PoolFSM
+from domain.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
 
@@ -335,6 +343,7 @@ class PoolOrderService:
         Called when all members have completed payment.
         """
         from decimal import Decimal
+
         from django.utils import timezone
 
         pool = OrderPool.objects.get(id=pool_id)

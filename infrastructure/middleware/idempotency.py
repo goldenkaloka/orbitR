@@ -1,8 +1,9 @@
 import json
 import logging
+
+from apps.core.models import IdempotencyKey
 from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
-from apps.core.models import IdempotencyKey
 
 logger = logging.getLogger(__name__)
 

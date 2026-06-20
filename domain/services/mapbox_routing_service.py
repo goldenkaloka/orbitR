@@ -1,12 +1,12 @@
-import os
 import logging
-import requests
+import os
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from typing import Optional, List, Dict, Any
 
+import requests
 from domain.entities.route import Route
-from domain.events.types import RouteCalculated, RouteOptimizationFailed
 from domain.events.bus import EventBus
+from domain.events.types import RouteCalculated, RouteOptimizationFailed
 
 logger = logging.getLogger(__name__)
 

@@ -1,18 +1,18 @@
 import logging
 import random
 from decimal import Decimal
-from django.db import transaction
-from django.utils import timezone
-from apps.orders.models import Order
-from apps.delivery.models import DeliveryAssignment
-from domain.fsm.order_fsm import OrderFSM
-from domain.fsm.driver_fsm import DriverFSM
-from domain.services.driver_service import release_driver
-from domain.services.permissions import check_restaurant_permission
-from domain.events.bus import EventBus
-from domain.events.types import OrderPreparing, FoodReady, OrderPicked, OrderDelivered
 
 from apps.core.geo_utils import haversine_distance
+from apps.delivery.models import DeliveryAssignment
+from apps.orders.models import Order
+from django.db import transaction
+from django.utils import timezone
+from domain.events.bus import EventBus
+from domain.events.types import FoodReady, OrderDelivered, OrderPicked, OrderPreparing
+from domain.fsm.driver_fsm import DriverFSM
+from domain.fsm.order_fsm import OrderFSM
+from domain.services.driver_service import release_driver
+from domain.services.permissions import check_restaurant_permission
 
 logger = logging.getLogger(__name__)
 

@@ -1,12 +1,19 @@
 import logging
 
 from domain.events.bus import EventBus
-from infrastructure.notifications.service import NotificationService
 from infrastructure.notifications.messages import (
-    order_drafted, order_confirmed, order_preparing, order_ready,
-    driver_assigned, order_picked, order_delivered, order_cancelled_customer,
-    vendor_new_order, vendor_new_group_order,
+    driver_assigned,
+    order_cancelled_customer,
+    order_confirmed,
+    order_delivered,
+    order_drafted,
+    order_picked,
+    order_preparing,
+    order_ready,
+    vendor_new_group_order,
+    vendor_new_order,
 )
+from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -167,9 +174,9 @@ def on_order_delivered(event):
 
     from apps.orders.models import Order
     from apps.payments.models import Payment
+    from django.db import transaction
     from domain.events.types import PaymentReleaseRequested, PoolCompleted
     from domain.fsm.pool_fsm import PoolFSM
-    from django.db import transaction
 
     try:
         order = Order.objects.select_related('customer').get(id=event.aggregate_id)
@@ -240,9 +247,15 @@ def on_dispatch_failed(event):
 
 def register_handlers():
     from domain.events.types import (
-        OrderCreated, OrderConfirmed, OrderPreparing, FoodReady,
-        DriverAssigned, OrderPicked, OrderDelivered, OrderCancelled,
         DispatchFailed,
+        DriverAssigned,
+        FoodReady,
+        OrderCancelled,
+        OrderConfirmed,
+        OrderCreated,
+        OrderDelivered,
+        OrderPicked,
+        OrderPreparing,
     )
     order_events = [
         OrderCreated, OrderConfirmed, OrderPreparing, FoodReady,

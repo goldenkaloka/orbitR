@@ -1,19 +1,19 @@
 import uuid
 from decimal import Decimal
 from unittest.mock import patch
-from django.urls import reverse
-from django.test import override_settings
 
-from rest_framework.test import APITransactionTestCase
-from rest_framework import status
-
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
-from apps.products.models import Food
-from apps.orders.models import Order, OrderItem
 from apps.delivery.models import Driver
+from apps.orders.models import Order, OrderItem
 from apps.payments.models import Payment, Transaction
 from apps.pricing.models import PricingPolicy
+from apps.products.models import Food
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
+from django.test import override_settings
+from django.urls import reverse
+from rest_framework import status
+from rest_framework.test import APITransactionTestCase
+
 
 class OrderLifecycleE2ETest(APITransactionTestCase):
 
@@ -70,9 +70,9 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         )
 
         # 4. Setup OperationalZone covering the delivery area
-        from django.contrib.gis.geos import Polygon, MultiPolygon
-        from apps.geo.models import OperationalZone, ZoneH3Index
         import h3
+        from apps.geo.models import OperationalZone, ZoneH3Index
+        from django.contrib.gis.geos import MultiPolygon, Polygon
         poly = Polygon((
             (39.19, -6.80), (39.23, -6.80), (39.23, -6.78),
             (39.19, -6.78), (39.19, -6.80)

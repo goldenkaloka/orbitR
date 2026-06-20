@@ -1,7 +1,8 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
-from .models import Payment, Transaction, FailedPayout
+
+from .models import FailedPayout, Payment, Transaction
 
 
 class TransactionInline(TabularInline):

@@ -1,13 +1,49 @@
-from decimal import Decimal
-from django.utils import timezone
-from django.core.cache import cache
 import logging
-import h3
+from decimal import Decimal
+from types import SimpleNamespace
 
-from apps.pricing.models import PricingPolicy, ZonePricingTier, DeliveryFeeLog, DistanceTier
+import h3
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from apps.pricing.models import (
+    DeliveryFeeLog,
+    DistanceTier,
+    PricingPolicy,
+    ZonePricingTier,
+)
+from django.core.cache import cache
+from django.forms.models import model_to_dict
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+
+def _policy_from_dict(data):
+    """Reconstruct a policy-like object from a serialized dict."""
+    if data is None:
+        return None
+    obj = SimpleNamespace(**data)
+    obj.pk = data.get('id')
+    return obj
+
+
+def _policy_to_dict(policy):
+    """Serialize a PricingPolicy to a plain dict for cache."""
+    d = model_to_dict(policy)
+    d['id'] = policy.pk
+    return d
+
+
+def _tier_from_dict(data):
+    """Reconstruct a distance tier-like object from a serialized dict."""
+    if data is None:
+        return None
+    return SimpleNamespace(**data)
+
+
+def _tier_to_dict(tier):
+    """Serialize a DistanceTier to a plain dict for cache."""
+    return model_to_dict(tier)
+
 
 class PricingService:
     """
@@ -23,13 +59,14 @@ class PricingService:
     @classmethod
     def get_active_policy(cls):
         """Fetches active policy from cache or DB. Creates default if none exists."""
-        policy = cache.get(cls.CACHE_KEY_ACTIVE_POLICY)
+        cached = cache.get(cls.CACHE_KEY_ACTIVE_POLICY)
+        if cached is not None:
+            return _policy_from_dict(cached)
+        policy = PricingPolicy.objects.filter(is_active=True).first()
         if not policy:
-            policy = PricingPolicy.objects.filter(is_active=True).first()
-            if not policy:
-                policy = cls._ensure_default_policy()
-            if policy:
-                cache.set(cls.CACHE_KEY_ACTIVE_POLICY, policy, cls.CACHE_TTL)
+            policy = cls._ensure_default_policy()
+        if policy:
+            cache.set(cls.CACHE_KEY_ACTIVE_POLICY, _policy_to_dict(policy), cls.CACHE_TTL)
         return policy
 
     @classmethod
@@ -62,10 +99,11 @@ class PricingService:
         if not policy:
             return []
         cache_key = cls.CACHE_KEY_DISTANCE_TIERS.format(policy_id=policy.pk)
-        tiers = cache.get(cache_key)
-        if tiers is None:
-            tiers = list(DistanceTier.objects.filter(policy=policy).order_by('min_km'))
-            cache.set(cache_key, tiers, cls.CACHE_TTL)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return [_tier_from_dict(d) for d in cached]
+        tiers = list(DistanceTier.objects.filter(policy=policy).order_by('min_km'))
+        cache.set(cache_key, [_tier_to_dict(t) for t in tiers], cls.CACHE_TTL)
         return tiers
 
     @classmethod

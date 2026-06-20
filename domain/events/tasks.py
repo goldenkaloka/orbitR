@@ -1,7 +1,9 @@
-from celery import shared_task
-from apps.events.models import EventLog
-from domain.events.bus import EventBus
 import importlib
+
+from apps.events.models import EventLog
+from celery import shared_task
+from domain.events.bus import EventBus
+
 
 @shared_task(
     bind=True,

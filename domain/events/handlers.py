@@ -11,7 +11,13 @@ logger = logging.getLogger(__name__)
 
 
 def register_all_handlers():
-    from . import order_handlers, payment_handlers, pool_handlers, dispute_handlers, auth_handlers
+    from . import (
+        auth_handlers,
+        dispute_handlers,
+        order_handlers,
+        payment_handlers,
+        pool_handlers,
+    )
 
     order_handlers.register_handlers()
     payment_handlers.register_handlers()

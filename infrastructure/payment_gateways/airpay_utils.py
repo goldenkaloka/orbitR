@@ -1,9 +1,10 @@
-import hashlib
-import json
 import base64
 import datetime
+import hashlib
+import json
 import logging
 import zlib
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 from django.conf import settings
@@ -123,6 +124,7 @@ class AirpayTransformer:
             return json.loads(s)
         except json.JSONDecodeError:
             import re
+
             # Find the first { to the last }
             match = re.search(r'(\{.*\})', s, re.DOTALL)
             if match:

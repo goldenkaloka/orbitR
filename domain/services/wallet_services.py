@@ -1,6 +1,8 @@
+from decimal import Decimal
+
 from apps.wallets.models import Wallet, WalletTransaction
 from django.db import transaction
-from decimal import Decimal
+
 
 class WalletDomainService:
     """

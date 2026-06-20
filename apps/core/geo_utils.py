@@ -141,7 +141,7 @@ def get_zone_from_h3(h3_index):
     if not h3_index:
         return None
     try:
-        from apps.geo.models import ZoneH3Index, OperationalZone
+        from apps.geo.models import OperationalZone, ZoneH3Index
         zone_h3 = ZoneH3Index.objects.filter(
             h3_index=h3_index,
             zone__is_active=True
@@ -209,9 +209,9 @@ def get_neighboring_zone_ids(h3_index, max_distance_km=30):
         return {'same_zone': [], 'neighbor_zones': []}
 
     try:
+        from apps.geo.models import OperationalZone
         from django.contrib.gis.geos import Point
         from django.contrib.gis.measure import D
-        from apps.geo.models import OperationalZone
         from django.core.cache import cache
 
         cache_key = f"neighbor_zones:{h3_index}:d{max_distance_km}"

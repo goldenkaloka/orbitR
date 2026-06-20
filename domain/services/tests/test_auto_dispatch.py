@@ -1,9 +1,8 @@
-from django.test import TestCase
-from django.contrib.gis.geos import Point
-
+from apps.delivery.models import Driver
 from apps.restaurants.models import Restaurant
 from apps.users.models import User
-from apps.delivery.models import Driver
+from django.contrib.gis.geos import Point
+from django.test import TestCase
 
 
 class RestaurantVisibleDriversTests(TestCase):

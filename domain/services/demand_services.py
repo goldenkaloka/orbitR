@@ -1,17 +1,20 @@
 import logging
 from uuid import UUID
-from django.db import transaction
-from django.utils import timezone
+
+from apps.marketplace.models import BuyerDemand, SellerOffer, Shop
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
+from django.db import transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import (
-    BuyerDemandCreated, BuyerDemandExpired,
-    BuyerDemandAccepted, SellerOfferCreated,
+    BuyerDemandAccepted,
     BuyerDemandCancelled,
+    BuyerDemandCreated,
+    BuyerDemandExpired,
+    SellerOfferCreated,
 )
-from apps.marketplace.models import Shop, BuyerDemand, SellerOffer
 
 logger = logging.getLogger(__name__)
 

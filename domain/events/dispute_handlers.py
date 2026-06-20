@@ -2,11 +2,15 @@ import logging
 
 from domain.events.bus import EventBus
 from domain.events.types import OrderDisputed, OrderResolved
-from infrastructure.notifications.service import NotificationService
 from infrastructure.notifications.messages import (
-    dispute_raised_customer, vendor_dispute_raised, driver_dispute_raised,
-    admin_new_dispute, dispute_resolved_customer, vendor_dispute_resolved,
+    admin_new_dispute,
+    dispute_raised_customer,
+    dispute_resolved_customer,
+    driver_dispute_raised,
+    vendor_dispute_raised,
+    vendor_dispute_resolved,
 )
+from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 

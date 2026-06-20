@@ -1,10 +1,10 @@
-from django.db import models
-from apps.users.models import User
 import uuid
 from decimal import Decimal
 
-from django.contrib.gis.db import models as gis_models
 from apps.core.geo_utils import latlng_to_h3
+from apps.users.models import User
+from django.contrib.gis.db import models as gis_models
+from django.db import models
 
 
 class RestaurantSection(models.Model):

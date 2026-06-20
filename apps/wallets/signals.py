@@ -1,11 +1,14 @@
+from decimal import Decimal
+
+from apps.orders.models import Order
+from apps.users.models import User
+from django.core.cache import cache
+from django.db import transaction
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django.core.cache import cache
-from apps.users.models import User
-from apps.orders.models import Order
+
 from .models import Wallet, WalletTransaction
-from django.db import transaction
-from decimal import Decimal
+
 
 @receiver(post_save, sender=User)
 def create_user_wallet(sender, instance, created, **kwargs):

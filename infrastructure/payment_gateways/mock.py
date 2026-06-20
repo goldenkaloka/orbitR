@@ -1,5 +1,6 @@
 from .base import PaymentGateway
 
+
 class MockGateway(PaymentGateway):
     """
     Mock Payment Gateway for testing.

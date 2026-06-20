@@ -1,6 +1,7 @@
+import base64
 import hashlib
 import json
-import base64
+
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 

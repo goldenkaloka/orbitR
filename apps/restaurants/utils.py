@@ -1,7 +1,6 @@
-from django.db.models import Count
 from apps.orders.models import Order
 from apps.restaurants.models import RestaurantSection
-
+from django.db.models import Count
 
 BUSY_SECTION_THRESHOLD = 5
 

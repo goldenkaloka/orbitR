@@ -1,6 +1,6 @@
-from django.core.management.base import BaseCommand
 from apps.marketplace.models import ProductImage
 from apps.marketplace.tasks import process_product_image
+from django.core.management.base import BaseCommand
 
 
 class Command(BaseCommand):

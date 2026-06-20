@@ -1,16 +1,19 @@
 import os
+
 import django
 from django.contrib.gis.geos import Point
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
-from apps.products.models import Food
-from apps.delivery.models import Driver
-from apps.pricing.models import PricingPolicy, DistanceTier
 from decimal import Decimal
+
+from apps.delivery.models import Driver
+from apps.pricing.models import DistanceTier, PricingPolicy
+from apps.products.models import Food
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
+
 
 def setup_data():
     # 1. Create Admin

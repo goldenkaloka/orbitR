@@ -1,13 +1,14 @@
-from django.db import models
-from apps.users.models import User
-from apps.orders.models import Order
 import uuid
+
+from apps.core.geo_utils import latlng_to_h3
+from apps.orders.models import Order
+from apps.users.models import User
+from django.contrib.gis.db import models as gis_models
+from django.db import models
 
 # Note: In production/scaling with PostGIS, uncomment the following and change 'location' to a PointField.
 # from django.contrib.gis.db import models as gis_models
 
-from django.contrib.gis.db import models as gis_models
-from apps.core.geo_utils import latlng_to_h3
 
 class Driver(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

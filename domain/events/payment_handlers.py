@@ -2,14 +2,19 @@ import logging
 
 from domain.events.bus import EventBus
 from domain.events.types import (
-    PaymentReleaseRequested, PaymentCollected, PaymentInitiated,
-    PaymentDisbursed, PaymentRefunded,
+    PaymentCollected,
+    PaymentDisbursed,
+    PaymentInitiated,
+    PaymentRefunded,
+    PaymentReleaseRequested,
 )
 from domain.services.payment_services import ReleasePaymentService
-from infrastructure.notifications.service import NotificationService
 from infrastructure.notifications.messages import (
-    vendor_funds_received, driver_earning_credited, refund_processed,
+    driver_earning_credited,
+    refund_processed,
+    vendor_funds_received,
 )
+from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +38,8 @@ def on_payment_collected(event: PaymentCollected):
 
     try:
         from apps.orders.models import Order
-        from domain.services.order_services import ConfirmOrderService
         from django.db import transaction
+        from domain.services.order_services import ConfirmOrderService
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=payable_id)
             if order.status != 'CREATED':
@@ -56,10 +61,11 @@ def on_payment_disbursed(event: PaymentDisbursed):
     logger.info(f"Funds disbursed for order {order_id}")
 
     from decimal import Decimal
-    from django.db import transaction
+
     from apps.orders.models import Order
+    from apps.payments.models import Payment, Transaction
     from apps.users.models import User
-    from apps.payments.models import Transaction, Payment
+    from django.db import transaction
     from domain.services.wallet_services import WalletDomainService
 
     try:

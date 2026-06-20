@@ -1,9 +1,10 @@
+import logging
+
+import h3
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
+from apps.marketplace.models import MarketplaceProduct
 from domain.events.bus import EventBus
 from domain.events.types import MarketplaceProductCreated
-from apps.marketplace.models import MarketplaceProduct
-import logging
-import h3
-from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION
 
 logger = logging.getLogger(__name__)
 

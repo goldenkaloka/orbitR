@@ -1,6 +1,6 @@
-from .models import Restaurant, Food, Orders, OrderDetail, Additives
 from rest_framework import serializers
 
+from .models import Additives, Food, OrderDetail, Orders, Restaurant
 
 
 class RestaurantSerializers(serializers.ModelSerializer):

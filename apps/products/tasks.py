@@ -1,9 +1,11 @@
 import os
+from io import BytesIO
+
+from apps.products.models import Food
 from celery import shared_task
 from django.core.files.base import ContentFile
-from apps.products.models import Food
 from PIL import Image
-from io import BytesIO
+
 
 @shared_task
 def process_food_image(food_id):

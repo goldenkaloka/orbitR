@@ -1,12 +1,21 @@
 import logging
 
 from domain.events.bus import EventBus
-from domain.events.types import PoolCancelled, PoolReady, PoolLocked, PoolPaid, PoolCompleted
-from infrastructure.notifications.service import NotificationService
-from infrastructure.notifications.messages import (
-    pool_locked, pool_paid, pool_cancelled, pool_completed,
-    admin_pool_cancelled_batch_transit,
+from domain.events.types import (
+    PoolCancelled,
+    PoolCompleted,
+    PoolLocked,
+    PoolPaid,
+    PoolReady,
 )
+from infrastructure.notifications.messages import (
+    admin_pool_cancelled_batch_transit,
+    pool_cancelled,
+    pool_completed,
+    pool_locked,
+    pool_paid,
+)
+from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +119,8 @@ def on_pool_completed(event):
 
 def on_pool_ready(event):
     from apps.orders.models import OrderPool
-    from domain.services.batch_pipeline import BatchPipeline
     from django.db import transaction
+    from domain.services.batch_pipeline import BatchPipeline
 
     pool_id = event.aggregate_id
     try:

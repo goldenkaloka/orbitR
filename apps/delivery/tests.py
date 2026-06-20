@@ -1,9 +1,9 @@
-from django.test import TestCase
-from django.contrib.auth import get_user_model
-from apps.orders.models import Order
 from apps.delivery.models import Driver
+from apps.orders.models import Order
 from apps.restaurants.models import Restaurant
+from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
+from django.test import TestCase
 
 User = get_user_model()
 

@@ -1,16 +1,19 @@
-from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from apps.marketplace.models import Shop, BuyerDemand, SellerOffer
 from api.serializers.demands import (
-    ShopSerializer, BuyerDemandSerializer, BuyerDemandListSerializer,
-    SellerOfferSerializer, CreateOfferSerializer,
+    BuyerDemandListSerializer,
+    BuyerDemandSerializer,
+    CreateOfferSerializer,
+    SellerOfferSerializer,
+    ShopSerializer,
 )
-from domain.services.demand_services import DemandService
+from apps.marketplace.models import BuyerDemand, SellerOffer, Shop
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.geos import Point
 from django.contrib.gis.measure import D
 from django.db.models import Count, Min
+from domain.services.demand_services import DemandService
+from rest_framework import permissions, status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 
 class ShopViewSet(viewsets.ModelViewSet):

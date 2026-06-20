@@ -10,17 +10,16 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
-from django.urls import reverse_lazy
-from django.utils.translation import gettext_lazy as _
-
 import os
 from pathlib import Path
+
+from django.urls import reverse_lazy
+from django.utils.translation import gettext_lazy as _
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 from decouple import config
-
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.0/howto/deployment/checklist/
@@ -116,6 +115,7 @@ REST_FRAMEWORK = {
 }
 
 from datetime import timedelta
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=24),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
@@ -502,6 +502,7 @@ RAFIKI_CONFIG = {
     'BASE_URL': 'https://api.rafikisms.com',
 }
 import sys
+
 MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
 if 'test' in sys.argv or 'test_coverage' in sys.argv:
     MOCK_SMS = True
@@ -548,6 +549,7 @@ CELERY_TASK_ALWAYS_EAGER = False
 CELERY_TASK_EAGER_PROPAGATES = True
 
 from celery.schedules import crontab
+
 CELERY_BEAT_SCHEDULE = {
     'expire-unassigned-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_unassigned_orders_task',
@@ -634,6 +636,7 @@ PERF_SLOW_REQUEST_MS = config("PERF_SLOW_REQUEST_MS", default=700, cast=int)
 # Without this, Django fails to start on a fresh deployment where the directory
 # hasn't been created yet (RotatingFileHandler can't create intermediate dirs).
 import os as _os
+
 _LOG_DIR = BASE_DIR / "logs"
 _os.makedirs(_LOG_DIR, exist_ok=True)
 

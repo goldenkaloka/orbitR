@@ -1,13 +1,14 @@
-from django.utils.translation import gettext_lazy as _
-from apps.orders.models import Order, OrderPool
-from apps.users.models import User
-from apps.payments.models import Payment
+from datetime import timedelta
+
 from apps.delivery.models import Driver
-from django.db.models import Sum, Count
+from apps.orders.models import Order, OrderPool
+from apps.payments.models import Payment
+from apps.users.models import User
+from django.core.cache import cache
+from django.db.models import Count, Sum
 from django.db.models.functions import TruncDate
 from django.utils import timezone
-from datetime import timedelta
-from django.core.cache import cache
+from django.utils.translation import gettext_lazy as _
 
 
 def dashboard_callback(request, context):

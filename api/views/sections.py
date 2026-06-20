@@ -1,15 +1,17 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework.exceptions import PermissionDenied
-from django.db import transaction
-
-from apps.restaurants.models import RestaurantSection, SectionStaff
-from apps.orders.models import BatchSectionStatus
-from api.serializers.core import RestaurantSectionSerializer, BatchSectionStatusSerializer
+from api.serializers.core import (
+    BatchSectionStatusSerializer,
+    RestaurantSectionSerializer,
+)
 from api.views.core import invalidate_restaurant_cache
+from apps.orders.models import BatchSectionStatus
+from apps.restaurants.models import RestaurantSection, SectionStaff
+from django.db import transaction
 from domain.services.permissions import check_restaurant_permission
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 
 class SectionViewSet(viewsets.ModelViewSet):

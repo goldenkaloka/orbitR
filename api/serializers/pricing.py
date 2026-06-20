@@ -1,5 +1,6 @@
+from apps.pricing.models import DeliveryFeeLog, PricingPolicy, ZonePricingTier
 from rest_framework import serializers
-from apps.pricing.models import PricingPolicy, ZonePricingTier, DeliveryFeeLog
+
 
 class PricingPolicySerializer(serializers.ModelSerializer):
     class Meta:

@@ -1,8 +1,9 @@
 from django.apps import AppConfig
 
+
 class CoreConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'apps.core'
     def ready(self):
-        import apps.core.signals
         import apps.core.celery_signals
+        import apps.core.signals

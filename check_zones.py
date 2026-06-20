@@ -18,6 +18,7 @@ for zone in OperationalZone.objects.filter(is_active=True):
 """
 import os
 import sys
+
 import django
 
 sys.path.insert(0, 'backend')
@@ -50,7 +51,7 @@ print("TEST A SPECIFIC LOCATION")
 print("=" * 60)
 
 # Test a location (e.g., Dar es Salaam center)
-from apps.core.geo_utils import latlng_to_h3, ZONE_RESOLUTION
+from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 
 test_lat = float(input("Enter latitude (or press Enter for -6.7924): ") or "-6.7924")
 test_lng = float(input("Enter longitude (or press Enter for 39.2083): ") or "39.2083")

@@ -1,15 +1,17 @@
 import os
-import django
-import uuid
 import random
+import uuid
+
+import django
 from django.core.files import File
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
 from apps.products.models import Food
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
+
 
 def seed():
     user = User.objects.first()

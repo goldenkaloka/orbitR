@@ -1,8 +1,10 @@
+import json
+
 from django.contrib import admin
 from django.utils.html import format_html
 from unfold.admin import ModelAdmin
 from unfold.decorators import display
-import json
+
 from .models import IdempotencyKey
 
 

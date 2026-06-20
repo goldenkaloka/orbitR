@@ -1,5 +1,6 @@
-from rest_framework import serializers
 from apps.geo.models import OperationalZone
+from rest_framework import serializers
+
 
 class OperationalZoneSerializer(serializers.ModelSerializer):
     h3_count = serializers.IntegerField(source='h3_indexes.count', read_only=True)

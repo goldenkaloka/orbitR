@@ -1,6 +1,7 @@
-from django.contrib.gis.geos import Point
-from apps.geo.models import OperationalZone
 import logging
+
+from apps.geo.models import OperationalZone
+from django.contrib.gis.geos import Point
 
 logger = logging.getLogger(__name__)
 

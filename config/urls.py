@@ -1,16 +1,15 @@
+from apps.geo.views import ZonesGeoJSON
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
-from django.urls import path, include
+from django.db import connections
+from django.http import JsonResponse
+from django.urls import include, path
+from django.views.decorators.http import require_GET
 from rest_framework_simplejwt.views import (
     TokenObtainPairView,
     TokenRefreshView,
 )
-from django.http import JsonResponse
-from django.views.decorators.http import require_GET
-from django.db import connections
-from django.conf import settings
-from apps.geo.views import ZonesGeoJSON
 
 
 @require_GET

@@ -1,17 +1,17 @@
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import BasePermission, IsAuthenticated
+import math
 
-from api.serializers.core import DriverSerializer, DeliveryProofSerializer
-from apps.delivery.models import Driver, DeliveryProof
-from domain.fsm.driver_fsm import DriverFSM
-from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3, haversine_distance
+from api.serializers.core import DeliveryProofSerializer, DriverSerializer
+from apps.core.geo_utils import ZONE_RESOLUTION, haversine_distance, latlng_to_h3
+from apps.delivery.models import DeliveryProof, Driver
+from apps.orders.models import Order
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.utils import timezone
-from apps.orders.models import Order
-import math
+from domain.fsm.driver_fsm import DriverFSM
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission, IsAuthenticated
+from rest_framework.response import Response
 
 
 class IsDriver(BasePermission):
@@ -37,7 +37,7 @@ class DriverViewSet(viewsets.ModelViewSet):
             driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
             driver.save()
             # Invalidate stats cache
-            cache.delete(f"stats_{request.user.id}")
+            cache.delete(f"user_stats_{request.user.id}_{request.user.role}")
 
             # Notify Centrifugo so the app and admin dashboard update in real-time
             from apps.events.tasks import centrifugo_publish
@@ -64,7 +64,7 @@ class DriverViewSet(viewsets.ModelViewSet):
             driver.status = DriverFSM.transition(driver.status, 'OFFLINE')
             driver.save()
             # Invalidate stats cache
-            cache.delete(f"stats_{request.user.id}")
+            cache.delete(f"user_stats_{request.user.id}_{request.user.role}")
 
             # Notify Centrifugo so the app and admin dashboard update in real-time
             from apps.events.tasks import centrifugo_publish

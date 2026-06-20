@@ -1,7 +1,7 @@
 import logging
 
 from domain.events.bus import EventBus
-from domain.events.types import AuthOTPRequested, AuthUserVerified, AuthUserRegistered
+from domain.events.types import AuthOTPRequested, AuthUserRegistered, AuthUserVerified
 from infrastructure.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)

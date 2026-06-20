@@ -1,11 +1,13 @@
 import os
+
 import django
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from apps.orders.models import Order
 from apps.delivery.models import DeliveryAssignment
+from apps.orders.models import Order
+
 
 def check_broken_orders():
     # Find orders that are ASSIGNED but have no driver in the Order model

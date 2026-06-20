@@ -1,8 +1,16 @@
 from django.contrib import admin
+from leaflet.admin import LeafletGeoAdminMixin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
-from leaflet.admin import LeafletGeoAdminMixin
-from .models import Order, OrderItem, DeliveryBatch, BatchSectionStatus, BatchingStrategy, Dispute
+
+from .models import (
+    BatchingStrategy,
+    BatchSectionStatus,
+    DeliveryBatch,
+    Dispute,
+    Order,
+    OrderItem,
+)
 
 
 class OrderItemInline(TabularInline):

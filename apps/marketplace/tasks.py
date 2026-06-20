@@ -1,8 +1,9 @@
 import os
+from io import BytesIO
+
 from celery import shared_task
 from django.core.files.base import ContentFile
 from PIL import Image
-from io import BytesIO
 
 
 @shared_task
@@ -26,6 +27,11 @@ def process_product_image(image_id):
 
         img = Image.open(pi.image)
 
+        # Check if already processed (correct size and format)
+        is_already_jpg = pi.image.name.lower().endswith('.jpg')
+        if is_already_jpg and img.width <= 1080 and img.height <= 1080 and img.format in ('JPEG', 'MPO'):
+            return f"Image {image_id} already processed"
+
         # Resize to 1080x1080 max (same as food images)
         img.thumbnail((1080, 1080))
 
@@ -37,8 +43,17 @@ def process_product_image(image_id):
         name_no_ext = os.path.splitext(filename)[0]
         jpg_name = f"{name_no_ext}.jpg"
 
+        old_image_name = pi.image.name
+
         # Save without triggering post_save signal again
         pi.image.save(jpg_name, ContentFile(thumb_io.getvalue()), save=False)
+        
+        # Prevent orphan files
+        if old_image_name and old_image_name != pi.image.name:
+            from django.core.files.storage import default_storage
+            if default_storage.exists(old_image_name):
+                default_storage.delete(old_image_name)
+
         pi._skip_signal = True
         pi.save(update_fields=['image'])
         return f"Processed image {image_id} for product {pi.product.name}"

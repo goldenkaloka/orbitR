@@ -1,12 +1,14 @@
-import os
-import django
 import json
+import os
+
+import django
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
-from infrastructure.payment_gateways.airpay import AirpayGateway
 from apps.orders.models import Order
+from infrastructure.payment_gateways.airpay import AirpayGateway
+
 
 def test_init():
     order_id = '8d3f90df-6609-41bd-8b30-e7577ff2f7d0'

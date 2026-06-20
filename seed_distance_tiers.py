@@ -4,10 +4,12 @@ Seed default distance tiers for the active PricingPolicy.
 Run: python manage.py shell < seed_distance_tiers.py
 """
 import django
+
 django.setup()
 
-from apps.pricing.models import PricingPolicy, DistanceTier
 from decimal import Decimal
+
+from apps.pricing.models import DistanceTier, PricingPolicy
 
 policy = PricingPolicy.objects.filter(is_active=True).first()
 

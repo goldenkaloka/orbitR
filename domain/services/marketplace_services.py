@@ -1,14 +1,16 @@
-from apps.marketplace.models import MarketplaceProduct
-from domain.events.bus import EventBus
-from domain.events.types import (
-    MarketplaceProductCreated, 
-    MarketplaceProductActivated, 
-    MarketplaceProductExpired
-)
-from django.db import transaction
-from django.utils import timezone
 from datetime import timedelta
 from decimal import Decimal
+
+from apps.marketplace.models import MarketplaceProduct
+from django.db import transaction
+from django.utils import timezone
+from domain.events.bus import EventBus
+from domain.events.types import (
+    MarketplaceProductActivated,
+    MarketplaceProductCreated,
+    MarketplaceProductExpired,
+)
+
 
 class MarketplaceService:
     """
@@ -22,8 +24,9 @@ class MarketplaceService:
         Create a new marketplace product and publish event.
         Includes idempotency check to prevent duplicate listings.
         """
-        from django.utils import timezone
         from datetime import timedelta
+
+        from django.utils import timezone
         
         seller = validated_data.get('seller')
         name = validated_data.get('name')

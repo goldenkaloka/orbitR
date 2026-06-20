@@ -1,7 +1,9 @@
 import json
 import logging
+
 from django.core.serializers.json import DjangoJSONEncoder
-from .tasks import centrifugo_publish, centrifugo_broadcast
+
+from .tasks import centrifugo_broadcast, centrifugo_publish
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +72,8 @@ def broadcast_order_status(order_id, status, message="Status updated"):
 
 
 def broadcast_pool_status(pool_id, status, message="Pool updated"):
-    from apps.orders.models import OrderPool
     from api.serializers.core import OrderPoolSerializer
+    from apps.orders.models import OrderPool
 
     try:
         pool = OrderPool.objects.prefetch_related('members', 'members__user').get(id=pool_id)

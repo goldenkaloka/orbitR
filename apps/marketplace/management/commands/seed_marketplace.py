@@ -1,5 +1,6 @@
-from django.core.management.base import BaseCommand
 from apps.marketplace.models import MarketplaceCategory
+from django.core.management.base import BaseCommand
+
 
 class Command(BaseCommand):
     help = 'Seeds initial marketplace categories'

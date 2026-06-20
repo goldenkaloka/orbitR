@@ -1,46 +1,49 @@
 import logging
+
 logger = logging.getLogger(__name__)
 
-from apps.orders.models import Dispute
-from django.db import models
-from rest_framework import viewsets, status
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.views import APIView
-from django.contrib.postgres.search import TrigramSimilarity
-
-from apps.users.models import User
-from apps.restaurants.models import Restaurant
-from apps.products.models import Food
-from apps.orders.models import Order, DeliveryBatch
-from apps.delivery.models import Driver
-from apps.wallets.models import Wallet, WalletTransaction
-from apps.core.models import Notification
-from apps.marketplace.models import MarketplaceProduct
-from apps.core.geo_utils import get_neighbors
-from apps.core.cache_keys import stable_cache_key
-
 from api.serializers.core import (
-    UserSerializer, RestaurantSerializer, OrderSerializer, 
-    DriverSerializer, FoodSerializer, NotificationSerializer,
-    DisputeSerializer, RestaurantListSerializer
+    DisputeSerializer,
+    DriverSerializer,
+    FoodSerializer,
+    NotificationSerializer,
+    OrderSerializer,
+    RestaurantListSerializer,
+    RestaurantSerializer,
+    UserSerializer,
 )
 from api.serializers.marketplace import MarketplaceProductSerializer
-
-from django.core.cache import cache
-from django.utils import timezone
+from apps.core.cache_keys import stable_cache_key
+from apps.core.geo_utils import get_neighbors
+from apps.core.models import Notification
+from apps.delivery.models import Driver
+from apps.marketplace.models import MarketplaceProduct
+from apps.orders.models import DeliveryBatch, Dispute, Order
+from apps.products.models import Food
+from apps.restaurants.models import Restaurant
+from apps.users.models import User
+from apps.wallets.models import Wallet, WalletTransaction
 from django.conf import settings
-from domain.services.order_services import (
-    ConfirmOrderService,
-    StartPreparingService,
-    MarkReadyService,
-    AssignDriverService,
-    AssignBatchService,
-    PickupOrderService,
-    DeliverOrderService,
-)
+from django.contrib.postgres.search import TrigramSimilarity
+from django.core.cache import cache
+from django.db import models
+from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
+from domain.services.order_services import (
+    AssignBatchService,
+    AssignDriverService,
+    ConfirmOrderService,
+    DeliverOrderService,
+    MarkReadyService,
+    PickupOrderService,
+    StartPreparingService,
+)
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 
 def build_restaurant_mine_data(user):
     from apps.restaurants.models import SectionStaff
@@ -236,7 +239,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             if lat and lng:
                 from django.contrib.gis.db.models.functions import Distance
                 from django.contrib.gis.geos import Point
-                from django.db.models import Case, Value, FloatField, When
+                from django.db.models import Case, FloatField, Value, When
                 user_location = Point(float(lng), float(lat), srid=4326)
                 queryset = queryset.annotate(
                     distance=Case(
@@ -311,7 +314,10 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         Each driver gets a `recommended` boolean — the best available platform driver
         (highest priority, has capacity) is pre-selected in the UI.
         """
-        from domain.services.permissions import check_restaurant_permission, restaurant_visible_drivers
+        from domain.services.permissions import (
+            check_restaurant_permission,
+            restaurant_visible_drivers,
+        )
         restaurant = self.get_object()
         if not check_restaurant_permission(request.user, restaurant):
             return Response({'error': 'Not authorized to view drivers'}, status=403)
@@ -364,6 +370,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             delivery_location = Point(float(lng), float(lat))
             from domain.services.pricing_service import PricingService
+
             # Calculate dynamic fee
             fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
             
@@ -388,9 +395,10 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         Get batches waiting for temp driver that contain orders from this restaurant.
         Used by restaurant owner to see batches needing a driver.
         """
-        from django.utils import timezone
-        from django.conf import settings
         from datetime import timedelta
+
+        from django.conf import settings
+        from django.utils import timezone
 
         try:
             restaurant = Restaurant.objects.get(owner=request.user)
@@ -467,7 +475,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if cached_data:
             return Response(cached_data)
 
-        from django.db.models import Sum, Count, DurationField, ExpressionWrapper
+        from django.db.models import Count, DurationField, ExpressionWrapper, Sum
         from django.utils import timezone
         now = timezone.now()
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)

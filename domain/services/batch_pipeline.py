@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from django.db import transaction, models
+from django.db import models, transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -139,8 +139,8 @@ class BatchPipeline:
         ACCUMULATING: k=3 ring. SOFT_LOCK: k=1 ring (stricter).
         Also checks that the order isn't too distant from existing batch orders.
         """
-        from apps.orders.models import OrderItem
         import h3
+        from apps.orders.models import OrderItem
 
         first_order = batch.orders.first()
         if not first_order or not order.h3_index or not first_order.h3_index:
@@ -401,7 +401,7 @@ class BatchPipeline:
         Auto-updates BatchSectionStatus for sections where ALL items are now ready.
         If all sections become READY, triggers batch progression.
         """
-        from apps.orders.models import OrderItem, BatchSectionStatus
+        from apps.orders.models import BatchSectionStatus, OrderItem
 
         batch = order.batch
         if not batch:
@@ -470,8 +470,8 @@ class BatchPipeline:
     @staticmethod
     def _create_pool_batch(pool, route_dict=None):
         """Create a batch for a pool and dispatch it immediately."""
-        from domain.services.mapbox_routing_service import MapboxRoutingService
         from apps.orders.models import DeliveryBatch, Order
+        from domain.services.mapbox_routing_service import MapboxRoutingService
 
         route_distance = Decimal('0')
         if route_dict is None:
@@ -592,7 +592,7 @@ class BatchPipeline:
         Uses efficient batch-queries — never loads all batches into Python memory.
         """
         from apps.orders.models import DeliveryBatch
-        from django.db.models import Exists, OuterRef, Count
+        from django.db.models import Count, Exists, OuterRef
 
         now = timezone.now()
 
@@ -673,7 +673,7 @@ class BatchPipeline:
         Escalates by transitioning the batch to PARTIAL_BATCH.
         Uses the bss_status_updated_idx index for efficient filtering.
         """
-        from apps.orders.models import DeliveryBatch, BatchSectionStatus
+        from apps.orders.models import BatchSectionStatus, DeliveryBatch
         from domain.services.batch_fsm import BatchFSM
 
         cutoff = timezone.now() - timezone.timedelta(minutes=SECTION_TIMEOUT_MINUTES)
@@ -720,8 +720,8 @@ class BatchPipeline:
         Handles both new batches (with waiting_since set) and old batches
         (waiting_since is NULL — falls back to updated_at).
         """
-        from django.db.models import Q
         from apps.orders.models import DeliveryBatch
+        from django.db.models import Q
         from domain.services.driver_free_service import DriverFreeService
 
         cutoff = timezone.now() - timezone.timedelta(minutes=PENDING_DRIVER_TIMEOUT_MINUTES)

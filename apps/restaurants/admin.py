@@ -1,9 +1,10 @@
+from apps.products.models import Food
 from django.contrib import admin
+from leaflet.admin import LeafletGeoAdminMixin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
-from leaflet.admin import LeafletGeoAdminMixin
+
 from .models import Restaurant, RestaurantSection, SectionStaff
-from apps.products.models import Food
 
 
 class FoodInline(TabularInline):

@@ -1,6 +1,8 @@
-from django.db import models
-from django.contrib.auth.models import AbstractUser, BaseUserManager
 import uuid
+
+from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.db import models
+
 
 class UserManager(BaseUserManager):
     def create_user(self, phone=None, username=None, password=None, **extra_fields):
@@ -66,6 +68,7 @@ class OTPCode(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     
     def is_valid(self):
-        from django.utils import timezone
         import datetime
+
+        from django.utils import timezone
         return timezone.now() < self.created_at + datetime.timedelta(minutes=5)

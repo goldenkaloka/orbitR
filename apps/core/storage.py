@@ -1,5 +1,6 @@
-from storages.backends.s3boto3 import S3Boto3Storage
 from django.conf import settings
+from storages.backends.s3boto3 import S3Boto3Storage
+
 
 class CustomS3Storage(S3Boto3Storage):
     """
@@ -9,6 +10,7 @@ class CustomS3Storage(S3Boto3Storage):
     pass
 
 from whitenoise.storage import CompressedManifestStaticFilesStorage
+
 
 class SafeCompressedManifestStaticFilesStorage(CompressedManifestStaticFilesStorage):
     """
@@ -22,8 +24,8 @@ class SafeCompressedManifestStaticFilesStorage(CompressedManifestStaticFilesStor
             return name
 
     def _compress_path(self, full_path):
-        import os
         import logging
+        import os
         logger = logging.getLogger(__name__)
         
         if not os.path.exists(full_path):

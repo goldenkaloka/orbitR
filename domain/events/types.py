@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any, Dict
 from uuid import UUID
+
 
 @dataclass
 class DomainEvent:

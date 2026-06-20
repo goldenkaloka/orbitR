@@ -8,6 +8,7 @@ Rule: ALWAYS use this service when a driver needs to be freed from a batch,
 whether due to decline, timeout, or cancellation.
 """
 import logging
+
 from django.db import transaction
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,10 @@ class DriverFreeService:
             event: BatchFSM event to trigger ('DECLINE', 'TIMEOUT', 'CANCEL')
             reason: Human-readable reason for logging
         """
-        from apps.orders.models import DeliveryBatch, Order
-        from domain.services.batch_fsm import BatchFSM, BatchFSMError
-        from domain.fsm.driver_fsm import DriverFSM
         from apps.delivery.models import Driver
+        from apps.orders.models import DeliveryBatch, Order
+        from domain.fsm.driver_fsm import DriverFSM
+        from domain.services.batch_fsm import BatchFSM, BatchFSMError
 
         try:
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)

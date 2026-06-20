@@ -1,16 +1,15 @@
 from decimal import Decimal
-from rest_framework import serializers
 
-from apps.users.models import User
-from apps.restaurants.models import Restaurant, RestaurantSection
-from apps.orders.models import BatchSectionStatus
-from apps.products.models import Food
-from apps.orders.models import Order, OrderItem, Dispute
-from apps.delivery.models import Driver, DeliveryProof
+from api.serializers.utils import parse_coordinate_dict
 from apps.core.models import Notification
+from apps.delivery.models import DeliveryProof, Driver
+from apps.orders.models import BatchSectionStatus, Dispute, Order, OrderItem
+from apps.products.models import Food
+from apps.restaurants.models import Restaurant, RestaurantSection
+from apps.users.models import User
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
-from api.serializers.utils import parse_coordinate_dict
+from rest_framework import serializers
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -234,8 +233,8 @@ class OrderSerializer(serializers.ModelSerializer):
         zero extra HTTP calls. Falls back to None gracefully — the client
         will fetch from Mapbox Directions API as a fallback.
         """
-        from django.core.cache import cache
         from apps.core.cache_keys import stable_cache_key
+        from django.core.cache import cache
 
         res = obj.restaurant
         if not res or not res.geo_location or not obj.delivery_location:
@@ -257,7 +256,9 @@ class OrderSerializer(serializers.ModelSerializer):
 
         # Fetch from Mapbox Directions API synchronously.
         # This path only runs on cache miss (new unique route).
-        import os, requests as req_lib
+        import os
+
+        import requests as req_lib
         token = os.environ.get('MAPBOX_TOKEN', '')
         if not token:
             return None

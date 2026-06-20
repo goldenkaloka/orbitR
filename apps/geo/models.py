@@ -1,7 +1,9 @@
-from django.db import models
-from django.contrib.gis.db import models as gis_models
 import uuid
-from apps.core.geo_utils import polygon_to_h3_cells, ZONE_RESOLUTION
+
+from apps.core.geo_utils import ZONE_RESOLUTION, polygon_to_h3_cells
+from django.contrib.gis.db import models as gis_models
+from django.db import models
+
 
 class OperationalZone(models.Model):
     """
@@ -38,6 +40,7 @@ class OperationalZone(models.Model):
     def refresh_h3_indexes(self):
         """Calculates and stores H3 cells for the boundary."""
         import logging
+
         from django.db import transaction
         
         logger = logging.getLogger(__name__)

@@ -1,6 +1,8 @@
 from django.contrib import admin
 from unfold.admin import ModelAdmin, TabularInline
-from .models import PricingPolicy, ZonePricingTier, DeliveryFeeLog, DistanceTier
+
+from .models import DeliveryFeeLog, DistanceTier, PricingPolicy, ZonePricingTier
+
 
 class DistanceTierInline(TabularInline):
     model = DistanceTier

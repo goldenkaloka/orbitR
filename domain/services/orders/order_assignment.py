@@ -1,15 +1,20 @@
 import logging
+
+from apps.delivery.models import DeliveryAssignment, Driver
+from apps.events.utils import broadcast_order_status
+from apps.orders.models import DeliveryBatch, Order
 from django.db import transaction
-from apps.orders.models import Order, DeliveryBatch
-from apps.delivery.models import Driver, DeliveryAssignment
-from domain.fsm.order_fsm import OrderFSM
-from domain.fsm.driver_fsm import DriverFSM
-from domain.services.batch_fsm import BatchFSM
-from domain.services.driver_service import release_driver
-from domain.services.permissions import check_restaurant_permission, can_serve_restaurant, can_driver_delegate
 from domain.events.bus import EventBus
 from domain.events.types import DriverAssigned
-from apps.events.utils import broadcast_order_status
+from domain.fsm.driver_fsm import DriverFSM
+from domain.fsm.order_fsm import OrderFSM
+from domain.services.batch_fsm import BatchFSM
+from domain.services.driver_service import release_driver
+from domain.services.permissions import (
+    can_driver_delegate,
+    can_serve_restaurant,
+    check_restaurant_permission,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +70,6 @@ class AssignBatchService:
 
             # Auto-advance FINALIZING → PENDING_DRIVER if all sections ready
             if batch.status == 'FINALIZING':
-                from domain.services.batch_fsm import BatchFSM
                 if BatchFSM.sections_all_ready(batch):
                     batch.status = BatchFSM.transition(batch, 'ALL_SECTIONS_READY')
                     batch.waiting_since = timezone.now()

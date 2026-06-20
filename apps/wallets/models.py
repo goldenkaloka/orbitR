@@ -1,7 +1,9 @@
-from django.db import models
-from apps.users.models import User
-from apps.orders.models import Order
 import uuid
+
+from apps.orders.models import Order
+from apps.users.models import User
+from django.db import models
+
 
 class Wallet(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

@@ -1,4 +1,5 @@
 import os
+
 import django
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -6,8 +7,8 @@ django.setup()
 
 import h3
 from apps.core.geo_utils import ZONE_RESOLUTION
-from django.contrib.gis.geos import MultiPolygon, Polygon
 from apps.geo.models import OperationalZone, ZoneH3Index
+from django.contrib.gis.geos import MultiPolygon, Polygon
 
 ZONES_DATA = [
     {
