@@ -108,13 +108,15 @@ class AssignBatchService:
             orders = list(batch.orders.all())
             new_order_count = len(orders)
 
-            # --- Capacity check uses new_order_count (not unique_stops) to match the increment ---
+            # --- Capacity: warn but don't block manual assignment ---
             current_load = driver.assignments.filter(delivered_at__isnull=True).count()
+            unique_stops = len(set(o.h3_index for o in orders if o.h3_index))
 
-            if current_load + new_order_count > driver.max_active_orders:
-                raise ValueError(
-                    f"Driver cannot take {new_order_count} more orders. "
-                    f"Current active assignments: {current_load}, Max: {driver.max_active_orders}"
+            if current_load + unique_stops > driver.max_active_orders:
+                logger.warning(
+                    f"Driver {driver_id} assigned batch {batch.id} "
+                    f"({new_order_count} orders, {unique_stops} stops, "
+                    f"capacity {driver.max_active_orders}) — vendor overrode capacity"
                 )
 
             # --- Release old driver if reassigning ---

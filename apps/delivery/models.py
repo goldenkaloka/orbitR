@@ -63,11 +63,21 @@ class Driver(models.Model):
     total_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
     today_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
 
+    CAPACITY_BY_VEHICLE = {
+        'bicycle': 2,
+        'motorcycle': 3,
+        'bajaj': 5,
+        'car': 8,
+    }
+
     def save(self, *args, **kwargs):
         if self.location:
             new_h3 = latlng_to_h3(self.location.y, self.location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
+
+        if self._state.adding:
+            self.max_active_orders = self.CAPACITY_BY_VEHICLE.get(self.vehicle_type, 3)
 
         super().save(*args, **kwargs)
 

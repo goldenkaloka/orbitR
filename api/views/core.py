@@ -83,6 +83,13 @@ def build_restaurant_mine_data(user):
 def invalidate_restaurant_cache(restaurant):
     if not restaurant:
         return
+
+    # Bump restaurant list cache version so customers see updated availability
+    try:
+        cache.incr('restaurant_list_cache_version')
+    except ValueError:
+        cache.set('restaurant_list_cache_version', 1)
+
     # Pre-warm owner's cache
     if restaurant.owner_id:
         cache_key = f"restaurant_mine_{restaurant.owner_id}"
@@ -240,9 +247,20 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
 
+        # ── Compute busyness (fresh every request) before serialization ──
+        from apps.restaurants.utils import compute_busy_restaurant_ids
+
+        base_qs = self.filter_queryset(self.get_queryset())
+        restaurant_ids = list(base_qs.values_list('id', flat=True))
+        busy_ids = compute_busy_restaurant_ids(restaurant_ids)
+
+        self.serializer_context['busy_ids'] = busy_ids
+
+        version = cache.get('restaurant_list_cache_version', 0)
         cache_key = stable_cache_key(
             "restaurant_list",
             {
+                "version": version,
                 "category": category,
                 "lat": lat or "none",
                 "lng": lng or "none",
@@ -252,11 +270,18 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         )
         cached_data = cache.get(cache_key)
         if cached_data:
-            return Response(cached_data)
-        
-        response = super().list(request, *args, **kwargs)
-        cache.set(cache_key, response.data, 900) # Cache for 15 minutes
-        return response
+            data = cached_data
+            # Inject is_busy into cached data (serializer didn't re-run)
+            busy_lookup = {rid: True for rid in busy_ids}
+            results = data.get('results', data) if isinstance(data, dict) else data
+            for r in results:
+                r['is_busy'] = busy_lookup.get(r['id'], False)
+        else:
+            response = super().list(request, *args, **kwargs)
+            data = response.data
+            cache.set(cache_key, data, 900)
+
+        return Response(data)
 
     @action(detail=False, methods=['GET'])
     def mine(self, request):

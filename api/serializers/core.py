@@ -85,7 +85,7 @@ class RestaurantSectionSerializer(serializers.ModelSerializer):
                   'is_active', 'sort_order', 'prep_time', 'food_count']
 
     def get_food_count(self, obj):
-        return obj.foods.count()
+        return obj.foods.filter(is_available=True).count()
 
 
 class BatchSectionStatusSerializer(serializers.ModelSerializer):
@@ -100,8 +100,9 @@ class BatchSectionStatusSerializer(serializers.ModelSerializer):
 
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
-    foods = FoodSerializer(many=True, read_only=True)
+    foods = serializers.SerializerMethodField()
     sections = RestaurantSectionSerializer(many=True, read_only=True)
+    is_busy = serializers.SerializerMethodField()
 
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
@@ -111,7 +112,7 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'image', 'image_url', 
             'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
-            'is_active', 'foods', 'sections'
+            'is_active', 'is_busy', 'foods', 'sections'
         ]
 
     def get_latitude(self, obj):
@@ -130,13 +131,24 @@ class RestaurantListSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+    def get_foods(self, obj):
+        available = obj.foods.filter(is_available=True)
+        return FoodSerializer(available, many=True).data
+
+    def get_is_busy(self, obj):
+        busy_ids = self.context.get('busy_ids')
+        if busy_ids is not None:
+            return str(obj.id) in busy_ids
+
+        from apps.restaurants.utils import compute_busy_restaurant_ids
+        return str(obj.id) in compute_busy_restaurant_ids([obj.id])
+
 
 class RestaurantSerializer(RestaurantListSerializer):
-    foods = FoodSerializer(many=True, read_only=True)
     sections = RestaurantSectionSerializer(many=True, read_only=True)
 
     class Meta(RestaurantListSerializer.Meta):
-        fields = RestaurantListSerializer.Meta.fields + ['foods', 'sections']
+        fields = RestaurantListSerializer.Meta.fields + ['sections']
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
     section_name = serializers.CharField(source='section.name', read_only=True)

@@ -17,9 +17,18 @@ class RestaurantSection(models.Model):
     is_active = models.BooleanField(default=True, db_index=True)
     sort_order = models.PositiveIntegerField(default=0)
     prep_time = models.PositiveIntegerField(default=20, help_text='Preparation time in minutes')
+    max_concurrent_orders = models.PositiveIntegerField(
+        default=5,
+        help_text='Max concurrent un-cooked orders before this section is busy'
+    )
 
     class Meta:
         ordering = ['sort_order', 'name']
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and not kwargs.get('force_insert') and self.prep_time:
+            self.max_concurrent_orders = max(3, int(round(100 / self.prep_time)))
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} @ {self.restaurant.name}"
