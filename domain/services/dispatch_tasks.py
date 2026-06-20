@@ -128,7 +128,9 @@ def batch_lifecycle_poll_task():
     BatchPipeline.check_and_close_full_batches()
     BatchPipeline.check_and_expire_accumulating()
     BatchPipeline.check_and_expire_soft_lock()
+    BatchPipeline.check_and_expire_pending_driver()
     BatchPipeline.check_section_timeouts()
+    BatchPipeline.check_all_sections_ready()
 
 
 @shared_task(name='domain.services.dispatch_tasks.pre_assign_drivers_for_batch')
@@ -584,54 +586,7 @@ def expire_stale_picked_orders_task():
         )
 
 
-@shared_task(name='domain.services.dispatch_tasks.auto_assign_pending_batches_task')
-def auto_assign_pending_batches_task():
-    """
-    Finds batches in PENDING_DRIVER status for more than AUTO_ASSIGN_GRACE_MINUTES
-    and automatically assigns them to the highest-priority, available platform driver.
-    """
-    from apps.orders.models import DeliveryBatch
-    from domain.services.permissions import restaurant_visible_drivers
-    from domain.services.orders.order_assignment import AssignBatchService
-    from domain.services.batch_pipeline import AUTO_ASSIGN_GRACE_MINUTES
 
-    cutoff = timezone.now() - timedelta(minutes=AUTO_ASSIGN_GRACE_MINUTES)
-
-    system_user, _ = User.objects.get_or_create(
-        username='system_dispatcher',
-        defaults={'role': 'admin', 'is_staff': True},
-    )
-
-    pending_batches = DeliveryBatch.objects.filter(
-        status='PENDING_DRIVER',
-        waiting_since__lt=cutoff
-    )
-
-    assigned_count = 0
-    for batch in pending_batches:
-        try:
-            drivers = restaurant_visible_drivers(batch.restaurant)
-            recommended_driver = None
-            for d in drivers:
-                if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
-                    recommended_driver = d
-                    break
-            
-            if recommended_driver:
-                AssignBatchService.execute(
-                    batch_id=str(batch.id),
-                    driver_id=str(recommended_driver.id),
-                    actor=system_user
-                )
-                assigned_count += 1
-                logger.info(f"[AutoAssign] Automatically assigned driver {recommended_driver.user.username} to batch {batch.id}")
-            else:
-                logger.warning(f"[AutoAssign] No available platform driver found for batch {batch.id}")
-        except Exception as exc:
-            logger.error(f"[AutoAssign] Failed to auto-assign batch {batch.id}: {exc}")
-
-    if assigned_count:
-        logger.info(f"[AutoAssign] Automatically assigned {assigned_count} pending batches.")
 
 
 

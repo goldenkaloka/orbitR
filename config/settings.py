@@ -599,10 +599,6 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'domain.services.dispatch_tasks.batch_lifecycle_poll_task',
         'schedule': 15.0,
     },
-    'auto-assign-pending-batches-every-minute': {
-        'task': 'domain.services.dispatch_tasks.auto_assign_pending_batches_task',
-        'schedule': 60.0,
-    },
     'dispute-sla-check-every-5-mins': {
         'task': 'apps.orders.tasks.dispute_sla_check',
         'schedule': crontab(minute='*/5'),

@@ -16,6 +16,7 @@ def process_product_image(image_id):
     """
     Background task to resize and optimize marketplace product images for mobile viewing.
     Mirrors the food image processing pipeline.
+    Uses save=False + _skip_signal to prevent post_save loop.
     """
     try:
         from apps.marketplace.models import ProductImage
@@ -36,7 +37,10 @@ def process_product_image(image_id):
         name_no_ext = os.path.splitext(filename)[0]
         jpg_name = f"{name_no_ext}.jpg"
 
-        pi.image.save(jpg_name, ContentFile(thumb_io.getvalue()), save=True)
+        # Save without triggering post_save signal again
+        pi.image.save(jpg_name, ContentFile(thumb_io.getvalue()), save=False)
+        pi._skip_signal = True
+        pi.save(update_fields=['image'])
         return f"Processed image {image_id} for product {pi.product.name}"
     except Exception as e:
         return f"Error processing marketplace image {image_id}: {str(e)}"

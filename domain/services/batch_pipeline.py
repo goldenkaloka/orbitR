@@ -27,7 +27,7 @@ MAX_ORDERS_PER_BATCH = 5             # Hard limit
 MIN_ORDERS_FOR_BATCH = 2             # Minimum to form a batch
 PRE_ASSIGN_THRESHOLD = 0.8           # 80% sections ready → PRE_ASSIGNING
 SECTION_TIMEOUT_MINUTES = 20         # If a section takes >20 min, escalate
-AUTO_ASSIGN_GRACE_MINUTES = 3        # 3 min in PENDING_DRIVER before auto-assign
+PENDING_DRIVER_TIMEOUT_MINUTES = 60  # 1 hour in PENDING_DRIVER before expiry
 
 
 class BatchPipeline:
@@ -652,6 +652,48 @@ class BatchPipeline:
             except Exception as exc:
                 logger.error(f"[BatchPipeline] Section timeout escalation failed: {exc}")
 
+
+    @staticmethod
+    def check_all_sections_ready():
+        """
+        Periodic check: find batches in FINALIZING/PRE_ASSIGNING where all
+        sections are READY and transition them to PENDING_DRIVER.
+        """
+        from apps.orders.models import DeliveryBatch
+
+        candidates = DeliveryBatch.objects.filter(
+            status__in=['FINALIZING', 'PRE_ASSIGNING', 'PARTIAL_BATCH'],
+        )
+        for batch in candidates:
+            BatchPipeline._check_all_sections_ready(batch)
+
+    @staticmethod
+    def check_and_expire_pending_driver():
+        """
+        Periodic check: expire batches stuck in PENDING_DRIVER past timeout.
+        No driver was assigned within PENDING_DRIVER_TIMEOUT_MINUTES.
+        """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.driver_free_service import DriverFreeService
+
+        cutoff = timezone.now() - timezone.timedelta(minutes=PENDING_DRIVER_TIMEOUT_MINUTES)
+        stale = DeliveryBatch.objects.filter(
+            status='PENDING_DRIVER',
+            waiting_since__lt=cutoff,
+        )
+        for batch in stale:
+            try:
+                DriverFreeService.release(
+                    batch_id=str(batch.id),
+                    event='TIMEOUT',
+                    reason=f"No driver assigned within {PENDING_DRIVER_TIMEOUT_MINUTES} min"
+                )
+                logger.info(
+                    f"[BatchPipeline] Expired batch {batch.id} — "
+                    f"no driver assigned for >{PENDING_DRIVER_TIMEOUT_MINUTES} min"
+                )
+            except Exception as exc:
+                logger.error(f"[BatchPipeline] Failed to expire batch {batch.id}: {exc}")
 
     # ─── Pricing helpers ───────────────────────────────────────────────────────
 

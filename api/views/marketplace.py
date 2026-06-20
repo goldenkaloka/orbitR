@@ -1,6 +1,7 @@
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 from apps.marketplace.models import MarketplaceProduct, MarketplaceCategory
 from api.serializers.marketplace import (
     MarketplaceProductSerializer,
@@ -110,9 +111,25 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
+    MAX_IMAGE_SIZE_MB = 5
+    MAX_IMAGES_COUNT = 10
+    ALLOWED_IMAGE_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
+
     def perform_create(self, serializer):
-        # Use Domain Service to create product and handle images
         images = self.request.FILES.getlist('images')
+        if len(images) > self.MAX_IMAGES_COUNT:
+            raise ValidationError(
+                {'images': f'Maximum {self.MAX_IMAGES_COUNT} images allowed per product.'}
+            )
+        for img in images:
+            if img.size > self.MAX_IMAGE_SIZE_MB * 1024 * 1024:
+                raise ValidationError(
+                    {'images': f'Each image must be under {self.MAX_IMAGE_SIZE_MB}MB.'}
+                )
+            if img.content_type not in self.ALLOWED_IMAGE_TYPES:
+                raise ValidationError(
+                    {'images': f'Only JPEG, PNG, and WebP images are allowed.'}
+                )
         product = MarketplaceService.create_product(
             validated_data={**serializer.validated_data, 'seller': self.request.user},
             images=images

@@ -1,18 +1,13 @@
 from django.test import TestCase
 from django.contrib.gis.geos import Point
-from django.utils import timezone
-from datetime import timedelta
-from decimal import Decimal
 
 from apps.restaurants.models import Restaurant
 from apps.users.models import User
-from apps.orders.models import Order, DeliveryBatch
 from apps.delivery.models import Driver
-from domain.services.dispatch_tasks import auto_assign_pending_batches_task
 
 
-class AutoAssignPendingBatchesTests(TestCase):
-    """Unit tests for auto_assign_pending_batches_task"""
+class RestaurantVisibleDriversTests(TestCase):
+    """Tests for restaurant_visible_drivers proximity sorting"""
 
     def setUp(self):
         self.owner = User.objects.create_user(username='rest_owner', password='password123', role='vendor')
@@ -21,66 +16,6 @@ class AutoAssignPendingBatchesTests(TestCase):
             owner=self.owner,
             geo_location=Point(39.2083, -6.7924)
         )
-
-        self.driver_user = User.objects.create_user(username='rider1', password='password123', role='driver')
-        self.driver = Driver.objects.create(
-            user=self.driver_user,
-            status='AVAILABLE',
-            serves_all=True,  # platform driver
-            location=Point(39.2083, -6.7924),
-            max_active_orders=3
-        )
-
-        self.customer = User.objects.create_user(username='cust1', password='password123', role='customer')
-
-    def test_auto_assign_pending_batch_after_timeout(self):
-        """Test that a batch in PENDING_DRIVER for > 3 minutes is auto-assigned"""
-        batch = DeliveryBatch.objects.create(
-            restaurant=self.restaurant,
-            status='PENDING_DRIVER',
-            waiting_since=timezone.now() - timedelta(minutes=4)
-        )
-        
-        # Create a ready order inside the batch to pass validation checks
-        Order.objects.create(
-            restaurant=self.restaurant,
-            customer=self.customer,
-            status='READY',
-            batch=batch,
-            delivery_location=Point(39.2083, -6.7924),
-            delivery_fee=Decimal('1000.00'),
-            service_fee=Decimal('300.00'),
-            items_subtotal=Decimal('5000.00'),
-            total_amount=Decimal('6300.00')
-        )
-
-        auto_assign_pending_batches_task()
-
-        batch.refresh_from_db()
-        self.assertEqual(batch.status, 'DISPATCHED')
-        self.assertEqual(batch.driver, self.driver)
-
-    def test_no_auto_assign_before_timeout(self):
-        """Test that a batch in PENDING_DRIVER for < 3 minutes is NOT auto-assigned"""
-        batch = DeliveryBatch.objects.create(
-            restaurant=self.restaurant,
-            status='PENDING_DRIVER',
-            waiting_since=timezone.now() - timedelta(minutes=1)
-        )
-        
-        Order.objects.create(
-            restaurant=self.restaurant,
-            customer=self.customer,
-            status='READY',
-            batch=batch,
-            delivery_location=Point(39.2083, -6.7924)
-        )
-
-        auto_assign_pending_batches_task()
-
-        batch.refresh_from_db()
-        self.assertEqual(batch.status, 'PENDING_DRIVER')
-        self.assertIsNone(batch.driver)
 
     def test_restaurant_visible_drivers_proximity_sorting(self):
         """Test that restaurant_visible_drivers sorts nearby platform drivers first"""

@@ -63,6 +63,14 @@ class AssignBatchService:
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
 
+            # Auto-advance FINALIZING → PENDING_DRIVER if all sections ready
+            if batch.status == 'FINALIZING':
+                from domain.services.batch_fsm import BatchFSM
+                if BatchFSM.sections_all_ready(batch):
+                    batch.status = BatchFSM.transition(batch, 'ALL_SECTIONS_READY')
+                    batch.waiting_since = timezone.now()
+                    batch.save(update_fields=['status', 'waiting_since', 'updated_at'])
+
             is_dispatch = batch.status in ('PENDING_DRIVER', 'PRE_ASSIGNING')
             is_reassign = batch.status == 'DISPATCHED'
 
