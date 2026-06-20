@@ -23,6 +23,8 @@ def restaurant_visible_drivers(restaurant):
 
     queryset = Driver.objects.filter(
         models.Q(home_restaurant=restaurant) | models.Q(serves_all=True)
+    ).exclude(
+        user__role__in=('vendor', 'vendor_staff')
     ).select_related('user')
 
     if neighbor_cells:

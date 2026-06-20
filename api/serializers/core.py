@@ -50,20 +50,20 @@ class FoodSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         section = attrs.get('section')
-        if not section:
-            raise serializers.ValidationError({"section": "Section (Stall) is required."})
+        if section:
+            request = self.context.get('request')
+            if request and request.user:
+                from apps.restaurants.models import Restaurant, SectionStaff
+                try:
+                    restaurant = Restaurant.objects.get(owner=request.user)
+                except Restaurant.DoesNotExist:
+                    staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
+                    restaurant = staff_sec.section.restaurant if staff_sec else None
 
-        request = self.context.get('request')
-        if request and request.user:
-            from apps.restaurants.models import Restaurant, SectionStaff
-            try:
-                restaurant = Restaurant.objects.get(owner=request.user)
-            except Restaurant.DoesNotExist:
-                staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
-                restaurant = staff_sec.section.restaurant if staff_sec else None
-            
-            if restaurant and section.restaurant != restaurant:
-                raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
+                if restaurant and section.restaurant != restaurant:
+                    raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
+        elif self.instance is None:
+            raise serializers.ValidationError({"section": "Section (Stall) is required."})
         return attrs
 
     def get_image_url(self, obj):

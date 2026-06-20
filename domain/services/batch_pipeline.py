@@ -28,6 +28,8 @@ MIN_ORDERS_FOR_BATCH = 2             # Minimum to form a batch
 PRE_ASSIGN_THRESHOLD = 0.8           # 80% sections ready → PRE_ASSIGNING
 SECTION_TIMEOUT_MINUTES = 20         # If a section takes >20 min, escalate
 PENDING_DRIVER_TIMEOUT_MINUTES = 60  # 1 hour in PENDING_DRIVER before expiry
+MAX_ACCUMULATING_BATCHES_PER_RESTAURANT = 2  # Busy restaurants: max concurrent accumulating batches
+BUSY_ACCUMULATE_WINDOW_MINUTES = 5   # Shorter window when restaurant is busy (≥2 batches)
 
 
 class BatchPipeline:
@@ -53,6 +55,30 @@ class BatchPipeline:
         candidate = BatchPipeline._find_compatible_batch(order)
         if candidate:
             return BatchPipeline._join_batch(order, candidate)
+
+        # ── Busy restaurant guard ────────────────────────────────────────
+        # If restaurant already has max concurrent ACCUMULATING batches,
+        # force-join the oldest batch instead of creating a new one.
+        # This prevents the kitchen from being overwhelmed by too many batches.
+        existing_count = DeliveryBatch.objects.filter(
+            restaurant_id=order.restaurant_id,
+            status='ACCUMULATING',
+        ).count()
+        if existing_count >= MAX_ACCUMULATING_BATCHES_PER_RESTAURANT:
+            oldest = (
+                DeliveryBatch.objects.filter(
+                    restaurant_id=order.restaurant_id,
+                    status='ACCUMULATING',
+                )
+                .order_by('accumulating_since')
+                .first()
+            )
+            if oldest:
+                logger.warning(
+                    f"[BatchPipeline] Restaurant {order.restaurant_id} at max batches "
+                    f"({existing_count}) — force-joining order {order.id} to batch {oldest.id}"
+                )
+                return BatchPipeline._join_batch(order, oldest)
 
         # No compatible batch found — create a new ACCUMULATING batch
         return BatchPipeline._create_single_batch(order)
@@ -560,16 +586,17 @@ class BatchPipeline:
     def check_and_expire_accumulating():
         """
         Periodic check: move ACCUMULATING batches past their window to SOFT_LOCK.
+        Busy restaurants (≥2 concurrent batches) use a shorter window.
         Also cleans up stale ACCUMULATING batches where no order has progressed
         to PREPARING or READY after more than 2x the accumulate window.
         Uses efficient batch-queries — never loads all batches into Python memory.
         """
         from apps.orders.models import DeliveryBatch
-        from django.db.models import Exists, OuterRef
+        from django.db.models import Exists, OuterRef, Count
 
         now = timezone.now()
 
-        # ── Pass 1: Batches past their accumulate window → SOFT_LOCK ──
+        # ── Pass 1: Batches past their normal accumulate window → SOFT_LOCK ──
         expired = DeliveryBatch.objects.filter(
             status='ACCUMULATING',
             accumulating_since__isnull=False,
@@ -577,6 +604,24 @@ class BatchPipeline:
         ).only('id')
         for batch in expired:
             BatchPipeline._close_accumulating_batch(str(batch.id))
+
+        # ── Pass 1b: Busy restaurants — shorter window ──
+        busy = (
+            DeliveryBatch.objects.filter(status='ACCUMULATING')
+            .values('restaurant_id')
+            .annotate(cnt=Count('id'))
+            .filter(cnt__gte=MAX_ACCUMULATING_BATCHES_PER_RESTAURANT)
+        )
+        busy_restaurant_ids = [b['restaurant_id'] for b in busy]
+        if busy_restaurant_ids:
+            busy_expired = DeliveryBatch.objects.filter(
+                restaurant_id__in=busy_restaurant_ids,
+                status='ACCUMULATING',
+                accumulating_since__isnull=False,
+                accumulating_since__lt=now - timezone.timedelta(minutes=BUSY_ACCUMULATE_WINDOW_MINUTES),
+            ).only('id')
+            for batch in busy_expired:
+                BatchPipeline._close_accumulating_batch(str(batch.id))
 
         # ── Pass 2: Batches > 2x window with no cooking progress → cancel ──
         from apps.orders.models import Order

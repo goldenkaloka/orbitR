@@ -47,7 +47,7 @@ class Driver(models.Model):
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
 
     rating = models.DecimalField(max_digits=3, decimal_places=1, default=0.0)
-    max_active_orders = models.PositiveIntegerField(default=3)
+    max_active_orders = models.PositiveIntegerField(default=10)
     current_active_orders = models.PositiveIntegerField(default=0)
 
     VEHICLE_CHOICES = (

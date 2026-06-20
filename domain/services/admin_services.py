@@ -217,6 +217,9 @@ class RegisterTempDriverService:
             user = User.objects.select_for_update().get(id=user_id)
             restaurant = Restaurant.objects.get(id=restaurant_id)
 
+            if user.role in ('vendor', 'vendor_staff', 'admin'):
+                raise ValueError("Restaurant owners, staff, and admins cannot be registered as drivers.")
+
             driver, created = Driver.objects.get_or_create(
                 user=user,
                 defaults={
