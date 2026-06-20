@@ -672,14 +672,17 @@ class BatchPipeline:
         """
         Periodic check: expire batches stuck in PENDING_DRIVER past timeout.
         No driver was assigned within PENDING_DRIVER_TIMEOUT_MINUTES.
+        Handles both new batches (with waiting_since set) and old batches
+        (waiting_since is NULL — falls back to updated_at).
         """
+        from django.db.models import Q
         from apps.orders.models import DeliveryBatch
         from domain.services.driver_free_service import DriverFreeService
 
         cutoff = timezone.now() - timezone.timedelta(minutes=PENDING_DRIVER_TIMEOUT_MINUTES)
         stale = DeliveryBatch.objects.filter(
-            status='PENDING_DRIVER',
-            waiting_since__lt=cutoff,
+            Q(status='PENDING_DRIVER'),
+            Q(waiting_since__lt=cutoff) | Q(waiting_since__isnull=True, updated_at__lt=cutoff),
         )
         for batch in stale:
             try:
