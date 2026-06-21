@@ -153,7 +153,16 @@ class AirpayWebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         client_ip = self._get_client_ip(request)
-        
+
+        # DEBUG: Log every incoming request to the callback endpoint
+        logger.warning(
+            f"AIRPAY_CALLBACK_DEBUG: "
+            f"From IP={client_ip} "
+            f"Method={request.method} "
+            f"Content-Type={request.content_type} "
+            f"Body={request.body.decode('utf-8', errors='replace')}"
+        )
+
         # Security Gate 0: Verify IP Allowlist
         if not self._is_ip_allowed(client_ip):
             logger.warning(f"Airpay Webhook: Unauthorized access attempt from IP {client_ip}")
