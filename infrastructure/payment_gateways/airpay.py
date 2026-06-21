@@ -475,7 +475,7 @@ class AirpayGateway(PaymentGateway):
                         token = data.get('access_token')
                         if token:
                             expires_in = int(data.get('expires_in', 300))
-            cache.set(cache_key, token, max(expires_in - 30, 60))
+                            cache.set(cache_key, token, max(expires_in - 30, 60))
                             return token
                     if not token:
                         logger.error(f"AIRPAY_DEBUG: Token missing in decrypted response: {res_data}")
