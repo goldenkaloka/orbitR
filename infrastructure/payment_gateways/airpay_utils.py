@@ -86,22 +86,32 @@ class AirpayTransformer:
         return hashlib.sha256(data_to_hash.encode()).hexdigest()
 
     @staticmethod
+    def _val(v):
+        """Convert a value to stripped string, handling numbers safely."""
+        if v is None:
+            return ''
+        return str(v).strip()
+
+    @staticmethod
     def verify_checksum_v4(data, mercid, username):
         """
         Official callback verification logic using CRC32.
         Ref: responsefromairpay.py:87
         """
-        transaction_id = data.get('orderid', '').strip()
-        ap_transaction_id = data.get('ap_transactionid', '').strip()
-        amount = data.get('amount', '').strip()
-        status = data.get('transaction_status', '').strip()
-        message = data.get('message', '').strip()
-        received_hash = str(data.get('ap_securehash', '')).strip()
+        transaction_id = AirpayTransformer._val(data.get('orderid'))
+        ap_transaction_id = AirpayTransformer._val(data.get('ap_transactionid'))
+        amount = AirpayTransformer._val(data.get('amount'))
+        status = AirpayTransformer._val(data.get('transaction_status'))
+        message = AirpayTransformer._val(data.get('message'))
+        # Airpay sends ap_SecureHash (camelCase); fallback to lowercase variant
+        received_hash = AirpayTransformer._val(
+            data.get('ap_SecureHash') or data.get('ap_securehash')
+        )
         
-        chmod = data.get('chmod', '').strip()
+        chmod = AirpayTransformer._val(data.get('chmod'))
         customervpa = ""
         if chmod.lower() == "upi":
-            vpa = data.get('CUSTOMERVPA', '').strip()
+            vpa = AirpayTransformer._val(data.get('CUSTOMERVPA'))
             if vpa:
                 customervpa = ":" + vpa
 
@@ -114,6 +124,7 @@ class AirpayTransformer:
         merchant_secure_hash = merchant_secure_hash & 0xffffffff
         
         return str(merchant_secure_hash) == received_hash
+
     @staticmethod
     def safe_json_loads(s):
         """

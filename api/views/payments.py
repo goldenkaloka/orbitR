@@ -92,10 +92,11 @@ class AirpayWebhookView(APIView):
         """
         Verify webhook authenticity using HMAC-SHA256 of the raw body 
         signed with the merchant secret key.
+        Airpay IPN callbacks do NOT send this header; returns True if absent.
         """
         signature = request.META.get('HTTP_X_AIRPAY_SIGNATURE', '')
         if not signature:
-            return False
+            return True
         
         raw_body = request.body
         secret = gateway.secret or ''
@@ -120,6 +121,36 @@ class AirpayWebhookView(APIView):
                 continue
         return False
 
+    def _extract_callback_data(self, request, gateway):
+        """
+        Extract and verify callback data from Airpay.
+        Supports two formats:
+          Format 1 — Encrypted:  {'response': '<encrypted_string>'}
+          Format 2 — IPN Direct: JSON body with direct fields + ap_SecureHash
+        Returns (data_dict, ap_transactionid, transaction_status, orderid) or raises.
+        """
+        response_data = request.data.get('response')
+        if response_data:
+            decrypted_json = AirpayTransformer.decrypt_string(
+                response_data,
+                gateway.username,
+                gateway.password
+            )
+            data_dict = json.loads(decrypted_json)
+            actual_data = data_dict.get('data', data_dict)
+        else:
+            actual_data = request.data.dict() if hasattr(request.data, 'dict') else dict(request.data)
+
+        if not AirpayTransformer.verify_checksum_v4(actual_data, gateway.mercid, gateway.username):
+            raise ValueError("CRC32 checksum verification failed")
+
+        return (
+            actual_data,
+            actual_data.get('ap_transactionid'),
+            actual_data.get('transaction_status'),
+            actual_data.get('orderid'),
+        )
+
     def post(self, request, *args, **kwargs):
         client_ip = self._get_client_ip(request)
         
@@ -130,48 +161,27 @@ class AirpayWebhookView(APIView):
 
         gateway = AirpayGateway()
 
-        # Security Gate 1: Verify request signature
+        # Security Gate 1: Verify request signature (optional — absent in IPN callbacks)
         if not self._verify_signature(request, gateway):
             logger.warning(f"Airpay Webhook: Signature verification failed from IP {client_ip}")
             return Response({"status": "error", "message": "Invalid signature"}, status=400)
 
-        # Airpay v4 usually sends a POST with a 'response' field containing encrypted data
-        response_data = request.data.get('response')
-        
-        if not response_data:
-            logger.error("Airpay Webhook: No 'response' field found in payload")
-            return Response({"status": "error", "message": "Missing response"}, status=400)
-
         try:
-            # 1. Decrypt and Verify
-            decrypted_json = AirpayTransformer.decrypt_string(
-                response_data, 
-                gateway.username, 
-                gateway.password
+            actual_data, ap_transaction_id, transaction_status, order_id = self._extract_callback_data(request, gateway)
+
+            logger.info(
+                f"Airpay Webhook from {client_ip}: "
+                f"order={order_id} ap_txn={ap_transaction_id} status={transaction_status}"
             )
-            data_dict = json.loads(decrypted_json)
-            actual_data = data_dict.get('data', {})
-            
-            logger.info(f"Airpay Webhook Decrypted from {client_ip}: order={actual_data.get('orderid')}")
 
-            # 2. Check CRC32 Hash
-            if not AirpayTransformer.verify_checksum_v4(actual_data, gateway.mercid, gateway.username):
-                logger.error("Airpay Webhook: CRC32 Verification Failed")
-                return Response({"status": "error", "message": "Invalid Secure Hash"}, status=400)
-
-            # 3. Extract Order Details
-            status = actual_data.get('transaction_status')
-            order_id = actual_data.get('orderid')
-            ap_transaction_id = actual_data.get('ap_transactionid')
-            
-            success = status == '200'
+            success = str(transaction_status) == '200'
 
             CompletePaymentService.execute(
                 provider_reference=ap_transaction_id,
                 success=success,
                 reference_id=order_id,
             )
-            
+
             return Response({"status": "success"}, status=200)
 
         except Exception as e:
