@@ -65,10 +65,10 @@ class Driver(models.Model):
     today_earnings = models.DecimalField(max_digits=12, decimal_places=2, default=0.0)
 
     CAPACITY_BY_VEHICLE = {
-        'bicycle': 2,
-        'motorcycle': 3,
-        'bajaj': 5,
-        'car': 8,
+        'bicycle': 5,
+        'motorcycle': 10,
+        'bajaj': 12,
+        'car': 15,
     }
 
     def save(self, *args, **kwargs):

@@ -37,8 +37,8 @@ class MarketplaceProduct(models.Model):
     )
 
     LISTING_TYPE_CHOICES = (
-        ('INITIAL', 'First Time Listing (2%)'),
-        ('RENEWAL', 'Listing Renewal (1%)'),
+        ('INITIAL', 'First Time Listing'),
+        ('RENEWAL', 'Listing Renewal'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -69,7 +69,7 @@ class MarketplaceProduct(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def calculate_listing_fee(self) -> Decimal:
-        percent = Decimal('2.00') if self.listing_type == 'INITIAL' else Decimal('1.00')
+        percent = Decimal('0.20')
         return (self.price * percent / 100).quantize(Decimal('1.00'))
 
     def save(self, *args, **kwargs):

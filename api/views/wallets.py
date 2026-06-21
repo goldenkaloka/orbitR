@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 
 # Fee constants
 INSTANT_FEE_PERCENT = Decimal('0.01')  # 1%
-PROVIDER_FIXED_FEE = Decimal('220')  # TSh 220
 MINIMUM_CASHOUT = Decimal('1000')  # TSh 1000 minimum
 
 PROVIDERS = {
@@ -70,18 +69,16 @@ class WalletViewSet(viewsets.GenericViewSet):
         provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
 
         instant_fee = amount * INSTANT_FEE_PERCENT
-        total_fees = instant_fee + PROVIDER_FIXED_FEE
+        total_fees = instant_fee
         net_amount = amount - total_fees
-        
+
         logger.info(f"Fee calculation for user {request.user.id}: amount={amount}, provider={provider_name}, fees={total_fees}")
-        
+
         return Response({
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
-            "provider_fee": float(PROVIDER_FIXED_FEE),
-            "provider_name": provider_name,
             "total_fees": float(total_fees),
-            "net_amount": float(max(net_amount, 0)),
+            "net_amount": float(net_amount),
         })
 
     @action(detail=False, methods=['POST'])
@@ -123,7 +120,7 @@ class WalletViewSet(viewsets.GenericViewSet):
         phone = request.data.get('phone', '')
         
         instant_fee = amount * INSTANT_FEE_PERCENT
-        total_fees = instant_fee + PROVIDER_FIXED_FEE
+        total_fees = instant_fee
         net_amount = amount - total_fees
         
         if net_amount <= 0:
@@ -158,7 +155,6 @@ class WalletViewSet(viewsets.GenericViewSet):
             "message": "Cashout request submitted successfully",
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
-            "provider_fee": float(PROVIDER_FIXED_FEE),
             "provider_name": provider_name,
             "total_fees": float(total_fees),
             "net_amount": float(net_amount),

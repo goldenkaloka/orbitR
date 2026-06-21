@@ -111,6 +111,21 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             cache.set(cache_key, data, 3600)
             return Response(data)
 
+        # Fallback: PostGIS spatial containment query.
+        # Catches points inside the zone boundary that fall outside the
+        # pre-seeded H3 hexagon coverage (~770m radius around core points).
+        try:
+            from domain.services.geo_services import GeoDomainService
+            spatial_zone = GeoDomainService.find_zone_for_point(
+                float(lng), float(lat)
+            )
+            if spatial_zone:
+                data = OperationalZoneMinimalSerializer(spatial_zone).data
+                cache.set(cache_key, data, 3600)
+                return Response(data)
+        except Exception:
+            pass
+
         cache.set(cache_key, {'detail': 'No zone found for these coordinates'}, 600)
         return Response({'detail': 'No zone found for these coordinates'}, status=404)
 
