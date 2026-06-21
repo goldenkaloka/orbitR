@@ -85,7 +85,7 @@ class AirpayGateway(PaymentGateway):
             response = requests.post(
                 f"{self.seamless_url}?token={token}",
                 data=post_data,
-                timeout=15
+                timeout=30
             )
             
             # Helper to clear cache and retry
@@ -223,7 +223,7 @@ class AirpayGateway(PaymentGateway):
                 'privatekey': private_key
             }
 
-            response = requests.post(f"{self.verify_url}?token={token}", data=payload, timeout=10)
+            response = requests.post(f"{self.verify_url}?token={token}", data=payload, timeout=30)
             
             # Helper to clear cache and retry
             def handle_token_failure(reason):
@@ -303,7 +303,7 @@ class AirpayGateway(PaymentGateway):
                 'privatekey': private_key
             }
 
-            response = requests.post(f"https://kraken.airpay.tz/airpay/pay/v1/api/refund?token={token}", data=payload)
+            response = requests.post(f"https://kraken.airpay.tz/airpay/pay/v1/api/refund?token={token}", data=payload, timeout=30)
             
             # Helper to clear cache and retry
             def handle_token_failure(reason):
@@ -452,7 +452,7 @@ class AirpayGateway(PaymentGateway):
                 'merchant_id': self.mercid,
                 'checksum': checksum,
                 'encdata': enc_data
-            }, timeout=10)
+            }, timeout=15)
             
             if response.status_code == 200:
                 try:
@@ -474,7 +474,8 @@ class AirpayGateway(PaymentGateway):
                         data = res_data.get('data', res_data)
                         token = data.get('access_token')
                         if token:
-                            cache.set(cache_key, token, 3500)
+                            expires_in = int(data.get('expires_in', 300))
+            cache.set(cache_key, token, max(expires_in - 30, 60))
                             return token
                     if not token:
                         logger.error(f"AIRPAY_DEBUG: Token missing in decrypted response: {res_data}")
