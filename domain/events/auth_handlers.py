@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 def on_auth_otp_requested(event):
     phone = event.payload.get('phone')
     otp = event.payload.get('otp')
-    message = f"Your Orbit verification code is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
+    message = f"Your Orbit PIN is {otp}. It will expire in 5 minutes. Do not share this code with anyone."
     NotificationService.send_sms(phone, message)
     logger.info(f"OTP request processed for {phone}")
 

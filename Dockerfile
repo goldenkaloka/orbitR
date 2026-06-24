@@ -25,8 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     gosu \
     curl \
+    postgresql-client \
+    unzip \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -O https://downloads.rclone.org/rclone-current-linux-amd64.zip \
+    && unzip -j rclone-current-linux-amd64.zip */rclone -d /usr/local/bin/ \
+    && rm rclone-current-linux-amd64.zip
 
 # Copy the entire Python installation from builder (site-packages + binaries)
 COPY --from=builder /usr/local /usr/local

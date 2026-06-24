@@ -630,6 +630,11 @@ CENTRIFUGO_API_KEY = config('CENTRIFUGO_API_KEY', default='')
 CENTRIFUGO_HMAC_SECRET = config('CENTRIFUGO_HMAC_SECRET', default='')
 CENTRIFUGO_PROXY_SECRET = config('CENTRIFUGO_PROXY_SECRET', default='')
 
+# Database Backup (pg_dump + rclone)
+RCLONE_REMOTE = config('RCLONE_REMOTE', default='')
+DB_BACKUP_DIR = config('DB_BACKUP_DIR', default=str(BASE_DIR / 'backups'))
+DB_BACKUP_MAX_KEEP = config('DB_BACKUP_MAX_KEEP', default=7, cast=int)
+
 PERF_SLOW_REQUEST_MS = config("PERF_SLOW_REQUEST_MS", default=700, cast=int)
 
 # Ensure the logs directory exists before the logging config references it.
