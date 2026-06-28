@@ -33,3 +33,10 @@ def invalidate_stats_cache_on_wallet_change(sender, instance, **kwargs):
     """Invalidate the user stats cache when wallet balance changes."""
     if instance.user:
         cache.delete(f"user_stats_{instance.user.id}_{instance.user.role}")
+    if instance.section_id:
+        from apps.restaurants.models import SectionStaff
+        staff_user_ids = SectionStaff.objects.filter(
+            section_id=instance.section_id
+        ).values_list('user_id', flat=True)
+        for uid in staff_user_ids:
+            cache.delete(f"user_stats_{uid}_vendor")

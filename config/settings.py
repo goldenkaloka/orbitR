@@ -493,6 +493,7 @@ AIRPAY_CONFIG = {
     'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
     'SPLIT_API_KEY': config('AIRPAY_SPLIT_API_KEY', default=''),
     'PRIMARY_ACCOUNT': config('AIRPAY_PRIMARY_ACCOUNT', default=''),
+    'PAYOUT_URL': config('AIRPAY_PAYOUT_URL', default='https://kraken.airpay.tz/airpay/pay/v1/api/disburse'),
 }
 
 # SMS & Notifications (RafikiSMS)
@@ -594,6 +595,10 @@ CELERY_BEAT_SCHEDULE = {
     'expire-stale-assigned-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_assigned_orders_task',
         'schedule': crontab(minute='*/5'),
+    },
+    'cleanup-unpaid-marketplace-products-every-30-mins': {
+        'task': 'apps.marketplace.tasks.cleanup_unpaid_products',
+        'schedule': crontab(minute='*/30'),
     },
     'expire-stale-picked-orders-every-10-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_picked_orders_task',

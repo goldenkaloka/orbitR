@@ -104,10 +104,14 @@ class ConfirmOrderService:
     def execute(order_id, actor):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
-            
+
+            # Idempotency guard: skip if already confirmed
+            if order.status == 'CONFIRMED':
+                return order
+
             if not order.is_paid:
                 raise ValueError("Cannot confirm an unpaid order")
-                
+
             new_state = OrderFSM.transition(order.status, 'CONFIRMED')
             order.status = new_state
             order.confirmed_at = timezone.now()

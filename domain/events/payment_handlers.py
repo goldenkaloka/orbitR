@@ -60,44 +60,13 @@ def on_payment_disbursed(event: PaymentDisbursed):
     order_id = event.payload.get('order_id')
     logger.info(f"Funds disbursed for order {order_id}")
 
-    from decimal import Decimal
-
     from apps.orders.models import Order
-    from apps.payments.models import Payment, Transaction
-    from apps.users.models import User
-    from django.db import transaction
-    from domain.services.wallet_services import WalletDomainService
+    from apps.payments.models import Payment
 
     try:
         payment = Payment.objects.get(id=event.aggregate_id)
-        restaurant_owner_id = event.payload.get('restaurant_owner_id')
-        restaurant_payout_str = event.payload.get('restaurant_payout', '0')
-        driver_user_id = event.payload.get('driver_user_id')
-        driver_payout_str = event.payload.get('driver_payout', '0')
-
-        restaurant_payout = Decimal(restaurant_payout_str)
-        driver_payout = Decimal(driver_payout_str)
-
-        with transaction.atomic():
-            if restaurant_owner_id and restaurant_payout > 0:
-                restaurant_owner = User.objects.get(id=restaurant_owner_id)
-                WalletDomainService.credit(restaurant_owner, restaurant_payout, f"Earnings from Order #{order_id}")
-                Transaction.objects.create(
-                    payment=payment, to_wallet=restaurant_owner,
-                    amount=restaurant_payout, transaction_type='platform_to_restaurant',
-                    status='COMPLETED',
-                )
-
-            if driver_user_id and driver_payout > 0:
-                driver_user = User.objects.get(id=driver_user_id)
-                WalletDomainService.credit(driver_user, driver_payout, f"Delivery for Order #{order_id}")
-                Transaction.objects.create(
-                    payment=payment, to_wallet=driver_user,
-                    amount=driver_payout, transaction_type='platform_to_driver',
-                    status='COMPLETED',
-                )
-
         order = Order.objects.select_related('restaurant__owner', 'driver__user').get(id=order_id)
+
         v_title, v_body = vendor_funds_received(str(order.id)[:8])
         NotificationService.send_push(
             user_id=str(order.restaurant.owner.id),

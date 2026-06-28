@@ -1,3 +1,4 @@
+import os
 import logging
 
 logger = logging.getLogger(__name__)
@@ -666,7 +667,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'])
     def confirm(self, request, pk=None):
-        import logging
         _log = logging.getLogger(__name__)
         try:
             order = Order.objects.get(id=pk)
@@ -1031,9 +1031,12 @@ class AppConfigView(APIView):
 
     def get(self, request):
         return Response({
-            "minimum_version": "1.0.1",
-            "latest_version": "1.0.1",
-            "update_url": "https://play.google.com/store/apps/details?id=com.mwanachuoshop.app",
+            "minimum_version": os.getenv("MIN_APP_VERSION", "1.0.1+7"),
+            "latest_version": os.getenv("LATEST_APP_VERSION", "1.0.1+7"),
+            "update_url": os.getenv(
+                "APP_UPDATE_URL",
+                "https://play.google.com/store/apps/details?id=com.mwanachuoshop.app",
+            ),
         })
 
 

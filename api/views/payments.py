@@ -27,7 +27,6 @@ class InitiatePaymentView(APIView):
     def post(self, request, *args, **kwargs):
         payable_type = request.data.get('payable_type')
         payable_id = request.data.get('payable_id')
-        provider = request.data.get('provider', 'AIRPAY')
         phone = request.data.get('phone', request.user.phone)
         bank_code = request.data.get('bank_code')
 
@@ -39,7 +38,6 @@ class InitiatePaymentView(APIView):
             result = InitiatePaymentService.execute(
                 payable_type=payable_type,
                 payable_id=payable_id,
-                provider=provider,
                 phone=phone,
                 bank_code=bank_code
             )
@@ -96,6 +94,10 @@ class AirpayWebhookView(APIView):
         """
         signature = request.META.get('HTTP_X_AIRPAY_SIGNATURE', '')
         if not signature:
+            logger.warning(
+                f"Airpay Webhook: X-AIRPAY-SIGNATURE header absent from {self._get_client_ip(request)}; "
+                f"relying on IP allowlist only."
+            )
             return True
         
         raw_body = request.body

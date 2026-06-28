@@ -7,10 +7,9 @@ from .mock import MockGateway
 def get_payment_gateway(provider=None, phone=None):
     """
     Returns the configured payment gateway.
-    Supports 'mock' provider or '0000000000' phone number for testing.
+    Mock mode is controlled via Django settings only — never via user-supplied data.
     """
-    is_mock_phone = str(phone).endswith('0000000000')
-    if provider == 'mock' or getattr(settings, 'MOCK_PAYMENTS', False) or is_mock_phone:
+    if getattr(settings, 'MOCK_PAYMENTS', False):
         return MockGateway()
-        
+
     return AirpayGateway()

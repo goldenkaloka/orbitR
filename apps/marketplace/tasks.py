@@ -1,8 +1,12 @@
+import logging
 import os
+from datetime import timedelta
 from io import BytesIO
 
 from celery import shared_task
 from django.core.files.base import ContentFile
+from django.db import transaction
+from django.utils import timezone
 from PIL import Image
 
 
@@ -59,3 +63,33 @@ def process_product_image(image_id):
         return f"Processed image {image_id} for product {pi.product.name}"
     except Exception as e:
         return f"Error processing marketplace image {image_id}: {str(e)}"
+
+
+@shared_task
+def cleanup_unpaid_products():
+    """
+    Deletes marketplace products stuck in PENDING_PAYMENT for more than 24 hours.
+    These are products created without completing the listing fee payment.
+    """
+    from apps.marketplace.models import MarketplaceProduct
+    threshold = timezone.now() - timedelta(hours=24)
+
+    with transaction.atomic():
+        abandoned = list(
+            MarketplaceProduct.objects.select_for_update(skip_locked=True)
+            .filter(status='PENDING_PAYMENT', created_at__lt=threshold)
+        )
+
+        if not abandoned:
+            return f"Cleaned up 0 unpaid products."
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"[MarketplaceCleanup] Deleting {len(abandoned)} abandoned PENDING_PAYMENT products")
+
+        for product in abandoned:
+            try:
+                product.delete()
+            except Exception as e:
+                logger.error(f"[MarketplaceCleanup] Failed to delete product {product.id}: {e}")
+
+    return f"Deleted {len(abandoned)} unpaid products."

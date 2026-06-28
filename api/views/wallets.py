@@ -3,8 +3,10 @@ from decimal import Decimal, InvalidOperation
 
 from api.serializers.wallets import TransactionSerializer, WalletSerializer
 from apps.wallets.models import Wallet, WalletTransaction
-from django.db import transaction
+from django.db import transaction as db_transaction
 from django.utils import timezone
+from domain.utils import is_valid_tz_phone
+from infrastructure.payment_gateways.factory import get_payment_gateway
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -82,17 +84,16 @@ class WalletViewSet(viewsets.GenericViewSet):
         })
 
     @action(detail=False, methods=['POST'])
-    @transaction.atomic
     def cashout(self, request):
         logger.info(f"Cashout requested by user {request.user.id}")
-        
+
         from apps.restaurants.models import SectionStaff
         staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
         if staff_link:
-            wallet, _ = Wallet.objects.select_for_update().get_or_create(section=staff_link.section)
+            wallet, _ = Wallet.objects.get_or_create(section=staff_link.section)
         else:
-            wallet, _ = Wallet.objects.select_for_update().get_or_create(user=request.user)
-        
+            wallet, _ = Wallet.objects.get_or_create(user=request.user)
+
         amount_str = request.data.get('amount')
         if amount_str is not None:
             try:
@@ -105,7 +106,7 @@ class WalletViewSet(viewsets.GenericViewSet):
                 return Response({"error": "Amount exceeds wallet balance", "code": "INSUFFICIENT_BALANCE"}, status=400)
         else:
             amount = wallet.balance
-        
+
         if wallet.balance < MINIMUM_CASHOUT:
             logger.warning(f"Cashout failed for user {request.user.id}: balance {wallet.balance} below minimum {MINIMUM_CASHOUT}")
             return Response({
@@ -114,50 +115,100 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "current_balance": float(wallet.balance),
                 "minimum_required": float(MINIMUM_CASHOUT),
             }, status=400)
-        
+
         provider_key = request.data.get('provider', 'M_PESA').upper().replace(' ', '_')
         provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
         phone = request.data.get('phone', '')
-        
+
+        # Server-side phone validation
+        if not phone:
+            return Response({"error": "Phone number is required", "code": "MISSING_PHONE"}, status=400)
+        if not is_valid_tz_phone(phone):
+            return Response({
+                "error": "Invalid Tanzanian phone number. Use format: 0712 345 678",
+                "code": "INVALID_PHONE",
+            }, status=400)
+
         instant_fee = amount * INSTANT_FEE_PERCENT
         total_fees = instant_fee
         net_amount = amount - total_fees
-        
+
         if net_amount <= 0:
             logger.warning(f"Cashout failed for user {request.user.id}: fees exceed amount")
             return Response({
                 "error": "Balance too low to cover fees",
                 "code": "FEES_EXCEED_AMOUNT",
             }, status=400)
-        
-        wallet.balance -= amount
-        wallet.save()
-        
-        WalletTransaction.objects.create(
-            wallet=wallet,
+
+        # Attempt actual disbursement through payment gateway
+        gateway = get_payment_gateway(phone=phone)
+        reference = f"cashout_{request.user.id}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+        disbursement = gateway.disburse(
             amount=net_amount,
-            tx_type='DEBIT',
-            description=f"Cashout to {provider_name}",
-            created_at=timezone.now(),
+            account_info=phone,
+            reference=reference,
+            narration=f"Wallet cashout to {provider_name}",
         )
-        
-        WalletTransaction.objects.create(
-            wallet=wallet,
-            amount=total_fees,
-            tx_type='DEBIT',
-            description=f"Cashout processing fees ({provider_name})",
-            created_at=timezone.now(),
+
+        if not disbursement.get('success'):
+            error_msg = disbursement.get('error', 'Disbursement failed')
+            logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
+            return Response({
+                "error": f"Cashout failed: {error_msg}",
+                "code": "DISBURSEMENT_FAILED",
+                "gateway_error": error_msg,
+            }, status=502)
+
+        provider_reference = disbursement.get('provider_reference', '')
+
+        # Only update ledger on successful disbursement
+        with db_transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(id=wallet.id)
+            # Re-check balance inside atomic block to prevent race condition
+            if wallet.balance < amount:
+                logger.error(
+                    f"Cashout race detected for user {request.user.id}: "
+                    f"wallet balance {wallet.balance} < requested {amount}"
+                )
+                return Response({"error": "Insufficient balance", "code": "INSUFFICIENT_BALANCE"}, status=409)
+            if wallet.balance < MINIMUM_CASHOUT:
+                return Response({
+                    "error": f"Minimum cashout amount is TSh {int(MINIMUM_CASHOUT)}",
+                    "code": "INSUFFICIENT_BALANCE",
+                }, status=409)
+            wallet.balance -= amount
+            wallet.save()
+
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                amount=net_amount,
+                tx_type='DEBIT',
+                description=f"Cashout to {provider_name}",
+                created_at=timezone.now(),
+            )
+
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                amount=total_fees,
+                tx_type='DEBIT',
+                description=f"Cashout processing fees ({provider_name})",
+                created_at=timezone.now(),
+            )
+
+        logger.info(
+            f"Cashout successful for user {request.user.id}: "
+            f"amount={amount}, net={net_amount}, provider={provider_name}, "
+            f"phone={phone}, ref={provider_reference}"
         )
-        
-        logger.info(f"Cashout successful for user {request.user.id}: amount={amount}, provider={provider_name}, phone={phone}, net={net_amount}")
-        
+
         return Response({
-            "message": "Cashout request submitted successfully",
+            "message": "Cashout successful",
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
             "provider_name": provider_name,
             "total_fees": float(total_fees),
             "net_amount": float(net_amount),
+            "provider_reference": provider_reference,
         })
 
     @action(detail=False, methods=['GET'], url_path='stalls')

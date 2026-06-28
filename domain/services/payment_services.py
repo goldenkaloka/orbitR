@@ -1,3 +1,6 @@
+import hashlib
+import logging
+import uuid
 from decimal import Decimal
 
 from apps.orders.models import Order
@@ -13,7 +16,10 @@ from domain.events.types import (
     PaymentRefunded,
 )
 from domain.fsm.payment_fsm import PaymentFSM
+from domain.utils import is_valid_tz_phone
 from infrastructure.payment_gateways.factory import get_payment_gateway
+
+logger = logging.getLogger(__name__)
 
 
 class PaymentTargetResolver:
@@ -50,8 +56,15 @@ class PaymentTargetResolver:
 
 class InitiatePaymentService:
     @staticmethod
-    def execute(payable_type, payable_id, provider=None, phone=None, bank_code=None):
+    def execute(payable_type, payable_id, phone=None, bank_code=None):
         with transaction.atomic():
+            # Normalize payable_id to canonical UUID format (with hyphens)
+            # to prevent duplicate payments due to inconsistent formatting
+            try:
+                payable_id = str(uuid.UUID(str(payable_id)))
+            except (ValueError, AttributeError):
+                pass
+
             # 1. Resolve target details
             target = PaymentTargetResolver.resolve(payable_type, payable_id)
             customer_phone = phone or target['phone']
@@ -79,12 +92,11 @@ class InitiatePaymentService:
                 raise ValueError("This has already been paid.")
 
             # 4. Initiate with Gateway
-            gateway = get_payment_gateway(provider=provider, phone=customer_phone)
+            gateway = get_payment_gateway(phone=customer_phone)
             response = gateway.collect(
                 amount=payment.amount,
                 phone=customer_phone,
                 order_reference=str(payment.id), # Use Payment ID as gateway reference
-                provider=provider,
                 bank_code=bank_code
             )
 
@@ -138,8 +150,10 @@ class CompletePaymentService:
                     raise ValueError(f"No payment found for Ref: {provider_reference} or ID: {payment_id}")
                 
                 if payment.status in ['COLLECTED', 'DISBURSED', 'FAILED']:
-                    import logging
-                    logging.getLogger(__name__).warning(f"Payment {payment.id} already {payment.status}. Ignoring duplicate webhook.")
+                    logger.warning(
+                        f"Payment {payment.id} already {payment.status} (likely webhook retry). "
+                        f"Ignoring duplicate. provider_ref={provider_reference}"
+                    )
                     return payment
                 
                 if success:
@@ -173,8 +187,7 @@ class CompletePaymentService:
                     
                 return payment
         except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"CompletePaymentService failed: {str(e)}")
+            logger.error(f"CompletePaymentService failed: {str(e)}")
             raise
 
     @staticmethod
@@ -203,7 +216,7 @@ class CompletePaymentService:
     @staticmethod
     def _handle_pool_payment(payment):
         from apps.orders.models import OrderPool, PoolMember
-        member = PoolMember.objects.get(id=payment.payable_id)
+        member = PoolMember.objects.select_for_update().get(id=payment.payable_id)
         pool = OrderPool.objects.select_for_update().get(id=member.pool_id)
         
         member.status = 'PAID'
@@ -256,6 +269,11 @@ class ReleasePaymentService:
         from domain.services.wallet_services import WalletDomainService
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
+
+            # Guard: prevent re-releasing an already-disbursed payment
+            if payment.status == 'DISBURSED':
+                logger.warning(f"Payment {payment.id} already disbursed; skipping release.")
+                return payment
 
             # Resolve payout targets
             order = None
@@ -315,19 +333,6 @@ class ReleasePaymentService:
             if not vendor_phone:
                 raise ValueError(f"Cannot process payment: Restaurant has no owner phone number")
 
-            # Helper to check if TZ phone number is valid
-            def is_valid_tz_phone(phone_number):
-                if not phone_number:
-                    return False
-                p = str(phone_number).replace('+', '').strip()
-                if p.startswith('255'): p = p[3:]
-                if p.startswith('0'): p = p[1:]
-                if not p.isdigit() or len(p) != 9:
-                    return False
-                prefix = p[:2]
-                valid_prefixes = {'74', '75', '76', '73', '65', '67', '71', '72', '68', '69', '78', '79', '61', '62'}
-                return prefix in valid_prefixes
-
             platform_cut = payment.amount - restaurant_payout - driver_payout
             if platform_cut < 0:
                 platform_cut = Decimal('0')
@@ -338,8 +343,7 @@ class ReleasePaymentService:
             # Validate restaurant owner phone
             if restaurant_payout > 0 and vendor_phone:
                 if not is_valid_tz_phone(vendor_phone):
-                    import logging
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         f"Vendor phone number '{vendor_phone}' for payment {payment.id} is invalid. "
                         f"Redirecting restaurant share of {restaurant_payout} to platform primary account."
                     )
@@ -349,8 +353,7 @@ class ReleasePaymentService:
             # Validate driver phone
             if driver_payout > 0 and driver_phone:
                 if not is_valid_tz_phone(driver_phone):
-                    import logging
-                    logging.getLogger(__name__).warning(
+                    logger.warning(
                         f"Driver phone number '{driver_phone}' for payment {payment.id} is invalid. "
                         f"Redirecting driver share of {driver_payout} to platform primary account."
                     )
@@ -377,7 +380,6 @@ class ReleasePaymentService:
                 split_values.append(float(actual_driver_payout))
 
             # Generate deterministic 15-character split_request_id for gateway idempotency
-            import hashlib
             h = hashlib.sha256(str(payment.id).encode())
             split_request_id = str(int(h.hexdigest(), 16))[-15:]
 
@@ -396,8 +398,9 @@ class ReleasePaymentService:
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
 
-                # Credit vendor wallet proportionally by stall/section
+                # Accounting records only — actual money is already sent via split_settlement
                 if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
+                    # Credit section wallets only (section staff don't get phone money)
                     ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
                     Transaction.objects.create(
                         payment=payment,
@@ -408,13 +411,7 @@ class ReleasePaymentService:
                         status='COMPLETED'
                     )
 
-                # Credit driver wallet
                 if driver_payout > 0 and order.driver and order.driver.user:
-                    WalletDomainService.credit(
-                        order.driver.user,
-                        driver_payout,
-                        f"Delivery fee for Order #{order.id}"
-                    )
                     Transaction.objects.create(
                         payment=payment,
                         from_wallet=None,
@@ -451,44 +448,34 @@ class ReleasePaymentService:
     @staticmethod
     def _distribute_restaurant_payout(order, restaurant_payout):
         """
-        Distributes the restaurant payout among the sections (stalls) that prepared the items.
-        If any items have no section, their share goes to the restaurant owner's wallet.
+        Distributes the restaurant payout among section (stall) wallets only.
+        The restaurant owner and driver are already paid directly via split settlement.
+        Section staff rely on wallet credit since they don't receive phone money.
         """
-        from decimal import Decimal
-
         from apps.wallets.models import Wallet
         from domain.services.wallet_services import WalletDomainService
 
         items = list(order.items.select_related('food', 'section').all())
         if not items:
-            WalletDomainService.credit(order.restaurant.owner, restaurant_payout, f"Earnings from Order #{order.id}")
             return
 
         total_items_price = sum(item.price for item in items)
         if total_items_price == 0:
-            WalletDomainService.credit(order.restaurant.owner, restaurant_payout, f"Earnings from Order #{order.id}")
             return
 
         distributed_amount = Decimal('0')
         cumulative_price = Decimal('0')
-        for idx, item in enumerate(items):
+        for item in items:
             cumulative_price += Decimal(str(item.price))
-            if total_items_price > 0:
-                cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
-            else:
-                cumulative_target = Decimal('0')
-            
+            cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
             item_payout = cumulative_target - distributed_amount
             distributed_amount += item_payout
 
-            if item_payout <= 0:
+            if item_payout <= 0 or not item.section:
                 continue
 
-            if item.section:
-                wallet, _ = Wallet.objects.get_or_create(section=item.section)
-                WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
-            else:
-                WalletDomainService.credit(order.restaurant.owner, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
+            wallet, _ = Wallet.objects.get_or_create(section=item.section)
+            WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
 
 class RefundPaymentService:
     @staticmethod
@@ -497,35 +484,44 @@ class RefundPaymentService:
             payments = Payment.objects.select_for_update().filter(
                 payable_type=payable_type,
                 payable_id=payable_id,
-                status__in=['COLLECTED', 'ON_HOLD'],
+                status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED'],
             )
             
             if not payments.exists():
                 # Legacy fallback for old callers passing order_id only
                 if payable_type == 'order':
                     payments = Payment.objects.select_for_update().filter(
-                        order_id=payable_id, status__in=['COLLECTED', 'ON_HOLD'],
+                        order_id=payable_id, status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED'],
                     )
 
             gateway = get_payment_gateway()
             
             for payment in payments:
                 refund_amount = override_amount if override_amount is not None else payment.amount
+
+                # Determine if payment was disbursed before we change its status
+                was_disbursed = payment.payable_type == 'order' and payment.status == 'DISBURSED'
+
+                # Look up order for clawback before status change
+                refund_order = None
+                if was_disbursed:
+                    refund_order = Order.objects.get(id=payment.payable_id)
+
                 response = gateway.refund(transaction_id=payment.provider_reference, amount=refund_amount)
                 if response and response.get('success'):
                     payment.status = PaymentFSM.transition(payment.status, 'REFUNDED')
                     payment.refund_id = response.get('refund_id')
                     payment.refunded_at = timezone.now()
                     payment.save()
-                    
+
                     # Determine refund recipient
                     recipient = None
                     if payment.payable_type == 'order':
-                        recipient = Order.objects.get(id=payment.payable_id).customer
+                        recipient = refund_order.customer if refund_order else Order.objects.get(id=payment.payable_id).customer
                     elif payment.payable_type == 'pool_member':
                         from apps.orders.models import PoolMember
                         recipient = PoolMember.objects.get(id=payment.payable_id).user
-                        
+
                     if recipient:
                         Transaction.objects.create(
                             payment=payment,
@@ -534,15 +530,67 @@ class RefundPaymentService:
                             transaction_type='platform_to_customer_refund',
                             status='COMPLETED'
                         )
-                    
+
+                    # Reverse section wallet credits if payment was previously disbursed
+                    if was_disbursed and refund_order:
+                        RefundPaymentService._clawback_section_wallets(payment, refund_order)
+
                     # Use a function to capture the current payment in the closure
                     def publish_refund(p=payment, amt=refund_amount):
                         EventBus.publish(PaymentRefunded(
-                            aggregate_id=p.id, 
+                            aggregate_id=p.id,
                             payload={'type': p.payable_type, 'payable_id': str(p.payable_id), 'refund_amount': str(amt)}
                         ))
                     transaction.on_commit(publish_refund)
             
             return True
+
+    @staticmethod
+    def _clawback_section_wallets(payment, order):
+        """
+        Reverse the section wallet credits that were made when the payment was disbursed.
+        Uses the same restaurant_payout formula as _distribute_restaurant_payout.
+        """
+        from apps.wallets.models import Wallet
+        from domain.services.wallet_services import WalletDomainService
+
+        items = list(order.items.select_related('food', 'section').all())
+        if not items:
+            return
+
+        total_items_price = sum(item.price for item in items)
+        if total_items_price == 0:
+            return
+
+        commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
+        restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
+
+        distributed_amount = Decimal('0')
+        cumulative_price = Decimal('0')
+        for item in items:
+            cumulative_price += Decimal(str(item.price))
+            cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
+            item_payout = cumulative_target - distributed_amount
+            distributed_amount += item_payout
+
+            if item_payout <= 0 or not item.section:
+                continue
+
+            wallet, _ = Wallet.objects.get_or_create(section=item.section)
+            try:
+                WalletDomainService.debit_wallet(wallet, item_payout, f"Refund clawback for Order #{order.id}")
+            except ValueError as e:
+                if 'Insufficient' in str(e):
+                    wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+                    actual_debit = min(wallet.balance, item_payout)
+                    if actual_debit > 0:
+                        WalletDomainService.debit_wallet(wallet, actual_debit,
+                            f"Partial refund clawback for Order #{order.id}")
+                    logger.warning(
+                        f"Section wallet {wallet.id} had only {wallet.balance} of {item_payout} "
+                        f"for clawback; debited available balance."
+                    )
+                else:
+                    raise
 
 

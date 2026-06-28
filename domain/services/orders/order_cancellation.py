@@ -38,11 +38,11 @@ class CancelOrderService:
 
             if hasattr(order, 'payment') and order.payment:
                 from domain.fsm.payment_fsm import PaymentFSM
-                if order.payment.status in ['INITIATED', 'INPROCESS']:
+                if order.payment.status == 'INITIATED':
                     order.payment.status = PaymentFSM.transition(order.payment.status, 'FAILED')
                     order.payment.save(update_fields=['status'])
 
-            if order.is_paid:
+            if order.is_paid and getattr(order, 'payment', None) and order.payment.status != 'DISBURSED':
                 RefundPaymentService.execute('order', order.id)
 
             if order.driver:

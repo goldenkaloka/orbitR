@@ -274,7 +274,100 @@ class AirpayGateway(PaymentGateway):
             return {'success': False, 'error': str(e)}
 
     def disburse(self, amount, account_info, reference, **kwargs):
-        return {'success': False, 'error': 'B2C disbursements not supported via this Airpay MID'}
+        """
+        Disburse funds to a vendor/driver mobile money via Airpay Kraken payout API.
+        Follows the same encryption/checksum/auth pattern as other Kraken endpoints.
+        """
+        try:
+            token = self._get_token()
+            if not token:
+                return {'success': False, 'error': 'Failed to obtain Airpay authentication token'}
+
+            phone = account_info
+            formatted_amount = "{:.2f}".format(float(amount))
+            payout_url = self.config.get('PAYOUT_URL') or "https://kraken.airpay.tz/airpay/pay/v1/api/disburse"
+
+            # Build payout payload — same pattern as other Kraken APIs
+            payload = {
+                'phone': phone,
+                'amount': formatted_amount,
+                'reference': str(reference)[:30],
+                'merchant_id': self.mercid,
+                'currency_code': '834',
+                'iso_currency': 'TZS',
+                'narration': kwargs.get('narration', 'Wallet Cashout'),
+            }
+
+            private_key = self.transformer.encrypt_sha(self.username + ":|:" + self.password, self.secret)
+            enc_data = self.transformer.encrypt_string(json.dumps(payload), self.username, self.password)
+            checksum = self.transformer.checksum_cal(payload)
+
+            post_data = {
+                'merchant_id': self.mercid,
+                'privatekey': private_key,
+                'encdata': enc_data,
+                'checksum': checksum,
+            }
+
+            response = requests.post(
+                f"{payout_url}?token={token}",
+                data=post_data,
+                timeout=30
+            )
+
+            def handle_token_failure(reason):
+                logger.warning(f"Airpay disbursement token validation failed ({reason}). Clearing cache and retrying...")
+                cache.delete(f"airpay_token_{self.mercid}")
+                if not kwargs.get('is_retry'):
+                    kwargs['is_retry'] = True
+                    return self.disburse(amount, account_info, reference, **kwargs)
+                return {'success': False, 'error': 'Access token validation failed. Please try again.'}
+
+            if response.status_code == 401:
+                return handle_token_failure("HTTP 401")
+
+            if response.status_code == 200:
+                try:
+                    res_json = response.json()
+                except json.JSONDecodeError:
+                    text = response.text.strip()
+                    last_brace = text.rfind('}')
+                    res_json = json.loads(text[:last_brace + 1])
+
+                message_str = str(res_json.get('message') or '').lower()
+                status_str = str(res_json.get('status') or '').lower()
+                if status_str == 'error' and 'validation failed' in message_str:
+                    return handle_token_failure("Unencrypted 200 validation error")
+
+                if 'response' in res_json:
+                    decrypted = self.transformer.decrypt_string(res_json['response'], self.username, self.password)
+                    res_data = self.transformer.safe_json_loads(decrypted)
+
+                    decrypted_msg = str(res_data.get('message') or '').lower()
+                    if 'validation failed' in decrypted_msg or 'invalid token' in decrypted_msg:
+                        return handle_token_failure("Decrypted 200 validation error")
+
+                    if res_data.get('status_code') == '200' or res_data.get('status') == 'success':
+                        return {
+                            'success': True,
+                            'provider_reference': res_data.get('data', {}).get('ap_transactionid') or res_data.get('data', {}).get('transaction_id'),
+                            'message': 'Disbursement successful',
+                            'raw_data': res_data,
+                        }
+
+                    logger.error(f"Disbursement rejected. Response: {res_data}")
+                    error_msg = res_data.get('message') or "Disbursement rejected by provider"
+                    return {'success': False, 'error': error_msg, 'code': res_data.get('response_code')}
+
+                logger.error(f"Unexpected 200 response: {response.text}")
+                return {'success': False, 'error': 'Unexpected response format from Airpay'}
+
+            logger.error(f"Disbursement request failed. Status: {response.status_code}, Body: {response.text}")
+            return {'success': False, 'error': f"Airpay API Error: {response.status_code}"}
+
+        except Exception as e:
+            logger.error(f"Airpay disbursement error: {str(e)}")
+            return {'success': False, 'error': str(e)}
 
     def refund(self, transaction_id, amount, **kwargs):
         """

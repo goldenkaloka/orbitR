@@ -50,6 +50,7 @@ class WalletDomainService:
             raise ValueError("Credit amount must be greater than zero.")
 
         with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
             WalletTransaction.objects.create(
                 wallet=wallet,
                 amount=amount,
@@ -57,6 +58,25 @@ class WalletDomainService:
                 description=description
             )
             wallet.balance += amount
+            wallet.save()
+            return wallet
+
+    @staticmethod
+    def debit_wallet(wallet, amount: Decimal, description: str):
+        if amount <= 0:
+            raise ValueError("Debit amount must be greater than zero.")
+
+        with transaction.atomic():
+            wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+            if wallet.balance < amount:
+                raise ValueError(f"Insufficient wallet balance")
+            WalletTransaction.objects.create(
+                wallet=wallet,
+                amount=amount,
+                tx_type='DEBIT',
+                description=description
+            )
+            wallet.balance -= amount
             wallet.save()
             return wallet
             
