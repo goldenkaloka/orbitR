@@ -22,17 +22,25 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class MarketplaceProductListSerializer(serializers.ModelSerializer):
     images = ProductImageSerializer(many=True, read_only=True)
     seller_name = serializers.ReadOnlyField(source='seller.username')
+    seller_avatar_url = serializers.SerializerMethodField()
     whatsapp_url = serializers.SerializerMethodField()
     zone_name = serializers.SerializerMethodField()
 
     class Meta:
         model = MarketplaceProduct
         fields = [
-            'id', 'seller_name', 'category', 'name', 'description',
+            'id', 'seller_name', 'seller_avatar_url', 'category', 'name', 'description',
             'price', 'condition', 'whatsapp_number', 'whatsapp_url',
             'location', 'h3_index', 'zone_name', 'status', 'expiry_date',
             'images', 'created_at'
         ]
+
+    def get_seller_avatar_url(self, obj):
+        seller = obj.seller
+        if seller.avatar:
+            request = self.context.get('request')
+            return request.build_absolute_uri(seller.avatar.url) if request else seller.avatar.url
+        return seller.avatar_url or None
 
     def get_whatsapp_url(self, obj):
         import urllib.parse
@@ -64,6 +72,7 @@ class MarketplaceProductListSerializer(serializers.ModelSerializer):
 class MarketplaceProductSerializer(serializers.ModelSerializer):
     images = ProductImageSerializer(many=True, read_only=True)
     seller_name = serializers.ReadOnlyField(source='seller.username')
+    seller_avatar_url = serializers.SerializerMethodField()
     listing_fee = serializers.SerializerMethodField()
     whatsapp_url = serializers.SerializerMethodField()
     zone_name = serializers.SerializerMethodField()
@@ -71,12 +80,19 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = MarketplaceProduct
         fields = [
-            'id', 'seller', 'seller_name', 'category', 'name', 'description', 
+            'id', 'seller', 'seller_name', 'seller_avatar_url', 'category', 'name', 'description', 
             'price', 'condition', 'whatsapp_number', 'whatsapp_url',
             'location', 'h3_index', 'zone_name', 'status', 'expiry_date', 
             'listing_fee', 'is_fee_paid', 'images', 'created_at'
         ]
         read_only_fields = ['seller', 'status', 'expiry_date', 'is_fee_paid', 'h3_index']
+
+    def get_seller_avatar_url(self, obj):
+        seller = obj.seller
+        if seller.avatar:
+            request = self.context.get('request')
+            return request.build_absolute_uri(seller.avatar.url) if request else seller.avatar.url
+        return seller.avatar_url or None
 
     def get_listing_fee(self, obj):
         return float(obj.calculate_listing_fee())

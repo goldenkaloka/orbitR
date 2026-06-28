@@ -99,7 +99,7 @@ def _notify_order_event(event):
             else:
                 sms_text = (
                     f"Habari {vendor_name}, una oda mpya "
-                    f"#{str(order.id).split('-')[0]} kwenye Mwanachuoshop. "
+                    f"#{str(order.id).split('-')[0]} kwenye OrbitR. "
                     f"Tafadhali iandae sasa."
                 )
             NotificationService.send_sms(vendor_phone, sms_text)
