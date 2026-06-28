@@ -366,6 +366,23 @@ UNFOLD = {
                 ],
             },
             {
+                "title": _("Marketplace"),
+                "separator": True,
+                "collapsible": True,
+                "items": [
+                    {
+                        "title": _("Listings"),
+                        "icon": "storefront",
+                        "link": reverse_lazy("admin:marketplace_marketplaceproduct_changelist"),
+                    },
+                    {
+                        "title": _("Categories"),
+                        "icon": "category",
+                        "link": reverse_lazy("admin:marketplace_marketplacecategory_changelist"),
+                    },
+                ],
+            },
+            {
                 "title": _("Operations"),
                 "separator": True,
                 "collapsible": True,
