@@ -837,11 +837,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'])
     def pay(self, request, pk=None):
         from domain.services.payment_services import InitiatePaymentService
-        provider = request.data.get('provider')
         phone = request.data.get('phone')
         bank_code = request.data.get('bank_code')
         try:
-            result = InitiatePaymentService.execute(payable_type='order', payable_id=pk, provider=provider, phone=phone, bank_code=bank_code)
+            result = InitiatePaymentService.execute(payable_type='order', payable_id=pk, phone=phone, bank_code=bank_code)
             payment = result['payment']
             gateway_data = result.get('gateway_response', {})
 

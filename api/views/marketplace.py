@@ -174,7 +174,6 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 result = InitiatePaymentService.execute(
                     payable_type='marketplace_product',
                     payable_id=product.id,
-                    provider=request.data.get('provider', 'AIRPAY'),
                     phone=payment_phone,
                     bank_code=request.data.get('bank_code'),
                 )
@@ -227,7 +226,6 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             result = InitiatePaymentService.execute(
                 payable_type='marketplace_product',
                 payable_id=product.id,
-                provider=request.data.get('provider', 'AIRPAY'),
                 phone=phone,
                 bank_code=request.data.get('bank_code')
             )
@@ -274,7 +272,6 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             result = InitiatePaymentService.execute(
                 payable_type='marketplace_product',
                 payable_id=product.id,
-                provider=request.data.get('provider', 'AIRPAY'),
                 phone=phone,
                 bank_code=request.data.get('bank_code')
             )

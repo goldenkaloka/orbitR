@@ -144,7 +144,6 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         from apps.orders.models import PoolMember
         from domain.services.payment_services import InitiatePaymentService
         
-        provider = request.data.get('provider')
         phone = request.data.get('phone')
         bank_code = request.data.get('bank_code')
         
@@ -156,7 +155,6 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             result = InitiatePaymentService.execute(
                 payable_type='pool_member',
                 payable_id=member.id, 
-                provider=provider, 
                 phone=phone,
                 bank_code=bank_code
             )
