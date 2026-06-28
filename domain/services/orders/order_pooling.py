@@ -69,14 +69,14 @@ class PoolOrderService:
 
         h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
 
-        op_zone = ZoneH3Index.objects.filter(
-            h3_index=h3_index,
-            resolution=ZONE_RESOLUTION,
-            zone__is_active=True
-        ).select_related('zone').first()
-
-        if not op_zone:
-            raise ValueError("Delivery location is not within an operational zone.")
+        # --- Gate 1: OperationalZone check (Bypassed, matches order_placement.py) ---
+        # op_zone = ZoneH3Index.objects.filter(
+        #     h3_index=h3_index,
+        #     resolution=ZONE_RESOLUTION,
+        #     zone__is_active=True
+        # ).select_related('zone').first()
+        # if not op_zone:
+        #     raise ValueError("Delivery location is not within an operational zone.")
 
         if restaurant.geo_location:
             restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
