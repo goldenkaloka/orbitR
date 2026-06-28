@@ -129,6 +129,91 @@ class InitiatePaymentService:
                 'is_push': response.get('success') and not response.get('instant_success')
             }
 
+PLATFORM_USER_PHONE = '+255000000000'
+
+
+def get_platform_user():
+    """Get or create the internal platform user for double-entry accounting."""
+    from apps.users.models import User
+    user, created = User.objects.get_or_create(
+        phone=PLATFORM_USER_PHONE,
+        defaults={'username': 'platform', 'role': 'admin'}
+    )
+    if created:
+        logger.info("Created platform user for double-entry accounting")
+    return user
+
+
+def _get_platform_wallet():
+    """Get or create the platform wallet used for escrow tracking."""
+    from apps.wallets.models import Wallet
+    wallet, _ = Wallet.objects.select_for_update().get_or_create(user=get_platform_user())
+    return wallet
+
+
+def _hold_escrow(amount: Decimal):
+    """Record that amount is expected from gateway (escrow hold)."""
+    wallet = _get_platform_wallet()
+    wallet.pending_balance += amount
+    wallet.save()
+
+
+def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
+    """Move amount from escrow to cleared balance on disbursement."""
+    wallet = _get_platform_wallet()
+    wallet.pending_balance -= total_amount
+    wallet.balance += platform_cut
+    wallet.save()
+
+
+def _release_escrow_refund(amount: Decimal, cancel_fee: Decimal):
+    """On refund: release full amount from escrow, keep cancel fee as earned."""
+    wallet = _get_platform_wallet()
+    wallet.pending_balance -= amount
+    if cancel_fee > 0:
+        wallet.balance += cancel_fee
+    wallet.save()
+
+
+def _release_escrow_disbursed_refund(payment):
+    """On refund of a disbursed payment: reverse the platform_cut from balance."""
+    from apps.payments.models import Transaction as PmtTransaction
+    platform_entry = PmtTransaction.objects.filter(
+        payment=payment,
+        transaction_type='platform_revenue',
+    ).first()
+    if platform_entry and platform_entry.amount > 0:
+        wallet = _get_platform_wallet()
+        wallet.balance -= platform_entry.amount
+        wallet.save()
+
+
+def _create_double_entry(payment, from_user, to_user, amount, entry_type, status='COMPLETED'):
+    """
+    Create both a Transaction (User-based, backward compat) and a LedgerEntry (Wallet-based, double-entry).
+    """
+    txn = Transaction.objects.create(
+        payment=payment,
+        from_wallet=from_user,
+        to_wallet=to_user,
+        amount=amount,
+        transaction_type=entry_type,
+        status=status,
+    )
+    # Also create the Wallet-based double-entry record
+    from apps.payments.models import LedgerEntry
+    from_debit = from_user.wallet if from_user else None
+    to_credit = to_user.wallet if to_user else None
+    LedgerEntry.objects.create(
+        payment=payment,
+        debit_wallet=from_debit,
+        credit_wallet=to_credit,
+        amount=amount,
+        entry_type=entry_type,
+    )
+    return txn
+
+
 class CompletePaymentService:
     @staticmethod
     def execute(payment_id=None, provider_reference=None, success=True, rrn=None, reference_id=None):
@@ -200,14 +285,16 @@ class CompletePaymentService:
         order.status = OrderFSM.transition(order.status, 'CREATED')
         order.save(update_fields=['is_paid', 'status'])
 
-        Transaction.objects.create(
+        _create_double_entry(
             payment=payment,
-            from_wallet=order.customer,
-            to_wallet=None,
+            from_user=order.customer,
+            to_user=get_platform_user(),
             amount=payment.amount,
-            transaction_type='customer_to_platform',
-            status='COMPLETED'
+            entry_type='customer_to_platform',
         )
+
+        # Escrow hold: record money expected from the gateway
+        _hold_escrow(payment.amount)
 
         # Confirm synchronously so the order is reflected immediately,
         # not waiting on Celery event dispatch
@@ -222,15 +309,17 @@ class CompletePaymentService:
         member.status = 'PAID'
         member.save()
         
-        Transaction.objects.create(
+        _create_double_entry(
             payment=payment,
-            from_wallet=member.user,
-            to_wallet=None,
+            from_user=member.user,
+            to_user=get_platform_user(),
             amount=payment.amount,
-            transaction_type='pool_member_to_platform',
-            status='COMPLETED'
+            entry_type='pool_member_to_platform',
         )
-        
+
+        # Escrow hold: record money expected from the gateway
+        _hold_escrow(payment.amount)
+
         from apps.events.utils import broadcast_pool_status
         _pid = str(pool.id)
         _pstatus = pool.status
@@ -254,13 +343,12 @@ class CompletePaymentService:
         product = MarketplaceProduct.objects.get(id=payment.payable_id)
         MarketplaceService.activate_product(product_id=str(product.id), actor=product.seller)
         
-        Transaction.objects.create(
+        _create_double_entry(
             payment=payment,
-            from_wallet=product.seller,
-            to_wallet=None,
+            from_user=product.seller,
+            to_user=get_platform_user(),
             amount=payment.amount,
-            transaction_type='listing_fee',
-            status='COMPLETED'
+            entry_type='listing_fee',
         )
 
 class ReleasePaymentService:
@@ -308,10 +396,12 @@ class ReleasePaymentService:
                     driver_phone = order.driver.user.phone
 
             elif payment.payable_type == 'pool_member':
-                from apps.orders.models import PoolMember
+                from apps.orders.models import OrderPool, PoolMember
                 member = PoolMember.objects.select_related(
                     'pool', 'pool__restaurant', 'pool__restaurant__owner', 'pool__batch'
                 ).get(id=payment.payable_id)
+                # Lock the pool row to prevent concurrent releases from double-paying the driver
+                OrderPool.objects.select_for_update().get(id=member.pool_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
                 
@@ -395,30 +485,41 @@ class ReleasePaymentService:
             )
 
             if response and response.get('success'):
+                _platform = get_platform_user()
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
+
+                # Release escrow: move from pending_balance to balance for platform_cut
+                _release_escrow(payment.amount, platform_cut)
 
                 # Accounting records only — actual money is already sent via split_settlement
                 if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
                     # Credit section wallets only (section staff don't get phone money)
                     ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
-                    Transaction.objects.create(
+                    _create_double_entry(
                         payment=payment,
-                        from_wallet=None,
-                        to_wallet=order.restaurant.owner,
+                        from_user=_platform,
+                        to_user=order.restaurant.owner,
                         amount=restaurant_payout,
-                        transaction_type='platform_to_restaurant',
-                        status='COMPLETED'
+                        entry_type='platform_to_restaurant',
                     )
 
                 if driver_payout > 0 and order.driver and order.driver.user:
-                    Transaction.objects.create(
+                    _create_double_entry(
                         payment=payment,
-                        from_wallet=None,
-                        to_wallet=order.driver.user,
+                        from_user=_platform,
+                        to_user=order.driver.user,
                         amount=driver_payout,
-                        transaction_type='platform_to_driver',
-                        status='COMPLETED'
+                        entry_type='platform_to_driver',
+                    )
+
+                if platform_cut > 0:
+                    _create_double_entry(
+                        payment=payment,
+                        from_user=_platform,
+                        to_user=_platform,
+                        amount=platform_cut,
+                        entry_type='platform_revenue',
                     )
 
                 transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(
@@ -479,7 +580,7 @@ class ReleasePaymentService:
 
 class RefundPaymentService:
     @staticmethod
-    def execute(payable_type, payable_id, override_amount: Decimal = None):
+    def execute(payable_type, payable_id, override_amount: Decimal = None, cancel_fee_pct: Decimal = Decimal('0')):
         with transaction.atomic():
             payments = Payment.objects.select_for_update().filter(
                 payable_type=payable_type,
@@ -497,7 +598,9 @@ class RefundPaymentService:
             gateway = get_payment_gateway()
             
             for payment in payments:
-                refund_amount = override_amount if override_amount is not None else payment.amount
+                base_amount = override_amount if override_amount is not None else payment.amount
+                cancel_fee = base_amount * cancel_fee_pct
+                refund_amount = base_amount - cancel_fee
 
                 # Determine if payment was disbursed before we change its status
                 was_disbursed = payment.payable_type == 'order' and payment.status == 'DISBURSED'
@@ -514,6 +617,12 @@ class RefundPaymentService:
                     payment.refunded_at = timezone.now()
                     payment.save()
 
+                    # Escrow release
+                    if was_disbursed:
+                        _release_escrow_disbursed_refund(payment)
+                    else:
+                        _release_escrow_refund(payment.amount, cancel_fee)
+
                     # Determine refund recipient
                     recipient = None
                     if payment.payable_type == 'order':
@@ -523,12 +632,21 @@ class RefundPaymentService:
                         recipient = PoolMember.objects.get(id=payment.payable_id).user
 
                     if recipient:
-                        Transaction.objects.create(
+                        _create_double_entry(
                             payment=payment,
-                            to_wallet=recipient,
+                            from_user=get_platform_user(),
+                            to_user=recipient,
                             amount=refund_amount,
-                            transaction_type='platform_to_customer_refund',
-                            status='COMPLETED'
+                            entry_type='platform_to_customer_refund',
+                        )
+
+                    if cancel_fee > 0:
+                        _create_double_entry(
+                            payment=payment,
+                            from_user=recipient,
+                            to_user=get_platform_user(),
+                            amount=cancel_fee,
+                            entry_type='platform_cancel_fee',
                         )
 
                     # Reverse section wallet credits if payment was previously disbursed
@@ -550,6 +668,11 @@ class RefundPaymentService:
         """
         Reverse the section wallet credits that were made when the payment was disbursed.
         Uses the same restaurant_payout formula as _distribute_restaurant_payout.
+        
+        NOTE: This only claws back section (stall) wallet credits.
+        Restaurant owner and driver phone payouts (sent via split_settlement)
+        are NOT clawed back — the platform absorbs that loss. A future enhancement
+        could track negative balances or deduct from future payouts.
         """
         from apps.wallets.models import Wallet
         from domain.services.wallet_services import WalletDomainService
@@ -586,6 +709,16 @@ class RefundPaymentService:
                     if actual_debit > 0:
                         WalletDomainService.debit_wallet(wallet, actual_debit,
                             f"Partial refund clawback for Order #{order.id}")
+                    shortfall = item_payout - actual_debit
+                    if shortfall > 0:
+                        from apps.payments.models import WalletDebt
+                        WalletDebt.objects.create(
+                            payment=payment,
+                            wallet=wallet,
+                            original_amount=item_payout,
+                            remaining_balance=shortfall,
+                            status='OUTSTANDING',
+                        )
                     logger.warning(
                         f"Section wallet {wallet.id} had only {wallet.balance} of {item_payout} "
                         f"for clawback; debited available balance."

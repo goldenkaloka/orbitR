@@ -431,6 +431,26 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             'has_pending': len(restaurant_batches) > 0
         })
 
+    @action(detail=True, methods=['PATCH'], url_path='prep-time')
+    def update_prep_time(self, request, pk=None):
+        """Update the restaurant's average preparation time (vendor-facing)."""
+        restaurant = self.get_object()
+        owner = restaurant.owner
+        if request.user != owner and not request.user.is_staff:
+            from apps.restaurants.models import SectionStaff
+            if not SectionStaff.objects.filter(user=request.user, section__restaurant=restaurant).exists():
+                return Response({'error': 'Not authorized'}, status=403)
+        try:
+            value = int(request.data.get('average_prep_time', 0))
+            if value < 1 or value > 180:
+                return Response({'error': 'Prep time must be between 1 and 180 minutes'}, status=400)
+            restaurant.average_prep_time = value
+            restaurant.save(update_fields=['average_prep_time'])
+        except (TypeError, ValueError):
+            return Response({'error': 'Invalid prep time value'}, status=400)
+        invalidate_restaurant_cache(restaurant)
+        return Response({'average_prep_time': restaurant.average_prep_time})
+
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer

@@ -21,7 +21,7 @@ from api.views.demands import BuyerDemandViewSet, ShopViewSet
 from api.views.driver import DeliveryProofViewSet, DriverViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet
-from api.views.payments import AirpayWebhookView, InitiatePaymentView
+from api.views.payments import AirpayWebhookView, InitiatePaymentView, PlatformRevenueView
 from api.views.pools import PoolOrderViewSet
 from api.views.pricing import (
     DeliveryFeeLogViewSet,
@@ -31,6 +31,7 @@ from api.views.pricing import (
 from api.views.reviews import ReviewViewSet
 from api.views.sections import BatchSectionStatusViewSet, SectionViewSet
 from api.views.subscribe_check import ws_subscribe_check
+from api.views.reliability import ReliabilityView
 from api.views.wallets import WalletViewSet
 from django.urls import path
 from rest_framework.routers import DefaultRouter
@@ -69,7 +70,9 @@ urlpatterns = router.urls + [
     path('payments/airpay/callback/', AirpayWebhookView.as_view(), name='airpay-callback'),
     path('payments/airpay/callback', AirpayWebhookView.as_view(), name='airpay-callback-no-slash'),
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
+    path('payments/revenue/', PlatformRevenueView.as_view(), name='platform-revenue'),
     path('search/', UniversalSearchView.as_view(), name='universal-search'),
     path('ws-subscribe-check/', ws_subscribe_check, name='ws-subscribe-check'),
+    path('reliability/', ReliabilityView.as_view(), name='reliability-me'),
     path('app-config/', AppConfigView.as_view(), name='app-config'),
 ]

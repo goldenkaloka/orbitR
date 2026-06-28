@@ -198,3 +198,46 @@ class AirpayWebhookView(APIView):
         except Exception as e:
             logger.error(f"Error processing Airpay webhook: {str(e)}")
             return Response({"error": str(e)}, status=500)
+
+
+class PlatformRevenueView(APIView):
+    """Platform revenue analytics from Transaction records."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, *args, **kwargs):
+        from apps.payments.models import Transaction
+        from django.db.models import Sum
+        from django.utils import timezone
+        from datetime import timedelta
+
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        month_start = today_start.replace(day=1)
+
+        base_qs = Transaction.objects.filter(
+            transaction_type='platform_revenue',
+            status='COMPLETED',
+        )
+
+        total_revenue = base_qs.aggregate(Sum('amount'))['amount__sum'] or 0
+        revenue_today = base_qs.filter(created_at__gte=today_start).aggregate(Sum('amount'))['amount__sum'] or 0
+        revenue_month = base_qs.filter(created_at__gte=month_start).aggregate(Sum('amount'))['amount__sum'] or 0
+
+        last_30 = now - timedelta(days=30)
+        daily = (
+            base_qs.filter(created_at__gte=last_30)
+            .extra({'day': "date(created_at)"})
+            .values('day')
+            .annotate(amount=Sum('amount'))
+            .order_by('day')
+        )
+
+        return Response({
+            'total_revenue': float(total_revenue),
+            'revenue_today': float(revenue_today),
+            'revenue_this_month': float(revenue_month),
+            'daily_revenue': [
+                {'date': str(entry['day']), 'amount': float(entry['amount'])}
+                for entry in daily
+            ],
+        })

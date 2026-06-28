@@ -140,60 +140,64 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "code": "FEES_EXCEED_AMOUNT",
             }, status=400)
 
-        # Attempt actual disbursement through payment gateway
+        # Debit wallet first, then call gateway — inside atomic block.
+        # If the gateway call fails, the database rollback reverses the debit.
         gateway = get_payment_gateway(phone=phone)
         reference = f"cashout_{request.user.id}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
-        disbursement = gateway.disburse(
-            amount=net_amount,
-            account_info=phone,
-            reference=reference,
-            narration=f"Wallet cashout to {provider_name}",
-        )
 
-        if not disbursement.get('success'):
-            error_msg = disbursement.get('error', 'Disbursement failed')
-            logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
-            return Response({
-                "error": f"Cashout failed: {error_msg}",
-                "code": "DISBURSEMENT_FAILED",
-                "gateway_error": error_msg,
-            }, status=502)
+        try:
+            with db_transaction.atomic():
+                wallet = Wallet.objects.select_for_update().get(id=wallet.id)
 
-        provider_reference = disbursement.get('provider_reference', '')
+                if wallet.balance < amount:
+                    logger.error(
+                        f"Cashout race detected for user {request.user.id}: "
+                        f"wallet balance {wallet.balance} < requested {amount}"
+                    )
+                    return Response({"error": "Insufficient balance", "code": "INSUFFICIENT_BALANCE"}, status=409)
+                if wallet.balance < MINIMUM_CASHOUT:
+                    return Response({
+                        "error": f"Minimum cashout amount is TSh {int(MINIMUM_CASHOUT)}",
+                        "code": "INSUFFICIENT_BALANCE",
+                    }, status=409)
 
-        # Only update ledger on successful disbursement
-        with db_transaction.atomic():
-            wallet = Wallet.objects.select_for_update().get(id=wallet.id)
-            # Re-check balance inside atomic block to prevent race condition
-            if wallet.balance < amount:
-                logger.error(
-                    f"Cashout race detected for user {request.user.id}: "
-                    f"wallet balance {wallet.balance} < requested {amount}"
+                wallet.balance -= amount
+                wallet.save()
+
+                disbursement = gateway.disburse(
+                    amount=net_amount,
+                    account_info=phone,
+                    reference=reference,
+                    narration=f"Wallet cashout to {provider_name}",
                 )
-                return Response({"error": "Insufficient balance", "code": "INSUFFICIENT_BALANCE"}, status=409)
-            if wallet.balance < MINIMUM_CASHOUT:
-                return Response({
-                    "error": f"Minimum cashout amount is TSh {int(MINIMUM_CASHOUT)}",
-                    "code": "INSUFFICIENT_BALANCE",
-                }, status=409)
-            wallet.balance -= amount
-            wallet.save()
 
-            WalletTransaction.objects.create(
-                wallet=wallet,
-                amount=net_amount,
-                tx_type='DEBIT',
-                description=f"Cashout to {provider_name}",
-                created_at=timezone.now(),
-            )
+                if not disbursement.get('success'):
+                    error_msg = disbursement.get('error', 'Disbursement failed')
+                    logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
+                    raise ValueError(f"Disbursement failed: {error_msg}")
 
-            WalletTransaction.objects.create(
-                wallet=wallet,
-                amount=total_fees,
-                tx_type='DEBIT',
-                description=f"Cashout processing fees ({provider_name})",
-                created_at=timezone.now(),
-            )
+                provider_reference = disbursement.get('provider_reference', '')
+
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    amount=net_amount,
+                    tx_type='DEBIT',
+                    description=f"Cashout to {provider_name}",
+                    created_at=timezone.now(),
+                )
+
+                WalletTransaction.objects.create(
+                    wallet=wallet,
+                    amount=total_fees,
+                    tx_type='DEBIT',
+                    description=f"Cashout processing fees ({provider_name})",
+                    created_at=timezone.now(),
+                )
+        except ValueError as e:
+            return Response({
+                "error": f"Cashout failed: {e}",
+                "code": "DISBURSEMENT_FAILED",
+            }, status=502)
 
         logger.info(
             f"Cashout successful for user {request.user.id}: "

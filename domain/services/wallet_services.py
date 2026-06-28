@@ -79,12 +79,3 @@ class WalletDomainService:
             wallet.balance -= amount
             wallet.save()
             return wallet
-            
-    @staticmethod
-    def move_escrow_to_pending(user, amount: Decimal):
-        """Used when a payment is collected but not yet released."""
-        with transaction.atomic():
-            wallet, _ = Wallet.objects.select_for_update().get_or_create(user=user)
-            wallet.pending_balance += amount
-            wallet.save()
-            return wallet

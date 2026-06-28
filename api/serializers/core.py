@@ -111,7 +111,7 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'description', 'image', 'image_url', 
             'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
-            'is_active', 'is_busy', 'foods', 'sections'
+            'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time'
         ]
 
     def get_latitude(self, obj):

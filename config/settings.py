@@ -93,6 +93,7 @@ INSTALLED_APPS = [
     'django.contrib.gis',
     'leaflet',
     'apps.reviews',
+    'apps.reliability',
 ]
 
 
@@ -624,6 +625,10 @@ CELERY_BEAT_SCHEDULE = {
     'clear-stale-heartbeats-every-5-mins': {
         'task': 'apps.delivery.tasks.clear_stale_heartbeats',
         'schedule': crontab(minute='*/5'),
+    },
+    'expire-strikes-daily': {
+        'task': 'apps.reliability.tasks.expire_strikes',
+        'schedule': crontab(hour=3, minute=0),
     },
 }
 

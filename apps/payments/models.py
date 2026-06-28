@@ -51,3 +51,30 @@ class FailedPayout(models.Model):
     error_code = models.CharField(max_length=100, blank=True, null=True, db_index=True)
     retry_count = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+class LedgerEntry(models.Model):
+    """Proper double-entry accounting record referencing Wallet (not User)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='ledger_entries')
+    debit_wallet = models.ForeignKey('wallets.Wallet', on_delete=models.DO_NOTHING, related_name='debit_entries', null=True, blank=True)
+    credit_wallet = models.ForeignKey('wallets.Wallet', on_delete=models.DO_NOTHING, related_name='credit_entries', null=True, blank=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    entry_type = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+
+class WalletDebt(models.Model):
+    """Tracks unrecovered clawback amounts when a section wallet has insufficient balance."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='debts')
+    wallet = models.ForeignKey('wallets.Wallet', on_delete=models.CASCADE, related_name='debts')
+    original_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    remaining_balance = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    recovered_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, default='OUTSTANDING')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
