@@ -452,6 +452,10 @@ class BatchPipeline:
         from apps.orders.models import BatchSectionStatus
         from django.utils import timezone
 
+        from apps.restaurants.models import RestaurantSection
+        section = RestaurantSection.objects.only('prep_time').filter(id=section_id).first()
+        prep_minutes = section.prep_time if section and section.prep_time else 15
+
         updated = BatchSectionStatus.objects.filter(
             batch_id=batch_id,
             section_id=section_id,
@@ -459,7 +463,7 @@ class BatchPipeline:
         ).update(
             status='PREPARING',
             started_prepping_at=timezone.now(),
-            estimated_ready_at=timezone.now() + timezone.timedelta(minutes=15),
+            estimated_ready_at=timezone.now() + timezone.timedelta(minutes=prep_minutes),
         )
         if updated:
             logger.info(f"[BatchPipeline] Section {section_id} in batch {batch_id}: PENDING → PREPARING")

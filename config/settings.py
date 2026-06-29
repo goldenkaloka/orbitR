@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     # 3rd Party
     'rest_framework',
     'rest_framework_simplejwt',
+    'drf_spectacular',
     'corsheaders',
     # Local Apps
     'apps.users',
@@ -103,7 +104,7 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.LimitOffsetPagination',
+    'DEFAULT_PAGINATION_CLASS': 'api.pagination.DefaultLimitOffsetPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
@@ -113,6 +114,14 @@ REST_FRAMEWORK = {
         'anon': '100/hour',
         'user': '1000/hour',
     },
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Mwanachuoshop API',
+    'DESCRIPTION': 'Backend API for marketplace, food delivery, payments, and real-time logistics.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 from datetime import timedelta
@@ -155,10 +164,14 @@ if not CORS_ALLOWED_ORIGINS and not DEBUG:
 
 CORS_ALLOW_CREDENTIALS = True
 
+TRUST_PROXY_HEADERS = config('TRUST_PROXY_HEADERS', default=False, cast=bool)
+AIRPAY_ALLOW_UNSIGNED_WEBHOOKS = config('AIRPAY_ALLOW_UNSIGNED_WEBHOOKS', default=False, cast=bool)
+
 
 MIDDLEWARE = [
     'apps.core.perf_middleware.RequestTimingMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'django.middleware.gzip.GZipMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -196,9 +209,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': config('DB_NAME', default='mwanachuo_db'),
-        'USER': config('DB_USER', default='mwanachuo_user'),
-        'PASSWORD': config('DB_PASSWORD', default='mwanachuo_password'),
+        'NAME': config('DB_NAME', default=config('POSTGRES_DB', default='mwanachuo_db')),
+        'USER': config('DB_USER', default=config('POSTGRES_USER', default='mwanachuo_user')),
+        'PASSWORD': config('DB_PASSWORD', default=config('POSTGRES_PASSWORD', default='mwanachuo_password')),
         'HOST': config('DB_HOST', default='localhost'),
         'PORT': config('DB_PORT', default='5432'),
         'CONN_MAX_AGE': 600,
@@ -245,8 +258,8 @@ STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # MinIO / S3 Storage Configuration
-AWS_ACCESS_KEY_ID = config('MINIO_ACCESS_KEY', default='minioadmin')
-AWS_SECRET_ACCESS_KEY = config('MINIO_SECRET_KEY', default='minioadmin')
+AWS_ACCESS_KEY_ID = config('MINIO_ACCESS_KEY', default=config('MINIO_ROOT_USER', default='minioadmin'))
+AWS_SECRET_ACCESS_KEY = config('MINIO_SECRET_KEY', default=config('MINIO_ROOT_PASSWORD', default='minioadmin'))
 AWS_STORAGE_BUCKET_NAME = config('MINIO_STORAGE_BUCKET_NAME', default='static')
 AWS_S3_ENDPOINT_URL = config('MINIO_ENDPOINT', default='http://localhost:9000')
 AWS_S3_VERIFY = config('AWS_S3_VERIFY', default=not DEBUG, cast=bool)

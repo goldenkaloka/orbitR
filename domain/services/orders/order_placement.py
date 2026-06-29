@@ -47,9 +47,11 @@ class PlaceOrderService:
         
         if expected_delivery is not None and abs(Decimal(str(expected_delivery)) - dynamic_fee) > 10:
             logger.warning(f"Delivery fee mismatch: Client expected {expected_delivery}, Backend calculated {dynamic_fee}")
+            raise ValueError("Delivery fee changed. Please refresh the quote before placing the order.")
             
         if expected_service is not None and abs(Decimal(str(expected_service)) - service_fee) > 10:
             logger.warning(f"Service fee mismatch: Client expected {expected_service}, Backend calculated {service_fee}")
+            raise ValueError("Service fee changed. Please refresh the quote before placing the order.")
         
         if not restaurant.is_active:
             raise ValueError(f"Restaurant {restaurant.name} is currently not accepting orders.")
@@ -96,8 +98,17 @@ class PlaceOrderService:
                 aggregate_id=order.id,
                 payload={'customer_id': str(order.customer.id)}
             )))
+            transaction.on_commit(lambda oid=str(order.id): _prewarm_order_route(oid))
         
         return order
+
+
+def _prewarm_order_route(order_id):
+    try:
+        from apps.orders.tasks import prewarm_order_route_geometry
+        prewarm_order_route_geometry.delay(order_id)
+    except Exception as exc:
+        logger.warning(f"Failed to queue route prewarm for order {order_id}: {exc}")
 
 class ConfirmOrderService:
     @staticmethod

@@ -223,20 +223,19 @@ class PricingService:
 
             final_rounded = (final_fee / 100).quantize(Decimal('1'), rounding='ROUND_HALF_UP') * 100
 
-            log = None
-            if not skip_log:
-                log = DeliveryFeeLog.objects.create(
-                    order=order,
-                    pool=pool,
-                    restaurant=restaurant,
-                    distance_km=distance_km,
-                    estimated_road_distance_km=distance_km,
-                    base_fee_used=base_fee,
-                    per_km_rate_used=policy.per_km_rate,
-                    final_fee=final_rounded,
-                    adjustments=adjustments,
-                    policy_name=policy.name
-                )
+            log_data = {
+                'order': order,
+                'pool': pool,
+                'restaurant': restaurant,
+                'distance_km': distance_km,
+                'estimated_road_distance_km': distance_km,
+                'base_fee_used': base_fee,
+                'per_km_rate_used': policy.per_km_rate,
+                'final_fee': final_rounded,
+                'adjustments': adjustments,
+                'policy_name': policy.name,
+            }
+            log = DeliveryFeeLog(**log_data) if skip_log else DeliveryFeeLog.objects.create(**log_data)
 
             return final_rounded, service_fee, log
 

@@ -4,8 +4,9 @@ from api.serializers.marketplace import (
     MarketplaceProductSerializer,
 )
 from apps.core.cache_keys import stable_cache_key
-from apps.marketplace.models import MarketplaceCategory, MarketplaceProduct
+from apps.marketplace.models import MarketplaceCategory, MarketplaceProduct, ProductImage
 from django.core.cache import cache
+from django.db.models import Prefetch
 from domain.services.marketplace_services import MarketplaceService
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -36,8 +37,14 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         """
         queryset = MarketplaceProduct.objects.select_related(
             'seller', 'category'
-        ).prefetch_related('images').only(
-            'seller__id', 'seller__username',
+        ).prefetch_related(
+            Prefetch(
+                'images',
+                queryset=ProductImage.objects.only('id', 'product_id', 'image', 'is_primary'),
+                to_attr='prefetched_images',
+            )
+        ).only(
+            'seller__id', 'seller__username', 'seller__avatar', 'seller__avatar_url',
             'category__id', 'category__name',
             'name', 'description', 'price', 'condition',
             'whatsapp_number', 'location', 'h3_index',

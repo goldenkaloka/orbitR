@@ -20,7 +20,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
 
 
 class MarketplaceProductListSerializer(serializers.ModelSerializer):
-    images = ProductImageSerializer(many=True, read_only=True)
+    images = serializers.SerializerMethodField()
     seller_name = serializers.ReadOnlyField(source='seller.username')
     seller_avatar_url = serializers.SerializerMethodField()
     whatsapp_url = serializers.SerializerMethodField()
@@ -41,6 +41,14 @@ class MarketplaceProductListSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             return request.build_absolute_uri(seller.avatar.url) if request else seller.avatar.url
         return seller.avatar_url or None
+
+    def get_images(self, obj):
+        images = getattr(obj, 'prefetched_images', None)
+        if images is None:
+            images = obj.images.all()[:1]
+        elif images:
+            images = images[:1]
+        return ProductImageSerializer(images, many=True, context=self.context).data
 
     def get_whatsapp_url(self, obj):
         import urllib.parse

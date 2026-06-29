@@ -11,7 +11,7 @@ from apps.users.models import User
 from apps.wallets.models import Wallet
 from django.core.cache import cache
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Exists, OuterRef, Q, Subquery, Sum
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
 from domain.services.admin_services import (
@@ -38,10 +38,6 @@ class AdminViewSet(viewsets.GenericViewSet):
     """
     permission_classes = [IsAuthenticated, IsAdmin]
     
-    def __init__(self, *args, **kwargs):
-        print("DEBUG: AdminViewSet loaded with updated actions")
-        super().__init__(*args, **kwargs)
-
     @action(detail=False, methods=['GET'])
     def stats(self, request):
         """Platform-wide statistics with caching."""
@@ -85,7 +81,13 @@ class AdminViewSet(viewsets.GenericViewSet):
     def users(self, request):
         """List all users with optional role filter."""
         role = request.query_params.get('role')
-        queryset = User.objects.all().order_by('-created_at')
+        from apps.restaurants.models import SectionStaff
+        queryset = User.objects.annotate(
+            has_driver_profile=Exists(Driver.objects.filter(user_id=OuterRef('pk'))),
+            driver_profile_id=Subquery(Driver.objects.filter(user_id=OuterRef('pk')).values('id')[:1]),
+            owns_restaurant=Exists(Restaurant.objects.filter(owner_id=OuterRef('pk'))),
+            has_section_staff=Exists(SectionStaff.objects.filter(user_id=OuterRef('pk'))),
+        ).order_by('-created_at')
         if role:
             queryset = queryset.filter(role=role)
         
@@ -130,7 +132,20 @@ class AdminViewSet(viewsets.GenericViewSet):
     def orders(self, request):
         """List all orders with optional status filter."""
         status_filter = request.query_params.get('status')
-        queryset = Order.objects.select_related('customer', 'restaurant', 'driver').all().order_by('-created_at')
+        queryset = Order.objects.select_related(
+            'customer',
+            'restaurant',
+            'restaurant__owner',
+            'driver',
+            'driver__user',
+            'batch',
+        ).prefetch_related(
+            'items',
+            'items__food',
+            'items__section',
+            'pool__members',
+            'pool__members__user',
+        ).all().order_by('-created_at')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         page = self.paginate_queryset(queryset)

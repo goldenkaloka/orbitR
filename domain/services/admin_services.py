@@ -65,6 +65,7 @@ class PromoteUserService:
             user = User.objects.select_for_update().get(id=user_id)
             if user.role != 'customer':
                 raise ValueError(f"Cannot promote user with role={user.role}. Only customers can be promoted.")
+            _ensure_user_can_be_driver(user)
 
             user.role = 'driver'
             user.save(update_fields=['role'])
@@ -220,6 +221,7 @@ class RegisterTempDriverService:
 
             if user.role in ('vendor', 'vendor_staff', 'admin'):
                 raise ValueError("Restaurant owners, staff, and admins cannot be registered as drivers.")
+            _ensure_user_can_be_driver(user)
 
             driver, created = Driver.objects.get_or_create(
                 user=user,
@@ -246,6 +248,14 @@ class RegisterTempDriverService:
             ))
 
             return driver
+
+
+def _ensure_user_can_be_driver(user):
+    from apps.restaurants.models import SectionStaff
+    if Restaurant.objects.filter(owner=user).exists():
+        raise ValueError("Restaurant owners cannot be promoted or registered as drivers.")
+    if SectionStaff.objects.filter(user=user).exists():
+        raise ValueError("Restaurant stall staff cannot be promoted or registered as drivers while assigned to a stall.")
 
 class ManageRestaurantService:
     @staticmethod

@@ -37,7 +37,7 @@ class PaymentTargetResolver:
             from apps.orders.models import PoolMember
             member = PoolMember.objects.get(id=payable_id)
             return {
-                'amount': member.items_subtotal + member.delivery_fee_share,
+                'amount': member.items_subtotal + member.delivery_fee_share + member.service_fee_share,
                 'phone': member.user.phone,
                 'user': member.user,
                 'description': f"Pool Member Share - {member.user.username}"
@@ -54,9 +54,18 @@ class PaymentTargetResolver:
         else:
             raise ValueError(f"Unknown payable_type: {payable_type}")
 
+
+def _can_pay_target(actor, target):
+    if not actor or not actor.is_authenticated:
+        return False
+    if getattr(actor, 'is_staff', False) or getattr(actor, 'is_superuser', False):
+        return True
+    return target.get('user') == actor
+
+
 class InitiatePaymentService:
     @staticmethod
-    def execute(payable_type, payable_id, phone=None, bank_code=None):
+    def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None):
         with transaction.atomic():
             # Normalize payable_id to canonical UUID format (with hyphens)
             # to prevent duplicate payments due to inconsistent formatting
@@ -67,6 +76,8 @@ class InitiatePaymentService:
 
             # 1. Resolve target details
             target = PaymentTargetResolver.resolve(payable_type, payable_id)
+            if actor is not None and not _can_pay_target(actor, target):
+                raise ValueError("You are not allowed to initiate this payment.")
             customer_phone = phone or target['phone']
             
             # 2. Create or get Payment record with locking
@@ -76,10 +87,11 @@ class InitiatePaymentService:
                 defaults={'amount': target['amount'], 'status': 'INITIATED'}
             )
 
-            # Fix Issue 4: Reset status to INITIATED if we are retrying a FAILED payment
-            if not created and payment.status == 'FAILED':
-                payment.status = 'INITIATED'
-                payment.save()
+            if not created and payment.status not in ['COLLECTED', 'DISBURSED']:
+                if payment.amount != target['amount']:
+                    payment.amount = target['amount']
+                if payment.status == 'FAILED':
+                    payment.status = 'INITIATED'
 
             # Sync legacy fields for backward compatibility
             if not payment.order and payable_type == 'order': payment.order_id = payable_id
@@ -94,7 +106,7 @@ class InitiatePaymentService:
             # 4. Initiate with Gateway
             gateway = get_payment_gateway(phone=customer_phone)
             response = gateway.collect(
-                amount=payment.amount,
+                amount=target['amount'],
                 phone=customer_phone,
                 order_reference=str(payment.id), # Use Payment ID as gateway reference
                 bank_code=bank_code
@@ -166,6 +178,20 @@ def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
     wallet.save()
 
 
+def _record_platform_revenue(amount: Decimal, description: str):
+    """Record platform-owned money that is not held for a future payout."""
+    from apps.wallets.models import WalletTransaction
+    wallet = _get_platform_wallet()
+    wallet.balance += amount
+    wallet.save()
+    WalletTransaction.objects.create(
+        wallet=wallet,
+        amount=amount,
+        tx_type='CREDIT',
+        description=description,
+    )
+
+
 def _release_escrow_refund(amount: Decimal, cancel_fee: Decimal):
     """On refund: release full amount from escrow, keep cancel fee as earned."""
     wallet = _get_platform_wallet()
@@ -202,8 +228,9 @@ def _create_double_entry(payment, from_user, to_user, amount, entry_type, status
     )
     # Also create the Wallet-based double-entry record
     from apps.payments.models import LedgerEntry
-    from_debit = from_user.wallet if from_user else None
-    to_credit = to_user.wallet if to_user else None
+    from apps.wallets.models import Wallet
+    from_debit = Wallet.objects.get_or_create(user=from_user)[0] if from_user else None
+    to_credit = Wallet.objects.get_or_create(user=to_user)[0] if to_user else None
     LedgerEntry.objects.create(
         payment=payment,
         debit_wallet=from_debit,
@@ -350,6 +377,14 @@ class CompletePaymentService:
             amount=payment.amount,
             entry_type='listing_fee',
         )
+        _record_platform_revenue(payment.amount, f"Marketplace listing fee for {product.id}")
+        _create_double_entry(
+            payment=payment,
+            from_user=get_platform_user(),
+            to_user=get_platform_user(),
+            amount=payment.amount,
+            entry_type='platform_revenue',
+        )
 
 class ReleasePaymentService:
     @staticmethod
@@ -425,19 +460,35 @@ class ReleasePaymentService:
 
             platform_cut = payment.amount - restaurant_payout - driver_payout
             if platform_cut < 0:
-                platform_cut = Decimal('0')
+                raise ValueError(
+                    "Cannot release payment because restaurant and driver payouts exceed collected amount."
+                )
 
             actual_restaurant_payout = restaurant_payout
             actual_driver_payout = driver_payout
+            retained_liability = Decimal('0')
+            pay_sections_from_platform = ReleasePaymentService._has_section_wallet_targets(order)
 
             # Validate restaurant owner phone
             if restaurant_payout > 0 and vendor_phone:
-                if not is_valid_tz_phone(vendor_phone):
+                if pay_sections_from_platform:
+                    retained_liability += restaurant_payout
+                    actual_restaurant_payout = Decimal('0')
+                elif not is_valid_tz_phone(vendor_phone):
                     logger.warning(
                         f"Vendor phone number '{vendor_phone}' for payment {payment.id} is invalid. "
-                        f"Redirecting restaurant share of {restaurant_payout} to platform primary account."
+                        f"retaining restaurant share of {restaurant_payout} as unpaid payout liability."
                     )
-                    platform_cut += restaurant_payout
+                    FailedPayout.objects.create(
+                        payment=payment,
+                        to_wallet=order.restaurant.owner,
+                        amount=restaurant_payout,
+                        transaction_type='platform_to_restaurant',
+                        reason='Invalid restaurant payout phone number',
+                        error_code='INVALID_VENDOR_PHONE',
+                        retry_count=0
+                    )
+                    retained_liability += restaurant_payout
                     actual_restaurant_payout = Decimal('0')
 
             # Validate driver phone
@@ -445,10 +496,21 @@ class ReleasePaymentService:
                 if not is_valid_tz_phone(driver_phone):
                     logger.warning(
                         f"Driver phone number '{driver_phone}' for payment {payment.id} is invalid. "
-                        f"Redirecting driver share of {driver_payout} to platform primary account."
+                        f"retaining driver share of {driver_payout} as unpaid payout liability."
                     )
-                    platform_cut += driver_payout
+                    FailedPayout.objects.create(
+                        payment=payment,
+                        to_wallet=order.driver.user,
+                        amount=driver_payout,
+                        transaction_type='platform_to_driver',
+                        reason='Invalid driver payout phone number',
+                        error_code='INVALID_DRIVER_PHONE',
+                        retry_count=0
+                    )
+                    retained_liability += driver_payout
                     actual_driver_payout = Decimal('0')
+
+            primary_value = platform_cut + retained_liability
 
             # Build split payload per Airpay docs:
             # PRIACCT_IDENTIFIER = platform primary account
@@ -478,7 +540,7 @@ class ReleasePaymentService:
                 airpay_id=payment.provider_reference,
                 rrn=payment.rrn,
                 primary_account=primary_account,
-                primary_value=float(platform_cut),
+                primary_value=float(primary_value),
                 other_identifiers=other_identifiers,
                 split_values=split_values,
                 split_request_id=split_request_id,
@@ -489,20 +551,21 @@ class ReleasePaymentService:
                 payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
                 payment.save()
 
-                # Release escrow: move from pending_balance to balance for platform_cut
-                _release_escrow(payment.amount, platform_cut)
+                # Release escrow: retained payout liabilities stay in platform cash but are not revenue.
+                _release_escrow(payment.amount, primary_value)
 
                 # Accounting records only — actual money is already sent via split_settlement
                 if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
-                    # Credit section wallets only (section staff don't get phone money)
-                    ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
-                    _create_double_entry(
-                        payment=payment,
-                        from_user=_platform,
-                        to_user=order.restaurant.owner,
-                        amount=restaurant_payout,
-                        entry_type='platform_to_restaurant',
-                    )
+                    if pay_sections_from_platform:
+                        ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
+                    else:
+                        _create_double_entry(
+                            payment=payment,
+                            from_user=_platform,
+                            to_user=order.restaurant.owner,
+                            amount=restaurant_payout,
+                            entry_type='platform_to_restaurant',
+                        )
 
                 if driver_payout > 0 and order.driver and order.driver.user:
                     _create_double_entry(
@@ -537,14 +600,28 @@ class ReleasePaymentService:
                     payment=payment,
                     to_wallet=order.restaurant.owner,
                     amount=restaurant_payout,
-                    transaction_type='split_settlement_failure',
+                    transaction_type='platform_to_restaurant',
                     reason=error_msg,
                     error_code=error_code,
                     retry_count=0
                 )
+                if driver_payout > 0 and order.driver and order.driver.user:
+                    FailedPayout.objects.create(
+                        payment=payment,
+                        to_wallet=order.driver.user,
+                        amount=driver_payout,
+                        transaction_type='platform_to_driver',
+                        reason=error_msg,
+                        error_code=error_code,
+                        retry_count=0
+                    )
                 logger.error(f"Split settlement failed for payment {payment.id}: [{error_code}] {error_msg}")
 
             return payment
+
+    @staticmethod
+    def _has_section_wallet_targets(order):
+        return order.items.filter(section__isnull=False).exists()
 
     @staticmethod
     def _distribute_restaurant_payout(order, restaurant_payout):
@@ -725,5 +802,3 @@ class RefundPaymentService:
                     )
                 else:
                     raise
-
-

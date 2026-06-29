@@ -28,6 +28,7 @@ from django.conf import settings
 from django.contrib.postgres.search import TrigramSimilarity
 from django.core.cache import cache
 from django.db import models
+from django.db.models import Count, Exists, OuterRef, Q, Subquery
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
 from domain.services.order_services import (
@@ -146,10 +147,16 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
         
         # Optimize for "billions": istartswith is faster than icontains on indexed fields
         # Also limit results and only return relevant fields if necessary
-        filters = models.Q(username__icontains=query) | models.Q(phone__istartswith=query)
+        filters = Q(username__icontains=query) | Q(phone__istartswith=query)
         if role:
-            filters &= models.Q(role=role)
-        users = User.objects.filter(filters).only('id', 'username', 'phone', 'role').order_by('username')[:10]
+            filters &= Q(role=role)
+        from apps.restaurants.models import SectionStaff
+        users = User.objects.filter(filters).annotate(
+            has_driver_profile=Exists(Driver.objects.filter(user_id=OuterRef('pk'))),
+            driver_profile_id=Subquery(Driver.objects.filter(user_id=OuterRef('pk')).values('id')[:1]),
+            owns_restaurant=Exists(Restaurant.objects.filter(owner_id=OuterRef('pk'))),
+            has_section_staff=Exists(SectionStaff.objects.filter(user_id=OuterRef('pk'))),
+        ).only('id', 'username', 'phone', 'role').order_by('username')[:10]
         
         serializer = self.get_serializer(users, many=True)
         return Response(serializer.data)
@@ -228,7 +235,9 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         return context
 
     def get_queryset(self):
-        queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').filter(is_active=True)
+        queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').annotate(
+            available_food_count=Count('sections__foods', filter=Q(sections__foods__is_available=True))
+        ).filter(is_active=True)
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
@@ -373,7 +382,11 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             from domain.services.pricing_service import PricingService
 
             # Calculate dynamic fee
-            fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+            fee, service_fee, fee_log = PricingService.calculate_delivery_fee(
+                restaurant,
+                delivery_location,
+                skip_log=True,
+            )
             
             # Extract breakdown from fee_log
             breakdown = {
@@ -469,25 +482,31 @@ class OrderViewSet(viewsets.ModelViewSet):
             'driver__user',
             'batch',
         ).prefetch_related(
-            'items', 'items__food',
+            'items', 'items__food', 'items__section',
             'pool__members',
             'pool__members__user',
         ).order_by('-created_at')
         
         if user.serialized_role == 'customer':
-            return queryset.filter(customer=user)
+            queryset = queryset.filter(customer=user)
         elif user.serialized_role in ('vendor', 'vendor_staff'):
             from apps.restaurants.models import SectionStaff
             staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
             if staff_sections.exists():
-                return queryset.filter(
+                queryset = queryset.filter(
                     items__section_id__in=list(staff_sections),
                     is_paid=True
                 ).distinct()
-            return queryset.filter(restaurant__owner=user, is_paid=True)
+            else:
+                queryset = queryset.filter(restaurant__owner=user, is_paid=True)
         elif user.role == 'driver':
-            return queryset.filter(driver__user=user, is_paid=True)
-        return queryset.filter(is_paid=True)
+            queryset = queryset.filter(driver__user=user, is_paid=True)
+        else:
+            queryset = queryset.filter(is_paid=True)
+
+        if self.request.query_params.get('active_only') in ('1', 'true', 'True'):
+            queryset = queryset.exclude(status__in=['DELIVERED', 'CANCELLED', 'EXPIRED', 'REFUNDED'])
+        return queryset
 
     @action(detail=False, methods=['GET'])
     def stats(self, request):
@@ -496,7 +515,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         if cached_data:
             return Response(cached_data)
 
-        from django.db.models import Count, DurationField, ExpressionWrapper, Sum
+        from django.db.models import Avg, Count, DurationField, ExpressionWrapper, Sum
         from django.utils import timezone
         now = timezone.now()
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -508,11 +527,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             if user.serialized_role in ('vendor', 'vendor_staff'):
                 from apps.restaurants.models import SectionStaff
-                staff_sections = SectionStaff.objects.filter(user=user).values_list('section_id', flat=True)
-                if staff_sections.exists():
-                    wallet, _ = Wallet.objects.get_or_create(section_id=staff_sections.first())
+                staff_section_ids = list(SectionStaff.objects.filter(user=user).values_list('section_id', flat=True))
+                if staff_section_ids:
+                    wallet, _ = Wallet.objects.get_or_create(section_id=staff_section_ids[0])
                     orders = Order.objects.filter(
-                        items__section_id__in=list(staff_sections),
+                        items__section_id__in=staff_section_ids,
                         created_at__gte=start_of_day,
                         created_at__lt=end_of_day,
                         is_paid=True,
@@ -528,12 +547,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
                 count = orders.count()
 
-                prep_times = Order.objects.filter(
+                avg_prep_duration = orders.filter(
                     confirmed_at__isnull=False,
                     ready_at__isnull=False,
-                    created_at__gte=start_of_day,
-                    created_at__lt=end_of_day,
-                    is_paid=True,
                 ).exclude(
                     models.Q(ready_at__lte=models.F('confirmed_at'))
                 ).annotate(
@@ -541,12 +557,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                         models.F('ready_at') - models.F('confirmed_at'),
                         output_field=DurationField()
                     )
-                ).values_list('prep_duration', flat=True)[:100]
+                ).aggregate(avg=Avg('prep_duration'))['avg']
 
-                avg_seconds = 0
-                if prep_times:
-                    total = sum(dt.total_seconds() for dt in prep_times if dt is not None)
-                    avg_seconds = total / len(prep_times)
+                avg_seconds = avg_prep_duration.total_seconds() if avg_prep_duration else 0
 
                 avg_minutes = int(avg_seconds // 60)
                 avg_secs = int(avg_seconds % 60)
@@ -646,7 +659,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             batch__isnull=True,
         ).select_related(
             'restaurant', 'restaurant__owner', 'customer',
-        ).prefetch_related('items', 'items__food').order_by('-created_at')[offset:offset + limit]
+        ).prefetch_related('items', 'items__food', 'items__section').order_by('-created_at')[offset:offset + limit]
 
         data = OrderSerializer(orders, many=True).data
         cache.set(cache_key, data, 15)
@@ -919,7 +932,7 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         batch_orders = order.batch.orders.select_related(
             'restaurant', 'restaurant__owner', 'customer', 'driver', 'driver__user'
-        ).prefetch_related('items', 'items__food').all()
+        ).prefetch_related('items', 'items__food', 'items__section').all()
         
         return Response(OrderSerializer(batch_orders, many=True).data)
 
@@ -1057,5 +1070,3 @@ class AppConfigView(APIView):
                 "https://play.google.com/store/apps/details?id=com.mwanachuoshop.app",
             ),
         })
-
-

@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from apps.orders.models import Dispute, Order
 from celery import shared_task
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -10,6 +11,38 @@ from domain.events.types import OrderCancelled
 from domain.fsm.order_fsm import OrderFSM
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(name='apps.orders.tasks.prewarm_order_route_geometry', ignore_result=True)
+def prewarm_order_route_geometry(order_id):
+    from apps.core.cache_keys import stable_cache_key
+    from domain.services.mapbox_routing_service import MapboxRoutingService
+
+    order = Order.objects.select_related('restaurant').filter(id=order_id).first()
+    if not order or not order.restaurant or not order.restaurant.geo_location or not order.delivery_location:
+        return 'skipped'
+
+    res_lng = round(order.restaurant.geo_location.x, 6)
+    res_lat = round(order.restaurant.geo_location.y, 6)
+    dest_lng = round(order.delivery_location.x, 6)
+    dest_lat = round(order.delivery_location.y, 6)
+    cache_key = stable_cache_key('route_geom', {
+        'from': [res_lng, res_lat],
+        'to': [dest_lng, dest_lat],
+    })
+    if cache.get(cache_key) is not None:
+        return 'cached'
+
+    route = MapboxRoutingService.get_directions_route(
+        res_lng,
+        res_lat,
+        dest_lng,
+        dest_lat,
+    )
+    if route and route.coordinates:
+        cache.set(cache_key, route.coordinates, 60 * 60 * 2)
+        return 'warmed'
+    return 'miss'
 
 
 @shared_task

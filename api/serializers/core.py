@@ -21,22 +21,64 @@ class NotificationSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     is_driver = serializers.SerializerMethodField()
     driver_id = serializers.SerializerMethodField()
+    serialized_role = serializers.SerializerMethodField()
+    is_restaurant_owner = serializers.SerializerMethodField()
+    is_stall_staff = serializers.SerializerMethodField()
+    can_be_driver = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'phone', 'role', 'is_driver', 'driver_id']
+        fields = [
+            'id', 'username', 'email', 'phone', 'role', 'serialized_role',
+            'is_driver', 'driver_id', 'is_restaurant_owner', 'is_stall_staff',
+            'can_be_driver'
+        ]
 
     def get_is_driver(self, obj):
+        annotated = getattr(obj, 'has_driver_profile', None)
+        if annotated is not None:
+            return annotated
         from apps.delivery.models import Driver
         return Driver.objects.filter(user=obj).exists()
 
     def get_driver_id(self, obj):
+        annotated = getattr(obj, 'driver_profile_id', None)
+        if annotated:
+            return str(annotated)
         from apps.delivery.models import Driver
         try:
             driver = Driver.objects.only('id').get(user=obj)
             return str(driver.id)
         except Driver.DoesNotExist:
             return None
+
+    def get_serialized_role(self, obj):
+        has_section_staff = getattr(obj, 'has_section_staff', None)
+        if obj.role == 'customer' and has_section_staff is not None:
+            return 'vendor_staff' if has_section_staff else obj.role
+        return obj.serialized_role
+
+    def get_is_restaurant_owner(self, obj):
+        annotated = getattr(obj, 'owns_restaurant', None)
+        if annotated is not None:
+            return annotated
+        from apps.restaurants.models import Restaurant
+        return Restaurant.objects.filter(owner=obj).exists()
+
+    def get_is_stall_staff(self, obj):
+        annotated = getattr(obj, 'has_section_staff', None)
+        if annotated is not None:
+            return annotated
+        from apps.restaurants.models import SectionStaff
+        return SectionStaff.objects.filter(user=obj).exists()
+
+    def get_can_be_driver(self, obj):
+        return (
+            obj.role == 'customer'
+            and not self.get_is_driver(obj)
+            and not self.get_is_restaurant_owner(obj)
+            and not self.get_is_stall_staff(obj)
+        )
 
 class FoodSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
@@ -84,6 +126,11 @@ class RestaurantSectionSerializer(serializers.ModelSerializer):
                   'is_active', 'sort_order', 'prep_time', 'food_count']
 
     def get_food_count(self, obj):
+        annotated = getattr(obj, 'available_food_count', None)
+        if annotated is not None:
+            return annotated
+        if hasattr(obj, '_prefetched_objects_cache') and 'foods' in obj._prefetched_objects_cache:
+            return sum(1 for food in obj.foods.all() if food.is_available)
         return obj.foods.filter(is_available=True).count()
 
 
@@ -250,39 +297,9 @@ class OrderSerializer(serializers.ModelSerializer):
             'to': [dest_lng, dest_lat],
         })
 
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return cached
+        return cache.get(cache_key)
 
-        # Fetch from Mapbox Directions API synchronously.
-        # This path only runs on cache miss (new unique route).
-        import os
-
-        import requests as req_lib
-        token = os.environ.get('MAPBOX_TOKEN', '')
-        if not token:
-            return None
-
-        try:
-            url = (
-                f"https://api.mapbox.com/directions/v5/mapbox/driving/"
-                f"{res_lng},{res_lat};{dest_lng},{dest_lat}"
-                f"?geometries=geojson&overview=full&access_token={token}"
-            )
-            resp = req_lib.get(url, timeout=3)
-            if resp.status_code != 200:
-                return None
-            routes = resp.json().get('routes', [])
-            if not routes:
-                return None
-            coords = routes[0]['geometry']['coordinates']  # [[lng, lat], ...]
             # Cache for 2 hours — restaurant/delivery coords don't change per order
-            cache.set(cache_key, coords, 60 * 60 * 2)
-            return coords
-        except Exception:
-            return None
-
-
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
 

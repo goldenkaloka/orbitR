@@ -39,7 +39,8 @@ class InitiatePaymentView(APIView):
                 payable_type=payable_type,
                 payable_id=payable_id,
                 phone=phone,
-                bank_code=bank_code
+                bank_code=bank_code,
+                actor=request.user
             )
             
             payment = result['payment']
@@ -80,8 +81,11 @@ class AirpayWebhookView(APIView):
     authentication_classes = []
 
     def _get_client_ip(self, request):
-        """Extract real client IP, respecting proxy headers."""
-        x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        """Extract client IP. Trust proxy headers only when explicitly enabled."""
+        if getattr(settings, 'TRUST_PROXY_HEADERS', False):
+            x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+        else:
+            x_forwarded = None
         if x_forwarded:
             return x_forwarded.split(',')[0].strip()
         return request.META.get('REMOTE_ADDR')
@@ -90,15 +94,18 @@ class AirpayWebhookView(APIView):
         """
         Verify webhook authenticity using HMAC-SHA256 of the raw body 
         signed with the merchant secret key.
-        Airpay IPN callbacks do NOT send this header; returns True if absent.
+        Airpay IPN callbacks may not send this header; allowing unsigned callbacks
+        must be an explicit deployment setting and still requires checksum validation.
         """
         signature = request.META.get('HTTP_X_AIRPAY_SIGNATURE', '')
         if not signature:
-            logger.warning(
-                f"Airpay Webhook: X-AIRPAY-SIGNATURE header absent from {self._get_client_ip(request)}; "
-                f"relying on IP allowlist only."
-            )
-            return True
+            allow_unsigned = getattr(settings, 'AIRPAY_ALLOW_UNSIGNED_WEBHOOKS', False)
+            if allow_unsigned:
+                logger.warning(
+                    f"Airpay Webhook: X-AIRPAY-SIGNATURE header absent from {self._get_client_ip(request)}; "
+                    f"falling back to IP allowlist plus Airpay checksum."
+                )
+            return allow_unsigned
         
         raw_body = request.body
         secret = gateway.secret or ''
@@ -162,7 +169,7 @@ class AirpayWebhookView(APIView):
             f"From IP={client_ip} "
             f"Method={request.method} "
             f"Content-Type={request.content_type} "
-            f"Body={request.body.decode('utf-8', errors='replace')}"
+            f"Content-Length={len(request.body)}"
         )
 
         # Security Gate 0: Verify IP Allowlist

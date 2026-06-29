@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -9,9 +8,6 @@ from domain.events.bus import EventBus
 from domain.events.types import RouteCalculated, RouteOptimizationFailed
 
 logger = logging.getLogger(__name__)
-
-MAPBOX_TOKEN = os.environ.get('MAPBOX_ACCESS_TOKEN')
-
 
 class MapboxRoutingService:
     """Mapbox routing service with DDD value objects and event emission."""
@@ -49,6 +45,11 @@ class MapboxRoutingService:
                 logger.warning(f"Failed to emit route event: {e}")
 
     @staticmethod
+    def _get_token() -> Optional[str]:
+        import os
+        return os.environ.get('MAPBOX_TOKEN') or os.environ.get('MAPBOX_ACCESS_TOKEN')
+
+    @staticmethod
     def get_directions_route(
         origin_lng: float,
         origin_lat: float,
@@ -58,7 +59,8 @@ class MapboxRoutingService:
         destination_info: Optional[Dict[str, str]] = None
     ) -> Optional[Route]:
         """Get route for single destination using Mapbox Directions API."""
-        if not MAPBOX_TOKEN:
+        token = MapboxRoutingService._get_token()
+        if not token:
             logger.warning("Mapbox token not configured")
             return None
 
@@ -69,7 +71,7 @@ class MapboxRoutingService:
         params = {
             'geometries': 'geojson',
             'overview': 'full',
-            'access_token': MAPBOX_TOKEN
+            'access_token': token
         }
 
         try:
@@ -124,7 +126,8 @@ class MapboxRoutingService:
         profile: str = 'driving-traffic'
     ) -> Optional[Route]:
         """Get optimized route for multiple stops using Mapbox Optimization API."""
-        if not MAPBOX_TOKEN:
+        token = MapboxRoutingService._get_token()
+        if not token:
             logger.warning("Mapbox token not configured")
             return None
 
@@ -139,7 +142,7 @@ class MapboxRoutingService:
             'geometries': 'geojson',
             'overview': 'full',
             'steps': 'false',
-            'access_token': MAPBOX_TOKEN,
+            'access_token': token,
             'roundtrip': 'false',
             'source': 'first',
             'destination': 'last'

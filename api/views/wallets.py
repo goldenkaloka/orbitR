@@ -144,6 +144,7 @@ class WalletViewSet(viewsets.GenericViewSet):
         # If the gateway call fails, the database rollback reverses the debit.
         gateway = get_payment_gateway(phone=phone)
         reference = f"cashout_{request.user.id}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
+        provider_reference = ''
 
         try:
             with db_transaction.atomic():
@@ -164,20 +165,6 @@ class WalletViewSet(viewsets.GenericViewSet):
                 wallet.balance -= amount
                 wallet.save()
 
-                disbursement = gateway.disburse(
-                    amount=net_amount,
-                    account_info=phone,
-                    reference=reference,
-                    narration=f"Wallet cashout to {provider_name}",
-                )
-
-                if not disbursement.get('success'):
-                    error_msg = disbursement.get('error', 'Disbursement failed')
-                    logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
-                    raise ValueError(f"Disbursement failed: {error_msg}")
-
-                provider_reference = disbursement.get('provider_reference', '')
-
                 WalletTransaction.objects.create(
                     wallet=wallet,
                     amount=net_amount,
@@ -193,6 +180,57 @@ class WalletViewSet(viewsets.GenericViewSet):
                     description=f"Cashout processing fees ({provider_name})",
                     created_at=timezone.now(),
                 )
+
+                from domain.services.payment_services import _get_platform_wallet
+                platform_wallet = _get_platform_wallet()
+                platform_wallet.balance += total_fees
+                platform_wallet.save()
+                WalletTransaction.objects.create(
+                    wallet=platform_wallet,
+                    amount=total_fees,
+                    tx_type='CREDIT',
+                    description=f"Cashout processing fee from wallet {wallet.id}",
+                    created_at=timezone.now(),
+                )
+
+            try:
+                disbursement = gateway.disburse(
+                    amount=net_amount,
+                    account_info=phone,
+                    reference=reference,
+                    narration=f"Wallet cashout to {provider_name}",
+                )
+            except Exception as exc:
+                disbursement = {'success': False, 'error': str(exc)}
+
+            if not disbursement.get('success'):
+                error_msg = disbursement.get('error', 'Disbursement failed')
+                logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
+                with db_transaction.atomic():
+                    wallet = Wallet.objects.select_for_update().get(id=wallet.id)
+                    wallet.balance += amount
+                    wallet.save()
+                    WalletTransaction.objects.create(
+                        wallet=wallet,
+                        amount=amount,
+                        tx_type='CREDIT',
+                        description=f"Cashout reversal after failed disbursement to {provider_name}",
+                        created_at=timezone.now(),
+                    )
+                    from domain.services.payment_services import _get_platform_wallet
+                    platform_wallet = _get_platform_wallet()
+                    platform_wallet.balance -= total_fees
+                    platform_wallet.save()
+                    WalletTransaction.objects.create(
+                        wallet=platform_wallet,
+                        amount=total_fees,
+                        tx_type='DEBIT',
+                        description=f"Cashout fee reversal for wallet {wallet.id}",
+                        created_at=timezone.now(),
+                    )
+                raise ValueError(f"Disbursement failed: {error_msg}")
+
+            provider_reference = disbursement.get('provider_reference', '')
         except ValueError as e:
             return Response({
                 "error": f"Cashout failed: {e}",
