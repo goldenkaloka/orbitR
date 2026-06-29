@@ -42,9 +42,9 @@ class UserSerializer(serializers.ModelSerializer):
         return Driver.objects.filter(user=obj).exists()
 
     def get_driver_id(self, obj):
-        annotated = getattr(obj, 'driver_profile_id', None)
-        if annotated:
-            return str(annotated)
+        if hasattr(obj, 'driver_profile_id'):
+            annotated = getattr(obj, 'driver_profile_id', None)
+            return str(annotated) if annotated else None
         from apps.delivery.models import Driver
         try:
             driver = Driver.objects.only('id').get(user=obj)
