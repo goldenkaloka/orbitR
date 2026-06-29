@@ -139,10 +139,13 @@ class AdminViewSet(viewsets.GenericViewSet):
             'driver',
             'driver__user',
             'batch',
+            'payment',
         ).prefetch_related(
             'items',
             'items__food',
             'items__section',
+            'batch__orders',
+            'batch__section_statuses',
             'pool__members',
             'pool__members__user',
         ).all().order_by('-created_at')

@@ -193,9 +193,10 @@ class ETAService:
     @staticmethod
     def _section_prep_time(order):
         try:
+            items = ETAService._order_items(order, include_sections=True)
             section_times = [
                 item.section.prep_time
-                for item in order.items.select_related('section').all()
+                for item in items
                 if item.section and item.section.prep_time
             ]
             return max(section_times) if section_times else None
@@ -207,13 +208,24 @@ class ETAService:
         if not getattr(order, 'batch_id', None):
             return None
         try:
-            section_ids = [item.section_id for item in order.items.all() if item.section_id]
+            section_ids = [item.section_id for item in ETAService._order_items(order) if item.section_id]
             if not section_ids:
                 return None
-            statuses = order.batch.section_statuses.filter(
-                section_id__in=section_ids,
-                estimated_ready_at__isnull=False,
-            ).exclude(status='READY')
+            batch_cache = getattr(order.batch, '_prefetched_objects_cache', {})
+            if 'section_statuses' in batch_cache:
+                statuses = [
+                    status for status in order.batch.section_statuses.all()
+                    if (
+                        status.section_id in section_ids
+                        and status.estimated_ready_at is not None
+                        and status.status != 'READY'
+                    )
+                ]
+            else:
+                statuses = order.batch.section_statuses.filter(
+                    section_id__in=section_ids,
+                    estimated_ready_at__isnull=False,
+                ).exclude(status='READY')
             remaining = [
                 int((status.estimated_ready_at - timezone.now()).total_seconds() / 60)
                 for status in statuses
@@ -221,6 +233,16 @@ class ETAService:
             return max(remaining) if remaining else None
         except Exception:
             return None
+
+    @staticmethod
+    def _order_items(order, include_sections=False):
+        cache = getattr(order, '_prefetched_objects_cache', {})
+        if 'items' in cache:
+            return list(order.items.all())
+        queryset = order.items.all()
+        if include_sections:
+            queryset = queryset.select_related('section')
+        return list(queryset)
 
     @staticmethod
     def _prep_actual(order):

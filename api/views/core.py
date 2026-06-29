@@ -481,8 +481,11 @@ class OrderViewSet(viewsets.ModelViewSet):
             'driver', 
             'driver__user',
             'batch',
+            'payment',
         ).prefetch_related(
             'items', 'items__food', 'items__section',
+            'batch__orders',
+            'batch__section_statuses',
             'pool__members',
             'pool__members__user',
         ).order_by('-created_at')
