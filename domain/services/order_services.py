@@ -1,6 +1,7 @@
 from .orders.order_assignment import AssignBatchService, AssignDriverService
 from .orders.order_cancellation import CancelOrderService
 from .orders.order_fulfillment import (
+    CompletePickupService,
     DeliverOrderService,
     MarkReadyService,
     PickupOrderService,

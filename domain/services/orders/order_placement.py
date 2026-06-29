@@ -7,6 +7,7 @@ from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from apps.geo.models import ZoneH3Index
 from apps.orders.models import Order, OrderItem
 from apps.restaurants.models import Restaurant
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -15,6 +16,12 @@ from domain.fsm.order_fsm import OrderFSM
 from domain.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
+
+
+def _distance_km(point_a, point_b):
+    if not point_a or not point_b:
+        return None
+    return h3.great_circle_distance((point_a.y, point_a.x), (point_b.y, point_b.x))
 
 class PlaceOrderService:
     @staticmethod
@@ -26,7 +33,23 @@ class PlaceOrderService:
         else:
             restaurant = Restaurant.objects.get(id=restaurant_id)
             
+        fulfillment_type = str(
+            validated_data.get('fulfillment_type') or Order.FULFILLMENT_DELIVERY
+        ).upper()
+        if fulfillment_type not in {Order.FULFILLMENT_DELIVERY, Order.FULFILLMENT_PICKUP}:
+            raise ValueError("Invalid fulfillment type.")
+
         delivery_location = validated_data.get('delivery_location')
+        is_pickup = fulfillment_type == Order.FULFILLMENT_PICKUP
+        if is_pickup:
+            if not delivery_location:
+                raise ValueError("Location is required to verify pickup eligibility.")
+            if not restaurant.geo_location:
+                raise ValueError("Restaurant location is not configured for pickup eligibility.")
+            pickup_distance = _distance_km(restaurant.geo_location, delivery_location)
+            max_pickup_distance = Decimal(str(getattr(settings, 'LOCAL_PICKUP_MAX_DISTANCE_KM', 0.5)))
+            if pickup_distance is None or Decimal(str(pickup_distance)) > max_pickup_distance:
+                raise ValueError(f"Pickup is only available within {max_pickup_distance} km of this restaurant.")
         
         delivery_h3 = None
         if delivery_location:
@@ -39,7 +62,16 @@ class PlaceOrderService:
             # We bypass the max_delivery_radius_km check so delivery can happen anywhere.
         
         # Calculate dynamic delivery and service fees
-        dynamic_fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
+        if is_pickup:
+            _, service_fee, fee_log = PricingService.calculate_delivery_fee(
+                restaurant,
+                delivery_location,
+                skip_log=True,
+            )
+            dynamic_fee = Decimal('0.00')
+            fee_log = None
+        else:
+            dynamic_fee, service_fee, fee_log = PricingService.calculate_delivery_fee(restaurant, delivery_location)
         
         # Validate against client expectations
         expected_delivery = validated_data.pop('expected_delivery_fee', None)
@@ -98,7 +130,8 @@ class PlaceOrderService:
                 aggregate_id=order.id,
                 payload={'customer_id': str(order.customer.id)}
             )))
-            transaction.on_commit(lambda oid=str(order.id): _prewarm_order_route(oid))
+            if not is_pickup:
+                transaction.on_commit(lambda oid=str(order.id): _prewarm_order_route(oid))
         
         return order
 

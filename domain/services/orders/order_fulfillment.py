@@ -171,3 +171,32 @@ class DeliverOrderService:
                 payload={'actor_id': str(actor.id)}
             )))
             return order
+
+
+class CompletePickupService:
+    @staticmethod
+    def execute(order_id, actor):
+        with transaction.atomic():
+            order = Order.objects.select_for_update().select_related('restaurant').get(id=order_id)
+            if getattr(order, 'fulfillment_type', 'DELIVERY') != 'PICKUP':
+                raise ValueError("This action is only available for pickup orders.")
+
+            is_customer = order.customer_id == actor.id
+            is_restaurant_user = check_restaurant_permission(actor, order.restaurant)
+            if not is_customer and not is_restaurant_user:
+                raise PermissionError("Only the customer or restaurant can complete this pickup.")
+
+            if order.status != 'READY':
+                raise ValueError("Pickup can only be completed after the order is ready.")
+
+            new_state = OrderFSM.transition(order.status, 'DELIVERED')
+            order.status = new_state
+            order.picked_up_at = timezone.now()
+            order.delivered_at = order.picked_up_at
+            order.save(update_fields=['status', 'picked_up_at', 'delivered_at', 'updated_at'])
+
+            transaction.on_commit(lambda: EventBus.publish(OrderDelivered(
+                aggregate_id=order.id,
+                payload={'actor_id': str(actor.id), 'fulfillment_type': 'PICKUP'}
+            )))
+            return order

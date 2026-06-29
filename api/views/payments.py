@@ -58,19 +58,19 @@ class InitiatePaymentView(APIView):
             if push_sent:
                 base_response["provider_reference"] = gateway_data.get('provider_reference')
                 base_response["message"] = gateway_data.get('message')
-                base_response["raw_data"] = gateway_data.get('raw_data')
                 base_response["instant_success"] = gateway_data.get('instant_success')
                 if gateway_data.get('params'):
                     base_response["params"] = gateway_data['params']
                 if gateway_data.get('endpoint'):
                     base_response["endpoint"] = gateway_data['endpoint']
             else:
-                base_response["error"] = gateway_data.get('error', 'Payment initiation failed')
+                base_response["error"] = 'Payment initiation failed'
                 base_response["code"] = gateway_data.get('code')
 
             return Response(base_response)
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        except Exception:
+            logger.exception("Payment initiation failed")
+            return Response({"error": "Payment initiation failed."}, status=400)
 
 class AirpayWebhookView(APIView):
     """
@@ -163,15 +163,6 @@ class AirpayWebhookView(APIView):
     def post(self, request, *args, **kwargs):
         client_ip = self._get_client_ip(request)
 
-        # DEBUG: Log every incoming request to the callback endpoint
-        logger.warning(
-            f"AIRPAY_CALLBACK_DEBUG: "
-            f"From IP={client_ip} "
-            f"Method={request.method} "
-            f"Content-Type={request.content_type} "
-            f"Content-Length={len(request.body)}"
-        )
-
         # Security Gate 0: Verify IP Allowlist
         if not self._is_ip_allowed(client_ip):
             logger.warning(f"Airpay Webhook: Unauthorized access attempt from IP {client_ip}")
@@ -202,9 +193,9 @@ class AirpayWebhookView(APIView):
 
             return Response({"status": "success"}, status=200)
 
-        except Exception as e:
-            logger.error(f"Error processing Airpay webhook: {str(e)}")
-            return Response({"error": str(e)}, status=500)
+        except Exception:
+            logger.exception("Error processing Airpay webhook")
+            return Response({"error": "Webhook processing failed."}, status=500)
 
 
 class PlatformRevenueView(APIView):

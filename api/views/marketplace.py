@@ -6,7 +6,7 @@ from api.serializers.marketplace import (
 from apps.core.cache_keys import stable_cache_key
 from apps.marketplace.models import MarketplaceCategory, MarketplaceProduct, ProductImage
 from django.core.cache import cache
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Q
 from domain.services.marketplace_services import MarketplaceService
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -83,6 +83,12 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         if self.action == 'mine':
             return queryset.filter(seller=self.request.user)
 
+        if self.action in ('update', 'partial_update', 'destroy', 'pay', 'reactivate'):
+            return queryset.filter(seller=self.request.user)
+
+        if self.action == 'retrieve':
+            return queryset.filter(Q(status='ACTIVE') | Q(seller=self.request.user))
+
         return queryset
 
     @action(detail=False, methods=['GET'])
@@ -156,10 +162,14 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         self.invalidate_list_cache()
 
     def perform_update(self, serializer):
+        if serializer.instance.seller_id != self.request.user.id and not self.request.user.is_staff:
+            raise ValidationError({'detail': 'Only the seller can update this product.'})
         serializer.save()
         self.invalidate_list_cache()
 
     def perform_destroy(self, instance):
+        if instance.seller_id != self.request.user.id and not self.request.user.is_staff:
+            raise ValidationError({'detail': 'Only the seller can delete this product.'})
         instance.delete()
         self.invalidate_list_cache()
 
@@ -183,6 +193,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                     payable_id=product.id,
                     phone=payment_phone,
                     bank_code=request.data.get('bank_code'),
+                    actor=request.user,
                 )
                 payment = result['payment']
                 gateway_response = result['gateway_response']
@@ -208,11 +219,11 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
 
                 return Response(response_data, status=status.HTTP_201_CREATED)
 
-            except Exception as e:
+            except Exception:
                 response_data = serializer.data
                 response_data['payment'] = {
                     'status': 'FAILED',
-                    'error': str(e),
+                    'error': 'Payment initiation failed.',
                 }
                 return Response(response_data, status=status.HTTP_201_CREATED)
 
@@ -234,10 +245,11 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 payable_type='marketplace_product',
                 payable_id=product.id,
                 phone=phone,
-                bank_code=request.data.get('bank_code')
+                bank_code=request.data.get('bank_code'),
+                actor=request.user,
             )
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
+        except Exception:
+            return Response({'error': 'Payment initiation failed.'}, status=400)
         
         payment = result['payment']
         response = result['gateway_response']
@@ -258,7 +270,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 'status': 'PENDING'
             })
         else:
-            return Response({'error': response.get('error', 'Payment initiation failed')}, status=400)
+            return Response({'error': 'Payment initiation failed'}, status=400)
 
     @action(detail=True, methods=['POST'])
     def reactivate(self, request, pk=None):
@@ -280,10 +292,11 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 payable_type='marketplace_product',
                 payable_id=product.id,
                 phone=phone,
-                bank_code=request.data.get('bank_code')
+                bank_code=request.data.get('bank_code'),
+                actor=request.user,
             )
-        except Exception as e:
-            return Response({'error': str(e)}, status=400)
+        except Exception:
+            return Response({'error': 'Payment initiation failed.'}, status=400)
 
         payment = result['payment']
         response = result['gateway_response']
@@ -304,4 +317,4 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 'status': 'PENDING'
             })
         else:
-            return Response({'error': response.get('error', 'Reactivation payment failed')}, status=400)
+            return Response({'error': 'Reactivation payment failed'}, status=400)

@@ -143,6 +143,9 @@ def on_order_confirmed(event):
         if getattr(order, 'is_pool_order', False):
             logger.info(f"[OrderHandler] Order {order.id} is pool order — skipping batch join")
             return
+        if getattr(order, 'fulfillment_type', 'DELIVERY') == 'PICKUP':
+            logger.info(f"[OrderHandler] Order {order.id} is pickup — skipping batch join")
+            return
 
         batch = BatchPipeline.on_order_confirmed(order)
         if batch:
@@ -163,6 +166,9 @@ def on_food_ready(event):
 
     try:
         order = Order.objects.select_related('restaurant').get(id=event.aggregate_id)
+        if getattr(order, 'fulfillment_type', 'DELIVERY') == 'PICKUP':
+            logger.info(f"[OrderHandler] Order {order.id} is pickup — skipping dispatch readiness")
+            return
         BatchPipeline.on_order_marked_ready(order)
         logger.info(f"[OrderHandler] Auto section-update for order {order.id} in batch {order.batch_id}")
     except Exception as e:

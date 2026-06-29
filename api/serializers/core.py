@@ -235,6 +235,7 @@ class OrderSerializer(serializers.ModelSerializer):
     rider_id = serializers.ReadOnlyField(source='driver.user_id')
     customer_name = serializers.ReadOnlyField(source='customer.username')
     customer_phone = serializers.ReadOnlyField(source='customer.phone')
+    restaurant_phone = serializers.ReadOnlyField(source='restaurant.owner.phone')
     
     batch = serializers.SerializerMethodField()
     original_delivery_fee = serializers.SerializerMethodField()
@@ -249,8 +250,8 @@ class OrderSerializer(serializers.ModelSerializer):
             'id', 'status', 'is_paid', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount',
             'original_delivery_fee', 'discount_applied', 'discount_amount',
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
-            'customer_name', 'customer_phone',
-            'items', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
+            'restaurant_phone', 'customer_name', 'customer_phone',
+            'items', 'fulfillment_type', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
             'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry', 'payment_status',
         ]
@@ -282,6 +283,9 @@ class OrderSerializer(serializers.ModelSerializer):
         """
         from apps.core.cache_keys import stable_cache_key
         from django.core.cache import cache
+
+        if getattr(obj, 'fulfillment_type', 'DELIVERY') == 'PICKUP':
+            return None
 
         res = obj.restaurant
         if not res or not res.geo_location or not obj.delivery_location:

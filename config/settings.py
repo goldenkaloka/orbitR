@@ -28,15 +28,17 @@ from decouple import config
 SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 
 # Mocking settings for testing
 MOCK_PAYMENTS = config('MOCK_PAYMENTS', default=False, cast=bool)
 DISPATCH_DEBUG = config('DISPATCH_DEBUG', default=DEBUG, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,backend', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 if not ALLOWED_HOSTS:
-    ALLOWED_HOSTS = ['*']
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'backend']
+if not DEBUG and '*' in ALLOWED_HOSTS:
+    raise ValueError("ALLOWED_HOSTS must not contain '*' in production.")
 
 CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='http://localhost:8000', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 if not CSRF_TRUSTED_ORIGINS:
@@ -55,6 +57,10 @@ if not DEBUG:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     X_FRAME_OPTIONS = 'DENY'
+
+SECURE_REFERRER_POLICY = config('SECURE_REFERRER_POLICY', default='same-origin')
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
 
 
 # Application definition
@@ -76,6 +82,7 @@ INSTALLED_APPS = [
     # 3rd Party
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     'drf_spectacular',
     'corsheaders',
     # Local Apps
@@ -130,6 +137,8 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=24),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
 }
 
 # ---------------------------------------------------------------------------
@@ -166,6 +175,7 @@ CORS_ALLOW_CREDENTIALS = True
 
 TRUST_PROXY_HEADERS = config('TRUST_PROXY_HEADERS', default=False, cast=bool)
 AIRPAY_ALLOW_UNSIGNED_WEBHOOKS = config('AIRPAY_ALLOW_UNSIGNED_WEBHOOKS', default=False, cast=bool)
+LOCAL_PICKUP_MAX_DISTANCE_KM = config('LOCAL_PICKUP_MAX_DISTANCE_KM', default=0.5, cast=float)
 
 
 MIDDLEWARE = [

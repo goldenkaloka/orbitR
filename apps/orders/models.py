@@ -9,6 +9,13 @@ from django.db import models
 
 
 class Order(models.Model):
+    FULFILLMENT_DELIVERY = 'DELIVERY'
+    FULFILLMENT_PICKUP = 'PICKUP'
+    FULFILLMENT_CHOICES = (
+        (FULFILLMENT_DELIVERY, 'Delivery'),
+        (FULFILLMENT_PICKUP, 'Pickup'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', db_index=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='orders', db_index=True)
@@ -28,6 +35,12 @@ class Order(models.Model):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     
     delivery_address = models.TextField(null=True, blank=True)
+    fulfillment_type = models.CharField(
+        max_length=20,
+        choices=FULFILLMENT_CHOICES,
+        default=FULFILLMENT_DELIVERY,
+        db_index=True,
+    )
     
     # PostGIS Location Field
     delivery_location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)

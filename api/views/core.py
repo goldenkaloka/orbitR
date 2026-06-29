@@ -34,6 +34,7 @@ from domain.fsm.order_fsm import InvalidStateTransitionError
 from domain.services.order_services import (
     AssignBatchService,
     AssignDriverService,
+    CompletePickupService,
     ConfirmOrderService,
     DeliverOrderService,
     MarkReadyService,
@@ -221,6 +222,12 @@ class FoodViewSet(viewsets.ModelViewSet):
 
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
+    public_actions = {'list', 'retrieve', 'delivery_fee'}
+
+    def get_permissions(self):
+        if getattr(self, 'action', None) in self.public_actions:
+            return [AllowAny()]
+        return [IsAuthenticated()]
 
     def get_serializer_class(self):
         # Avoid heavy nested payloads on list endpoints.
@@ -772,6 +779,16 @@ class OrderViewSet(viewsets.ModelViewSet):
         except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
 
+    @action(detail=True, methods=['POST'], url_path='complete-pickup')
+    def complete_pickup(self, request, pk=None):
+        try:
+            order = CompletePickupService.execute(pk, request.user)
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (ValueError, InvalidStateTransitionError) as e:
+            return Response({"error": str(e)}, status=400)
+
     @action(detail=True, methods=['POST'], url_path='rider-cancel')
     def rider_cancel(self, request, pk=None):
         reason = request.data.get('reason', 'Cancelled by driver')
@@ -856,7 +873,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         phone = request.data.get('phone')
         bank_code = request.data.get('bank_code')
         try:
-            result = InitiatePaymentService.execute(payable_type='order', payable_id=pk, phone=phone, bank_code=bank_code)
+            result = InitiatePaymentService.execute(
+                payable_type='order',
+                payable_id=pk,
+                phone=phone,
+                bank_code=bank_code,
+                actor=request.user,
+            )
             payment = result['payment']
             gateway_data = result.get('gateway_response', {})
 
@@ -871,19 +894,19 @@ class OrderViewSet(viewsets.ModelViewSet):
             if push_sent:
                 base_response["provider_reference"] = gateway_data.get('provider_reference')
                 base_response["message"] = gateway_data.get('message')
-                base_response["raw_data"] = gateway_data.get('raw_data')
                 base_response["instant_success"] = gateway_data.get('instant_success')
                 if gateway_data.get('params'):
                     base_response["params"] = gateway_data['params']
                 if gateway_data.get('endpoint'):
                     base_response["endpoint"] = gateway_data['endpoint']
             else:
-                base_response["error"] = gateway_data.get('error', 'Payment initiation failed')
+                base_response["error"] = 'Payment initiation failed'
                 base_response["code"] = gateway_data.get('code')
 
             return Response(base_response)
-        except Exception as e:
-            return Response({"error": str(e)}, status=400)
+        except Exception:
+            logger.exception("Order payment initiation failed")
+            return Response({"error": "Payment initiation failed."}, status=400)
 
     @action(detail=True, methods=['POST'])
     def dispute(self, request, pk=None):
