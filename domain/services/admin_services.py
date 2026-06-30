@@ -20,7 +20,7 @@ from domain.fsm.payment_fsm import PaymentFSM
 
 class PromoteUserService:
     @staticmethod
-    def to_vendor(user_id: str, restaurant_name: str, location: str, description: str = '', category: str = 'General', latitude=None, longitude=None, image=None):
+    def to_vendor(user_id: str, restaurant_name: str, location: str, description: str = '', category: str = 'General', latitude=None, longitude=None, image=None, logo=None):
         with transaction.atomic():
             user = User.objects.select_for_update().get(id=user_id)
             if user.role != 'customer':
@@ -45,7 +45,8 @@ class PromoteUserService:
                 description=description,
                 category=category,
                 geo_location=geo_location,
-                image=image
+                image=image,
+                logo=logo
             )
 
 
@@ -258,6 +259,15 @@ def _ensure_user_can_be_driver(user):
         raise ValueError("Restaurant stall staff cannot be promoted or registered as drivers while assigned to a stall.")
 
 class ManageRestaurantService:
+    ALLOWED_UPDATE_FIELDS = {
+        'name',
+        'location',
+        'description',
+        'category',
+        'image',
+        'logo',
+    }
+
     @staticmethod
     def toggle_status(restaurant_id: str):
         with transaction.atomic():
@@ -287,7 +297,7 @@ class ManageRestaurantService:
                  
 
             for key, value in kwargs.items():
-                if value is not None:
+                if key in ManageRestaurantService.ALLOWED_UPDATE_FIELDS and value is not None:
                     setattr(restaurant, key, value)
             restaurant.save()
             return restaurant

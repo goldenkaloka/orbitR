@@ -9,7 +9,10 @@ def _recalc_rating(instance):
     if instance.review_type == 'restaurant' and instance.restaurant:
         avg_rating = Review.objects.filter(
             restaurant=instance.restaurant,
-            review_type='restaurant'
+            review_type='restaurant',
+            is_visible=True,
+            is_verified_purchase=True,
+            moderation_status='APPROVED',
         ).aggregate(Avg('rating'))['rating__avg']
         instance.restaurant.rating = avg_rating or 0.0
         instance.restaurant.save()
@@ -17,7 +20,10 @@ def _recalc_rating(instance):
     elif instance.review_type == 'driver' and instance.driver:
         avg_rating = Review.objects.filter(
             driver=instance.driver,
-            review_type='driver'
+            review_type='driver',
+            is_visible=True,
+            is_verified_purchase=True,
+            moderation_status='APPROVED',
         ).aggregate(Avg('rating'))['rating__avg']
         instance.driver.rating = avg_rating or 0.0
         instance.driver.save()

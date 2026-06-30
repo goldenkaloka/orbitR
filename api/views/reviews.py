@@ -11,7 +11,11 @@ class ReviewViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        queryset = Review.objects.all()
+        queryset = Review.objects.select_related(
+            'customer', 'order', 'restaurant', 'driver__user', 'marketplace_product'
+        )
+        if self.action != 'my':
+            queryset = queryset.filter(is_visible=True, moderation_status='APPROVED')
         restaurant_id = self.request.query_params.get('restaurant')
         driver_id = self.request.query_params.get('driver')
 
@@ -43,7 +47,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def my(self, request):
-        queryset = Review.objects.filter(customer=request.user)
+        queryset = self.get_queryset().filter(customer=request.user)
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)

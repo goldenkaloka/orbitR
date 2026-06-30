@@ -27,6 +27,18 @@ class Review(models.Model):
     
     rating = models.PositiveSmallIntegerField() # 1 to 5
     comment = models.TextField(blank=True, null=True)
+    is_verified_purchase = models.BooleanField(default=False, db_index=True)
+    is_visible = models.BooleanField(default=True, db_index=True)
+    moderation_status = models.CharField(
+        max_length=20,
+        choices=(
+            ('APPROVED', 'Approved'),
+            ('PENDING', 'Pending'),
+            ('REJECTED', 'Rejected'),
+        ),
+        default='APPROVED',
+        db_index=True,
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -47,8 +59,11 @@ class Review(models.Model):
         ]
         indexes = [
             models.Index(fields=['restaurant', 'rating']),
+            models.Index(fields=['restaurant', 'is_visible', 'is_verified_purchase', 'created_at']),
             models.Index(fields=['driver', 'rating']),
+            models.Index(fields=['driver', 'is_visible', 'is_verified_purchase', 'created_at']),
             models.Index(fields=['marketplace_product', 'rating']),
+            models.Index(fields=['marketplace_product', 'is_visible', 'is_verified_purchase', 'created_at']),
         ]
 
     def __str__(self):

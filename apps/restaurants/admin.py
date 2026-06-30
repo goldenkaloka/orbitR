@@ -64,7 +64,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
         js = ('admin/js/geo_locate.js',)
 
     fieldsets = (
-        (None, {'fields': ('id', 'name', 'owner', 'description', 'image')}),
+        (None, {'fields': ('id', 'name', 'owner', 'description', 'image', 'logo')}),
         ('Location', {'fields': ('geo_location', 'location')}),
         ('Delivery', {'fields': ('max_delivery_radius_km',)}),
         ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),

@@ -146,19 +146,25 @@ class BatchSectionStatusSerializer(serializers.ModelSerializer):
 
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
+    logo_url = serializers.SerializerMethodField()
     foods = serializers.SerializerMethodField()
     sections = RestaurantSectionSerializer(many=True, read_only=True)
     is_busy = serializers.SerializerMethodField()
 
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
+    score = serializers.FloatField(read_only=True, default=None)
+    distance_km = serializers.SerializerMethodField()
+    review_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = Restaurant
         fields = [
-            'id', 'name', 'description', 'image', 'image_url', 
-            'location', 'geo_location', 'latitude', 'longitude', 'category', 'price_range', 'rating', 
-            'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time'
+            'id', 'name', 'description', 'image', 'image_url', 'logo', 'logo_url',
+            'location', 'geo_location', 'latitude', 'longitude', 
+            'category', 'price_range', 'rating', 
+            'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time',
+            'score', 'distance_km', 'review_count',
         ]
 
     def get_latitude(self, obj):
@@ -167,12 +173,30 @@ class RestaurantListSerializer(serializers.ModelSerializer):
     def get_longitude(self, obj):
         return obj.geo_location.x if obj.geo_location else None
 
+    def get_distance_km(self, obj):
+        distance = getattr(obj, 'distance', None)
+        if distance is not None:
+            try:
+                return round(float(distance) / 1000.0, 2)
+            except (TypeError, ValueError):
+                return None
+        return None
+
 
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
         if image:
             try:
                 return image.url
+            except (AttributeError, ValueError):
+                return None
+        return None
+
+    def get_logo_url(self, obj):
+        logo = getattr(obj, 'logo', None) if not isinstance(obj, dict) else obj.get('logo')
+        if logo:
+            try:
+                return logo.url
             except (AttributeError, ValueError):
                 return None
         return None

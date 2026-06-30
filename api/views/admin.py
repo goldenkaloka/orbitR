@@ -183,12 +183,16 @@ class AdminViewSet(viewsets.GenericViewSet):
                 category=request.data.get('category', 'General'),
                 latitude=request.data.get('latitude'),
                 longitude=request.data.get('longitude'),
-                image=request.FILES.get('image')
+                image=request.FILES.get('image'),
+                logo=request.FILES.get('logo')
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
         except User.DoesNotExist:
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        from api.views.core import invalidate_restaurant_cache
+        invalidate_restaurant_cache(restaurant)
 
         return Response({
             'message': f'{user.username} promoted to vendor',
@@ -317,11 +321,14 @@ class AdminViewSet(viewsets.GenericViewSet):
             'longitude': request.data.get('longitude'),
             'description': request.data.get('description'),
             'category': request.data.get('category'),
-            'image': request.FILES.get('image')
+            'image': request.FILES.get('image'),
+            'logo': request.FILES.get('logo')
         }
         
         try:
             restaurant = ManageRestaurantService.update_restaurant(restaurant_id, **update_data)
+            from api.views.core import invalidate_restaurant_cache
+            invalidate_restaurant_cache(restaurant)
             return Response({
                 'message': f'Restaurant {restaurant.name} updated',
                 'restaurant': RestaurantSerializer(restaurant).data,

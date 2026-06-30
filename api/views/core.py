@@ -22,13 +22,15 @@ from apps.marketplace.models import MarketplaceProduct
 from apps.orders.models import DeliveryBatch, Dispute, Order
 from apps.products.models import Food
 from apps.restaurants.models import Restaurant
+from apps.reviews.models import Review
 from apps.users.models import User
 from apps.wallets.models import Wallet, WalletTransaction
 from django.conf import settings
 from django.contrib.postgres.search import TrigramSimilarity
 from django.core.cache import cache
 from django.db import models
-from django.db.models import Count, Exists, OuterRef, Q, Subquery
+from django.db.models import Avg, Case, Count, DurationField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Subquery, Value, When
+from django.db.models.functions import Cast, Coalesce, Extract
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
 from domain.services.order_services import (
@@ -244,19 +246,22 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').annotate(
             available_food_count=Count('sections__foods', filter=Q(sections__foods__is_available=True))
-        ).filter(is_active=True)
+        )
+        if getattr(self, "action", None) != "update_profile":
+            queryset = queryset.filter(is_active=True)
         category = self.request.query_params.get('category')
         if category:
             queryset = queryset.filter(category__iexact=category)
 
-        # Proximity sorting — nearest first, expanding outward across all zones
+        # Sorting and scoring
         if getattr(self, "action", None) == "list":
             lat = self.request.query_params.get('lat')
             lng = self.request.query_params.get('lng')
+            sort_by = self.request.query_params.get('sort_by', 'recommended')
+
             if lat and lng:
                 from django.contrib.gis.db.models.functions import Distance
                 from django.contrib.gis.geos import Point
-                from django.db.models import Case, FloatField, Value, When
                 user_location = Point(float(lng), float(lat), srid=4326)
                 queryset = queryset.annotate(
                     distance=Case(
@@ -264,7 +269,92 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                         default=Value(1e10),
                         output_field=FloatField(),
                     )
-                ).order_by('distance')
+                )
+
+            queryset = queryset.annotate(
+                review_count=Count(
+                    'reviews',
+                    filter=Q(
+                        reviews__review_type='restaurant',
+                        reviews__is_visible=True,
+                        reviews__is_verified_purchase=True,
+                        reviews__moderation_status='APPROVED',
+                    ),
+                    distinct=True,
+                ),
+                delivered_order_count=Count(
+                    'orders',
+                    filter=Q(orders__status='DELIVERED'),
+                    distinct=True,
+                ),
+                avg_prep_duration=Avg(
+                    ExpressionWrapper(
+                        F('orders__ready_at') - F('orders__preparing_at'),
+                        output_field=DurationField(),
+                    ),
+                    filter=Q(
+                        orders__ready_at__isnull=False,
+                        orders__preparing_at__isnull=False,
+                    ),
+                ),
+            )
+            queryset = queryset.annotate(
+                actual_prep_minutes=Case(
+                    When(
+                        avg_prep_duration__isnull=False,
+                        then=Extract('avg_prep_duration', 'epoch') / Value(60.0),
+                    ),
+                    default=Cast(F('average_prep_time'), FloatField()),
+                    output_field=FloatField(),
+                )
+            )
+
+            if sort_by == 'distance' and lat and lng:
+                queryset = queryset.order_by('distance')
+            elif sort_by == 'rating':
+                queryset = queryset.order_by('-rating', '-review_count')
+            elif sort_by == 'prep_time':
+                queryset = queryset.order_by('actual_prep_minutes')
+            elif sort_by == 'recommended':
+                global_avg = Review.objects.filter(
+                    review_type='restaurant',
+                    is_visible=True,
+                    is_verified_purchase=True,
+                    moderation_status='APPROVED',
+                ).aggregate(avg=Avg('rating'))['avg'] or 4.0
+                min_confidence_reviews = 10.0
+                weighted_rating = (
+                    (Coalesce(F('rating'), Value(float(global_avg))) * Cast(F('review_count'), FloatField())) +
+                    (Value(float(global_avg)) * Value(min_confidence_reviews))
+                ) / (Cast(F('review_count'), FloatField()) + Value(min_confidence_reviews))
+                review_confidence = Case(
+                    When(review_count__gte=50, then=Value(1.0)),
+                    default=Cast(F('review_count'), FloatField()) / Value(50.0),
+                    output_field=FloatField(),
+                )
+                prep_minutes = Case(
+                    When(actual_prep_minutes__lt=1, then=Value(1.0)),
+                    When(actual_prep_minutes__gt=60, then=Value(60.0)),
+                    default=F('actual_prep_minutes'),
+                    output_field=FloatField(),
+                )
+                quality = weighted_rating / Value(5.0)
+                speed = Value(1.0) - prep_minutes / Value(60.0)
+                trust = review_confidence
+                if lat and lng:
+                    MAX_RADIUS_M = 5000.0
+                    proximity = Case(
+                        When(geo_location__isnull=False, distance__lte=MAX_RADIUS_M,
+                             then=Value(1.0) - F('distance') / Value(MAX_RADIUS_M, output_field=FloatField())),
+                        When(geo_location__isnull=False, then=Value(0.0)),
+                        default=Value(0.0),
+                        output_field=FloatField(),
+                    )
+                    score_expr = quality * Value(0.40) + proximity * Value(0.30) + speed * Value(0.20) + trust * Value(0.10)
+                    queryset = queryset.annotate(score=score_expr).order_by('-score')
+                else:
+                    score_expr = quality * Value(0.55) + speed * Value(0.30) + trust * Value(0.15)
+                    queryset = queryset.annotate(score=score_expr).order_by('-score')
         return queryset
 
     def list(self, request, *args, **kwargs):
@@ -273,6 +363,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         lng = request.query_params.get('lng')
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
+        sort_by = request.query_params.get('sort_by', 'recommended')
 
         # ── Compute busyness (fresh every request) before serialization ──
         from apps.restaurants.utils import compute_busy_restaurant_ids
@@ -293,6 +384,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                 "lng": lng or "none",
                 "limit": limit or "default",
                 "offset": offset or "0",
+                "sort_by": sort_by,
             },
         )
         cached_data = cache.get(cache_key)
@@ -324,6 +416,47 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
         cache.set(cache_key, data, 3600)
         return Response(data)
+
+    @action(detail=True, methods=['PATCH'], url_path='profile')
+    def update_profile(self, request, pk=None):
+        """Allow restaurant owners to update public restaurant details and branding."""
+        restaurant = self.get_object()
+        if restaurant.owner_id != request.user.id:
+            return Response(
+                {'error': 'Only the restaurant owner can edit restaurant branding.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        update_fields = {}
+        for field in ('name', 'location', 'description', 'category'):
+            if field in request.data:
+                update_fields[field] = request.data.get(field)
+
+        for field in ('image', 'logo'):
+            uploaded = request.FILES.get(field)
+            if uploaded is not None:
+                if uploaded.size > 5 * 1024 * 1024:
+                    return Response(
+                        {field: 'Image must be 5MB or smaller.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if uploaded.content_type not in {'image/jpeg', 'image/png', 'image/webp'}:
+                    return Response(
+                        {field: 'Only JPEG, PNG, and WebP images are allowed.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                update_fields[field] = uploaded
+
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        if latitude is not None or longitude is not None:
+            update_fields['latitude'] = latitude
+            update_fields['longitude'] = longitude
+
+        from domain.services.admin_services import ManageRestaurantService
+        restaurant = ManageRestaurantService.update_restaurant(str(restaurant.id), **update_fields)
+        invalidate_restaurant_cache(restaurant)
+        return Response(RestaurantSerializer(restaurant, context={'request': request}).data)
 
     @action(detail=True, methods=['GET'], url_path='drivers')
     def list_drivers(self, request, pk=None):

@@ -52,6 +52,7 @@ class Restaurant(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     image = models.ImageField(upload_to='restaurants/', blank=True, null=True)
+    logo = models.ImageField(upload_to='restaurants/logos/', blank=True, null=True)
     location = models.CharField(max_length=255) # Text address
     
     # PostGIS Location Field for the restaurant itself
