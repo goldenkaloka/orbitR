@@ -21,7 +21,7 @@ from apps.delivery.models import Driver
 from apps.marketplace.models import MarketplaceProduct
 from apps.orders.models import DeliveryBatch, Dispute, Order
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import Restaurant, RestaurantSection
 from apps.reviews.models import Review
 from apps.users.models import User
 from apps.wallets.models import Wallet, WalletTransaction
@@ -29,7 +29,7 @@ from django.conf import settings
 from django.contrib.postgres.search import TrigramSimilarity
 from django.core.cache import cache
 from django.db import models
-from django.db.models import Avg, Case, Count, DurationField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Q, Subquery, Value, When
+from django.db.models import Avg, Case, Count, DurationField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Prefetch, Q, Subquery, Value, When
 from django.db.models.functions import Cast, Coalesce, Extract
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
@@ -244,7 +244,21 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         return context
 
     def get_queryset(self):
-        queryset = Restaurant.objects.select_related('owner').prefetch_related('sections__foods').annotate(
+        food_prefetch = Prefetch(
+            'foods',
+            queryset=Food.objects.only(
+                'id', 'section_id', 'name', 'description', 'price',
+                'category', 'is_available', 'image',
+            ),
+        )
+        section_prefetch = Prefetch(
+            'sections',
+            queryset=RestaurantSection.objects.only(
+                'id', 'restaurant_id', 'name', 'specialization', 'description',
+                'image', 'is_active', 'sort_order', 'prep_time',
+            ).prefetch_related(food_prefetch),
+        )
+        queryset = Restaurant.objects.select_related('owner').prefetch_related(section_prefetch).annotate(
             available_food_count=Count('sections__foods', filter=Q(sections__foods__is_available=True))
         )
         if getattr(self, "action", None) != "update_profile":

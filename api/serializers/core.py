@@ -207,10 +207,34 @@ class RestaurantListSerializer(serializers.ModelSerializer):
             request = self.context.get('request')
             user = getattr(request, 'user', None) if request else None
         role = getattr(user, 'serialized_role', None) if user else None
-        if user and role in ('vendor', 'vendor_staff', 'admin'):
-            qs = obj.foods.all()
-        else:
-            qs = obj.foods.filter(is_available=True)
+        include_unavailable = bool(user and role in ('vendor', 'vendor_staff', 'admin'))
+
+        if hasattr(obj, '_prefetched_objects_cache') and 'sections' in obj._prefetched_objects_cache:
+            foods = []
+            for section in obj.sections.all():
+                section_foods = section.foods.all()
+                foods.extend(
+                    food for food in section_foods
+                    if include_unavailable or food.is_available
+                )
+            return [
+                {
+                    'id': str(food.id),
+                    'name': food.name,
+                    'description': food.description or '',
+                    'price': float(food.price),
+                    'category': food.category,
+                    'is_available': food.is_available,
+                    'image': food.image.url if food.image else None,
+                    'image_url': food.image.url if food.image else None,
+                    'section': str(food.section_id) if food.section_id else None,
+                    'vendor_id': str(obj.id),
+                    'vendor_name': obj.name,
+                }
+                for food in foods
+            ]
+
+        qs = obj.foods.all() if include_unavailable else obj.foods.filter(is_available=True)
         return FoodSerializer(qs, many=True).data
 
     def get_is_busy(self, obj):
