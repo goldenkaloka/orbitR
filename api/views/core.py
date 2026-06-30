@@ -323,10 +323,26 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                     moderation_status='APPROVED',
                 ).aggregate(avg=Avg('rating'))['avg'] or 4.0
                 min_confidence_reviews = 10.0
-                weighted_rating = (
-                    (Coalesce(F('rating'), Value(float(global_avg))) * Cast(F('review_count'), FloatField())) +
-                    (Value(float(global_avg)) * Value(min_confidence_reviews))
-                ) / (Cast(F('review_count'), FloatField()) + Value(min_confidence_reviews))
+                rating_float = Coalesce(
+                    Cast(F('rating'), FloatField()),
+                    Value(float(global_avg), output_field=FloatField()),
+                    output_field=FloatField(),
+                )
+                review_count_float = Cast(F('review_count'), FloatField())
+                weighted_rating = ExpressionWrapper(
+                    (
+                        (rating_float * review_count_float) +
+                        (
+                            Value(float(global_avg), output_field=FloatField()) *
+                            Value(min_confidence_reviews, output_field=FloatField())
+                        )
+                    ) /
+                    (
+                        review_count_float +
+                        Value(min_confidence_reviews, output_field=FloatField())
+                    ),
+                    output_field=FloatField(),
+                )
                 review_confidence = Case(
                     When(review_count__gte=50, then=Value(1.0)),
                     default=Cast(F('review_count'), FloatField()) / Value(50.0),
@@ -338,8 +354,8 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                     default=F('actual_prep_minutes'),
                     output_field=FloatField(),
                 )
-                quality = weighted_rating / Value(5.0)
-                speed = Value(1.0) - prep_minutes / Value(60.0)
+                quality = weighted_rating / Value(5.0, output_field=FloatField())
+                speed = Value(1.0, output_field=FloatField()) - prep_minutes / Value(60.0, output_field=FloatField())
                 trust = review_confidence
                 if lat and lng:
                     MAX_RADIUS_M = 5000.0
@@ -350,10 +366,21 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                         default=Value(0.0),
                         output_field=FloatField(),
                     )
-                    score_expr = quality * Value(0.40) + proximity * Value(0.30) + speed * Value(0.20) + trust * Value(0.10)
+                    score_expr = ExpressionWrapper(
+                        quality * Value(0.40, output_field=FloatField()) +
+                        proximity * Value(0.30, output_field=FloatField()) +
+                        speed * Value(0.20, output_field=FloatField()) +
+                        trust * Value(0.10, output_field=FloatField()),
+                        output_field=FloatField(),
+                    )
                     queryset = queryset.annotate(score=score_expr).order_by('-score')
                 else:
-                    score_expr = quality * Value(0.55) + speed * Value(0.30) + trust * Value(0.15)
+                    score_expr = ExpressionWrapper(
+                        quality * Value(0.55, output_field=FloatField()) +
+                        speed * Value(0.30, output_field=FloatField()) +
+                        trust * Value(0.15, output_field=FloatField()),
+                        output_field=FloatField(),
+                    )
                     queryset = queryset.annotate(score=score_expr).order_by('-score')
         return queryset
 
