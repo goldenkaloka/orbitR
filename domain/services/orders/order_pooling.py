@@ -389,7 +389,7 @@ class PoolOrderService:
                 pool=pool,
                 is_pool_order=True,
                 is_paid=True,
-                status='CREATED',
+                status='CONFIRMED',
                 items_subtotal=items_subtotal,
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,

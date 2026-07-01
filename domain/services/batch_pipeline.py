@@ -380,7 +380,7 @@ class BatchPipeline:
                 batch_ref = batch.__class__.objects.select_for_update().get(id=batch.id)
                 if not BatchFSM.sections_all_ready(batch_ref):
                     return
-                if batch_ref.status in ('FINALIZING', 'PRE_ASSIGNING', 'PARTIAL_BATCH'):
+                if batch_ref.status in ('ACCUMULATING', 'SOFT_LOCK', 'FINALIZING', 'PRE_ASSIGNING', 'PARTIAL_BATCH'):
                     batch_ref.status = BatchFSM.transition(batch_ref, 'ALL_SECTIONS_READY')
                     batch_ref.waiting_since = timezone.now()
                     batch_ref.save(update_fields=['status', 'waiting_since', 'updated_at'])

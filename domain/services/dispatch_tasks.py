@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from apps.orders.models import Order
 from celery import shared_task
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import transaction
@@ -42,7 +43,9 @@ def dispatch_batch_task(batch_id: str):
     """
     Notify restaurants that their batch needs a driver assigned.
     Expects batch in PENDING_DRIVER status (all sections READY).
-    One-shot — no retry needed (restaurants handle driver assignment).
+    Sends the first alert immediately, then throttles reminders while the
+    batch remains in PENDING_DRIVER. The lifecycle poll runs frequently, so
+    this must be idempotent across workers.
     """
     from apps.orders.models import DeliveryBatch
     from apps.restaurants.models import Restaurant
@@ -58,10 +61,26 @@ def dispatch_batch_task(batch_id: str):
         return
 
     try:
-        batch = DeliveryBatch.objects.get(id=batch_id)
-        if batch.status != 'PENDING_DRIVER':
-            logger.info(f"[dispatch_batch_task] Batch {batch_id} status '{batch.status}' — skipping (already notified or dispatched)")
-            return
+        reminder_minutes = getattr(settings, 'BATCH_DRIVER_ALERT_REMINDER_MINUTES', 10)
+        reminder_cutoff = timezone.now() - timedelta(minutes=reminder_minutes)
+
+        with transaction.atomic():
+            batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+            if batch.status != 'PENDING_DRIVER':
+                logger.info(
+                    f"[dispatch_batch_task] Batch {batch_id} status '{batch.status}' — skipping"
+                )
+                return
+
+            if batch.offer_sent_at and batch.offer_sent_at > reminder_cutoff:
+                logger.info(
+                    f"[dispatch_batch_task] Batch {batch_id} already alerted at "
+                    f"{batch.offer_sent_at}; next reminder after {reminder_minutes} minutes"
+                )
+                return
+
+            batch.offer_sent_at = timezone.now()
+            batch.save(update_fields=['offer_sent_at', 'updated_at'])
 
         logger.info(f"[dispatch_batch_task] Batch {batch_id} in PENDING_DRIVER. Orders: {batch.orders.count()}")
 
@@ -588,7 +607,6 @@ def expire_stale_picked_orders_task():
         logger.info(
             f"[PickedExpiry] Cancelled {cancelled} stale PICKED orders."
         )
-
 
 
 
