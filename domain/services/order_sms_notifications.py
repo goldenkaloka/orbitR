@@ -88,7 +88,7 @@ class OrderPrepSmsService:
             f"OrbitR: Oda mpya imelipwa #{short}",
             f"Mteja: {customer_name}",
             f"Namba: {customer_phone or '---'}",
-            f"Jumla: TSh {_money(order.total_amount)}",
+            f"Jumla ya chakula: TSh {_money(order.items_subtotal)}",
             f"Wakati: {order_time}",
             f"Makadirio: {prep_time}dak",
             f"Aina: {delivery_note}",
@@ -151,10 +151,12 @@ class OrderPrepSmsService:
 
         first_order_time = _time_str(first_order.confirmed_at or first_order.created_at)
         prep_time = restaurant.average_prep_time or 20
+        food_total = sum((order.items_subtotal or Decimal('0')) for order in orders)
 
         owner_lines = [
             f"OrbitR: Oda ya pamoja imelipwa #{invite}",
             f"Wateja: {len(orders)}",
+            f"Jumla ya chakula: TSh {_money(food_total)}",
             f"Wakati: {first_order_time}",
             f"Makadirio: {prep_time}dak",
             "Bidhaa:",
