@@ -71,11 +71,15 @@ class PromoteUserService:
             user.role = 'driver'
             user.save(update_fields=['role'])
 
-            defaults = {'status': 'OFFLINE'}
-            allowed_fields = {'serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders', 'vehicle_type'}
+            defaults = {'status': 'OFFLINE', 'serves_all': True}
+            allowed_fields = {
+                'serves_all', 'can_assign', 'priority', 'home_restaurant_id',
+                'home_zone_id', 'max_active_orders', 'vehicle_type',
+            }
             for key in allowed_fields:
                 if key in extra_fields and extra_fields[key] is not None:
                     defaults[key] = extra_fields[key]
+            defaults['serves_all'] = True
 
             driver, created = Driver.objects.get_or_create(
                 user=user,
@@ -315,8 +319,11 @@ class UpdateDriverService:
     def execute(driver_id: str, **fields):
         with transaction.atomic():
             driver = Driver.objects.select_for_update().get(id=driver_id)
-            allowed = {'status', 'serves_all', 'can_assign', 'priority',
-                       'max_active_orders', 'current_active_orders', 'max_radius_km'}
+            allowed = {
+                'status', 'serves_all', 'can_assign', 'priority',
+                'home_zone_id', 'max_active_orders', 'current_active_orders',
+                'max_radius_km',
+            }
             for key, value in fields.items():
                 if key in allowed and value is not None:
                     setattr(driver, key, value)

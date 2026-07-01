@@ -85,24 +85,8 @@ def _notify_order_event(event):
                 user_id=str(order.restaurant.owner.id),
                 title=v_title, body=v_body, data=vendor_data,
             )
-            vendor_phone = order.restaurant.owner.phone
-            vendor_name = order.restaurant.owner.username or "Vendor"
-            if order.group_breakdown:
-                sms_text = (
-                    f"Habari {vendor_name}, una oda mpya ya KIKUNDI "
-                    f"#{str(order.id).split('-')[0]}.\n"
-                )
-                for member in order.group_breakdown:
-                    items_str = ", ".join([f"{i['quantity']}x {i['food_name']}" for i in member['items']])
-                    sms_text += f"- {member['username']}: {items_str}\n"
-                sms_text += "Tafadhali pakia kila mteja kivyake kwa urahisi wa usambazaji."
-            else:
-                sms_text = (
-                    f"Habari {vendor_name}, una oda mpya "
-                    f"#{str(order.id).split('-')[0]} kwenye OrbitR. "
-                    f"Tafadhali iandae sasa."
-                )
-            NotificationService.send_sms(vendor_phone, sms_text)
+            from domain.services.order_sms_notifications import OrderPrepSmsService
+            OrderPrepSmsService.notify_single_order(str(order.id))
 
         elif event.event_type in ['OrderPreparing', 'FoodReady', 'DriverAssigned', 'OrderPicked']:
             msg_title = {

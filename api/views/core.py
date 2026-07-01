@@ -981,7 +981,8 @@ class OrderViewSet(viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         try:
             from domain.services.order_services import CancelOrderService
-            order = CancelOrderService.execute(pk, request.user, reason='Rejected by restaurant')
+            reason = request.data.get('reason', 'Rejected by restaurant')
+            order = CancelOrderService.execute(pk, request.user, reason=reason)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -999,6 +1000,24 @@ class OrderViewSet(viewsets.ModelViewSet):
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
         except (InvalidStateTransitionError, ValueError) as e:
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    @action(detail=True, methods=['POST'], url_path='cancel-item')
+    def cancel_item(self, request, pk=None):
+        try:
+            from domain.services.orders.order_cancellation import CancelOrderItemService
+            item_id = request.data.get('item_id')
+            if not item_id:
+                return Response({"error": "item_id is required"}, status=400)
+            reason = request.data.get('reason', 'Item cancelled by restaurant')
+            item = CancelOrderItemService.execute(pk, item_id, request.user, reason=reason)
+            order = Order.objects.get(id=pk)
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
         except Exception as e:
             return Response({"error": str(e)}, status=500)

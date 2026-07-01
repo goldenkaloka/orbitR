@@ -109,7 +109,7 @@ class AdminViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=['GET'])
     def drivers(self, request):
         """List all drivers."""
-        queryset = Driver.objects.select_related('user').all()
+        queryset = Driver.objects.select_related('user', 'home_zone').all()
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = DriverSerializer(page, many=True)
@@ -204,14 +204,15 @@ class AdminViewSet(viewsets.GenericViewSet):
     def promote_driver(self, request):
         """
         Promote a registered user to permanent driver.
-        Body: { user_id, ?serves_all, ?can_assign, ?priority, ?home_restaurant_id, ?max_active_orders, ?vehicle_type }
+        Body: { user_id, ?can_assign, ?priority, ?home_restaurant_id, ?home_zone_id, ?max_active_orders, ?vehicle_type }
+        Admin-promoted drivers are always platform drivers (`serves_all=True`).
         """
         user_id = request.data.get('user_id')
         if not user_id:
             return Response({'error': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         extra = {}
-        for key in ('serves_all', 'can_assign', 'priority', 'home_restaurant_id', 'max_active_orders', 'vehicle_type'):
+        for key in ('can_assign', 'priority', 'home_restaurant_id', 'home_zone_id', 'max_active_orders', 'vehicle_type'):
             if key in request.data:
                 extra[key] = request.data[key]
 
@@ -232,14 +233,14 @@ class AdminViewSet(viewsets.GenericViewSet):
     def update_driver(self, request):
         """
         Update driver properties.
-        Body: { driver_id, ?serves_all, ?can_assign, ?priority, ?status, ?max_active_orders }
+        Body: { driver_id, ?serves_all, ?can_assign, ?priority, ?status, ?home_zone_id, ?max_active_orders }
         """
         driver_id = request.data.get('driver_id')
         if not driver_id:
             return Response({'error': 'driver_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         fields = {}
-        for key in ('serves_all', 'can_assign', 'priority', 'status',
+        for key in ('serves_all', 'can_assign', 'priority', 'status', 'home_zone_id',
                      'max_active_orders', 'current_active_orders', 'max_radius_km'):
             if key in request.data:
                 fields[key] = request.data[key]

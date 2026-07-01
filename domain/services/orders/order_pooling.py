@@ -54,6 +54,14 @@ def _split_fee_proportionally(total: Decimal, shares: list[Decimal]) -> list[Dec
     return results
 
 
+def _notify_pool_prep_sms(pool_id: str):
+    try:
+        from domain.services.order_sms_notifications import OrderPrepSmsService
+        OrderPrepSmsService.notify_pool_orders(pool_id)
+    except Exception as exc:
+        logger.error(f"[PoolPrepSMS] Failed to notify restaurant for pool {pool_id}: {exc}")
+
+
 class PoolOrderService:
     MAX_POOL_MEMBERS = 10
 
@@ -428,6 +436,7 @@ class PoolOrderService:
                 aggregate_id=pool.id,
                 payload={'pool_id': _pool_id, 'all_paid': True},
             )))
+            transaction.on_commit(lambda pid=_pool_id: _notify_pool_prep_sms(pid))
 
             for order in orders:
                 _oid = str(order.id)
@@ -466,12 +475,22 @@ class PoolOrderService:
             return pool
 
     @staticmethod
+    def _is_pool_restaurant_staff(actor, pool):
+        if actor.role == 'vendor' and pool.restaurant.owner == actor:
+            return True
+        from apps.restaurants.models import SectionStaff
+        return SectionStaff.objects.filter(
+            user=actor, section__restaurant=pool.restaurant
+        ).exists()
+
+    @staticmethod
     def cancel_pool(pool_id, actor):
         with transaction.atomic():
             pool = OrderPool.objects.select_for_update().get(id=pool_id)
 
-            if pool.initiator != actor and actor.role != 'admin':
-                raise PermissionError("Only the initiator or an admin can cancel the pool.")
+            is_restaurant = PoolOrderService._is_pool_restaurant_staff(actor, pool)
+            if pool.initiator != actor and actor.role != 'admin' and not is_restaurant:
+                raise PermissionError("Only the initiator, restaurant, or an admin can cancel the pool.")
 
             if not PoolFSM.can_cancel(pool.status):
                 raise ValueError(f"Cannot cancel pool in {pool.status} state.")
@@ -504,6 +523,35 @@ class PoolOrderService:
                     'actor_id': _actor_id,
                 }
             )))
+            return pool
+
+    @staticmethod
+    def remove_member(pool_id, member_id, actor):
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+            if pool.initiator != actor and actor.role != 'admin':
+                raise PermissionError("Only the initiator or an admin can remove members.")
+
+            if pool.status not in ('OPEN', 'LOCKED'):
+                raise ValueError("Can only remove members while pool is open or locked.")
+
+            from apps.orders.models import PoolMember
+            member = PoolMember.objects.select_for_update().get(id=member_id, pool_id=pool_id)
+            if member.user == pool.initiator:
+                raise ValueError("Cannot remove the pool initiator.")
+
+            if member.status == 'PAID':
+                from domain.services.payment_services import RefundPaymentService
+                RefundPaymentService.execute('pool_member', member.id)
+
+            member.delete()
+
+            _pool_id = str(pool.id)
+            from apps.events.utils import broadcast_pool_status
+            transaction.on_commit(lambda: broadcast_pool_status(
+                _pool_id, pool.status,
+                message=f"{member.user.username} was removed from the pool."
+            ))
             return pool
 
     @staticmethod

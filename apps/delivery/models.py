@@ -20,6 +20,11 @@ class Driver(models.Model):
         related_name='drivers', null=True, blank=True,
         help_text='Home restaurant this driver is affiliated with'
     )
+    home_zone = models.ForeignKey(
+        'geo.OperationalZone', on_delete=models.SET_NULL,
+        related_name='drivers', null=True, blank=True,
+        help_text='Base operational zone used to identify the driver when offline'
+    )
     serves_all = models.BooleanField(
         default=False,
         help_text='Platform driver — can serve orders from any restaurant'

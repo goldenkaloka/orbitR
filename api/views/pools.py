@@ -127,6 +127,20 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=400)
 
 
+    @action(detail=True, methods=['POST'], url_path='remove-member')
+    def remove_member(self, request, pk=None):
+        """Initiator or admin removes a member from the pool."""
+        member_id = request.data.get('member_id')
+        if not member_id:
+            return Response({'error': 'member_id is required'}, status=400)
+        try:
+            pool = PoolOrderService.remove_member(pk, member_id, request.user)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
     @action(detail=True, methods=['POST'], url_path='lock')
     def lock(self, request, pk=None):
         try:

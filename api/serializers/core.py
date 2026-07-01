@@ -258,7 +258,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ['food', 'food_name', 'quantity', 'price', 'section_id', 'section_name']
+        fields = ['food', 'food_name', 'quantity', 'cancelled_quantity', 'active_quantity', 'price', 'section_id', 'section_name']
         extra_kwargs = {'price': {'read_only': True}}
 
     def get_food_name(self, obj):
@@ -492,11 +492,14 @@ class DriverSerializer(serializers.ModelSerializer):
     longitude = serializers.SerializerMethodField()
     is_platform = serializers.BooleanField(source='serves_all', read_only=True)
     recommended = serializers.SerializerMethodField()
+    home_zone_name = serializers.CharField(source='home_zone.name', read_only=True)
+    current_zone_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Driver
         fields = ['id', 'user', 'status', 'location', 'latitude', 'longitude',
                   'rating', 'serves_all', 'is_platform', 'can_assign', 'priority',
+                  'home_zone', 'home_zone_name', 'current_zone_name',
                   'max_active_orders', 'current_active_orders', 'recommended']
 
     def get_latitude(self, obj):
@@ -507,6 +510,13 @@ class DriverSerializer(serializers.ModelSerializer):
 
     def get_recommended(self, obj):
         return str(obj.id) == self.context.get('recommended_id', '')
+
+    def get_current_zone_name(self, obj):
+        if not obj.h3_index:
+            return None
+        from apps.core.geo_utils import get_zone_from_h3
+        zone = get_zone_from_h3(obj.h3_index)
+        return zone.name if zone else None
 
 
 

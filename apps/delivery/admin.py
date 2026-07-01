@@ -22,16 +22,16 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
         'DEFAULT_CENTER': (-6.7924, 39.2083),
         'DEFAULT_ZOOM': 13,
     }
-    list_display = ('display_header', 'show_status', 'vehicle_type', 'rating', 'total_earnings', 'assignment_count')
-    list_filter = ('status', 'vehicle_type')
+    list_display = ('display_header', 'show_status', 'home_zone', 'vehicle_type', 'rating', 'total_earnings', 'assignment_count')
+    list_filter = ('status', 'vehicle_type', 'home_zone')
     search_fields = ('user__username', 'user__email', 'user__phone', 'vehicle_number')
-    raw_id_fields = ('user',)
+    raw_id_fields = ('user', 'home_restaurant', 'home_zone')
     readonly_fields = ('id', 'total_earnings', 'today_earnings')
     list_per_page = 25
     inlines = [DeliveryAssignmentInline]
 
     fieldsets = (
-        (None, {'fields': ('id', 'user', 'status', 'home_restaurant', 'serves_all', 'can_assign')}),
+        (None, {'fields': ('id', 'user', 'status', 'home_restaurant', 'home_zone', 'serves_all', 'can_assign')}),
         ('Vehicle Info', {'fields': ('vehicle_type', 'vehicle_number')}),
         ('Capacity & Quality', {'fields': ('max_active_orders', 'current_active_orders', 'rating')}),
         ('Financials & Stats', {'fields': ('total_earnings', 'today_earnings')}),
@@ -76,7 +76,7 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
         self.message_user(request, f'{updated} driver(s) set offline.')
 
     def get_queryset(self, request):
-        return super().get_queryset(request).select_related('user').prefetch_related('assignments')
+        return super().get_queryset(request).select_related('user', 'home_zone').prefetch_related('assignments')
 
 
 @admin.register(DeliveryAssignment)
