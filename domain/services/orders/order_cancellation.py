@@ -3,7 +3,8 @@ from decimal import Decimal
 
 from apps.delivery.models import DeliveryAssignment
 from apps.orders.models import Order, OrderItem
-from django.db import transaction
+from django.db import models, transaction
+from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import OrderCancelled
 from domain.fsm.order_fsm import OrderFSM
@@ -29,6 +30,19 @@ STRIKE_REASON_MAP = {
 
 VENDOR_LIKE_ROLES = {'vendor', 'vendor_staff'}
 
+DEFAULT_CANCELLATION_CATEGORY_BY_ROLE = {
+    'customer': 'customer_changed_mind',
+    'vendor': 'vendor_rejected',
+    'vendor_staff': 'vendor_rejected',
+    'driver': 'driver_cancelled',
+    'admin': 'admin_cancelled',
+}
+
+PUBLIC_RESTAURANT_FAULT_CATEGORIES = {
+    'vendor_rejected',
+    'restaurant_delay',
+}
+
 def _is_vendor_or_staff(actor, order):
     if actor.role == 'vendor' and order.restaurant.owner == actor:
         return True
@@ -38,9 +52,77 @@ def _is_vendor_or_staff(actor, order):
     ).exists()
 
 
+def _pool_member_id_for_order(order):
+    if not getattr(order, 'is_pool_order', False):
+        return None
+    breakdown = getattr(order, 'group_breakdown', None) or {}
+    member_id = breakdown.get('member_id') if isinstance(breakdown, dict) else None
+    if member_id:
+        return member_id
+    if getattr(order, 'pool_id', None):
+        member = order.pool.members.filter(user_id=order.customer_id).only('id').first()
+        return member.id if member else None
+    return None
+
+
+def _cancel_actor_type(actor, order=None):
+    if getattr(actor, 'username', None) == 'system_dispatcher':
+        return 'SYSTEM'
+    if getattr(actor, 'role', None) == 'customer':
+        return 'CUSTOMER'
+    if getattr(actor, 'role', None) == 'driver':
+        return 'DRIVER'
+    if getattr(actor, 'role', None) == 'admin' or getattr(actor, 'is_staff', False):
+        return 'ADMIN'
+    if order is not None and _is_vendor_or_staff(actor, order):
+        return 'VENDOR'
+    if getattr(actor, 'role', None) in VENDOR_LIKE_ROLES:
+        return 'VENDOR'
+    return 'SYSTEM'
+
+
+def _fault_for_actor(actor_type):
+    if actor_type in ('CUSTOMER', 'VENDOR', 'DRIVER'):
+        return actor_type
+    if actor_type == 'ADMIN':
+        return 'PLATFORM'
+    return 'SYSTEM'
+
+
+def _normalize_cancellation_category(category, actor_type):
+    if category:
+        return str(category)
+    role = actor_type.lower()
+    return DEFAULT_CANCELLATION_CATEGORY_BY_ROLE.get(role, 'system_timeout' if actor_type == 'SYSTEM' else 'other')
+
+
+def _apply_cancellation_metadata(order, actor, reason, category=None, fault=None, affects_restaurant_reputation=None):
+    actor_type = _cancel_actor_type(actor, order)
+    normalized_category = _normalize_cancellation_category(category, actor_type)
+    normalized_fault = fault or _fault_for_actor(actor_type)
+    if affects_restaurant_reputation is None:
+        affects_restaurant_reputation = (
+            normalized_fault == 'VENDOR'
+            and normalized_category in PUBLIC_RESTAURANT_FAULT_CATEGORIES
+        )
+
+    order.cancelled_at = timezone.now()
+    order.cancelled_by = actor_type
+    order.cancellation_fault = normalized_fault
+    order.cancellation_category = normalized_category
+    order.cancellation_reason = reason
+    order.affects_restaurant_reputation = affects_restaurant_reputation
+    return {
+        'cancelled_by': actor_type,
+        'cancellation_fault': normalized_fault,
+        'cancellation_category': normalized_category,
+        'affects_restaurant_reputation': affects_restaurant_reputation,
+    }
+
+
 class CancelOrderService:
     @staticmethod
-    def execute(order_id, actor, reason='No reason provided'):
+    def execute(order_id, actor, reason='No reason provided', category=None, fault=None, affects_restaurant_reputation=None):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
 
@@ -62,6 +144,14 @@ class CancelOrderService:
 
             new_state = OrderFSM.transition(order.status, 'CANCELLED')
             order.status = new_state
+            metadata = _apply_cancellation_metadata(
+                order,
+                actor,
+                reason,
+                category=category,
+                fault=fault,
+                affects_restaurant_reputation=affects_restaurant_reputation,
+            )
 
             if hasattr(order, 'payment') and order.payment:
                 from domain.fsm.payment_fsm import PaymentFSM
@@ -71,11 +161,22 @@ class CancelOrderService:
 
             if order.is_paid and getattr(order, 'payment', None):
                 fee_pct = Decimal('0')
-                if cancel_status and cancel_status != 'PENDING_PAYMENT':
+                customer_caused_paid_cancel = (
+                    actor.role == 'customer'
+                    and order.customer_id == actor.id
+                    and cancel_status
+                    and cancel_status != 'PENDING_PAYMENT'
+                )
+                if customer_caused_paid_cancel:
                     from apps.reliability.services import get_cancel_fee_percent, get_reliability
                     record = get_reliability(actor, actor.role)
                     fee_pct = get_cancel_fee_percent(record.score)
                 RefundPaymentService.execute('order', order.id, cancel_fee_pct=fee_pct)
+            elif order.is_paid and getattr(order, 'is_pool_order', False):
+                member_id = _pool_member_id_for_order(order)
+                if member_id:
+                    RefundPaymentService.execute('pool_member', member_id)
+                    order.pool.members.filter(id=member_id).update(status='REFUNDED')
 
             if order.driver:
                 release_driver(order.driver, 1)
@@ -95,6 +196,7 @@ class CancelOrderService:
                 aggregate_id=order.id, payload={
                     'actor_id': str(actor.id),
                     'reason': reason,
+                    **metadata,
                 }
             )))
             return order
@@ -102,7 +204,7 @@ class CancelOrderService:
 
 class CancelOrderItemService:
     @staticmethod
-    def execute(order_id, item_id, actor, reason='Item cancelled by restaurant'):
+    def execute(order_id, item_id, actor, reason='Item cancelled by restaurant', category='item_unavailable'):
         from apps.restaurants.models import SectionStaff
 
         with transaction.atomic():
@@ -113,7 +215,22 @@ class CancelOrderItemService:
             if order.status not in ('CONFIRMED', 'PREPARING'):
                 raise PermissionError("Can only cancel items while order is being prepared.")
 
-            item = OrderItem.objects.select_for_update().get(id=item_id, order_id=order_id)
+            item = (
+                OrderItem.objects.select_for_update()
+                .filter(id=item_id, order_id=order_id)
+                .first()
+            )
+            if item is None:
+                matching_items = list(
+                    OrderItem.objects.select_for_update().filter(
+                        food_id=item_id,
+                        order_id=order_id,
+                        cancelled_quantity__lt=models.F('quantity'),
+                    )
+                )
+                if len(matching_items) != 1:
+                    raise ValueError("Item not found or ambiguous. Send the order item id.")
+                item = matching_items[0]
             if item.active_quantity <= 0:
                 raise ValueError("Item already fully cancelled.")
 
@@ -125,14 +242,27 @@ class CancelOrderItemService:
                 i.active_quantity <= 0 for i in OrderItem.objects.filter(order_id=order_id)
             )
             if all_cancelled:
-                CancelOrderService.execute(order_id, actor, reason='All items cancelled by restaurant')
+                CancelOrderService.execute(
+                    order_id,
+                    actor,
+                    reason='All items cancelled by restaurant',
+                    category=category,
+                    fault='VENDOR',
+                    affects_restaurant_reputation=False,
+                )
             else:
                 item_price = item.price / item.quantity if item.quantity > 0 else Decimal('0')
                 refund_amount = item_price * cancelled_qty
                 if order.is_paid and refund_amount > 0:
-                    from domain.fsm.payment_fsm import PaymentFSM
                     if getattr(order, 'payment', None):
                         RefundPaymentService.execute('order', order.id, override_amount=refund_amount)
+                    elif getattr(order, 'is_pool_order', False):
+                        member_id = _pool_member_id_for_order(order)
+                        if member_id:
+                            RefundPaymentService.execute('pool_member', member_id, override_amount=refund_amount)
+                            order.pool.members.filter(id=member_id).update(
+                                items_subtotal=models.F('items_subtotal') - refund_amount
+                            )
 
                 all_items = list(OrderItem.objects.filter(order_id=order_id))
                 remaining_subtotal = sum(

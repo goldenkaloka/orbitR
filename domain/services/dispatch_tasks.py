@@ -241,26 +241,26 @@ def expire_unassigned_orders_task():
 
         logger.info(f"[ExpiryTask] Auto-expiring {len(stale_orders)} unassigned orders.")
 
-        # Bulk cancel inside the same transaction while row locks are held
-        order_ids_to_cancel = [o.id for o in stale_orders]
-        Order.objects.filter(id__in=order_ids_to_cancel).update(
-            status='CANCELLED'
-        )
+        # Cancel through the domain service so refunds, driver release,
+        # reliability metadata and OrderCancelled events stay consistent.
+        cancelled_ids = []
+        for order in stale_orders:
+            try:
+                CancelOrderService.execute(
+                    order_id=str(order.id),
+                    actor=system_user,
+                    reason='Expired: No driver found within 30 minutes.',
+                    category='system_timeout',
+                    fault='SYSTEM',
+                    affects_restaurant_reputation=False,
+                )
+                cancelled_ids.append(str(order.id))
+            except Exception as exc:
+                logger.error(f"[ExpiryTask] Failed to cancel order {order.id}: {exc}")
 
-    # Emit events after transaction commits (no DB locks held)
-    for order in stale_orders:
-        try:
-            from domain.events.bus import EventBus
-            from domain.events.types import OrderCancelled
-            EventBus.publish(OrderCancelled(
-                aggregate_id=order.id,
-                payload={
-                    'reason': 'Expired: No driver found within 30 minutes.',
-                    'actor_id': str(system_user.id),
-                },
-            ))
-        except Exception as exc:
-            logger.error(f"[ExpiryTask] Failed to emit cancel event for order {order.id}: {exc}")
+    # Service emits events after transaction commits.
+    for order_id in cancelled_ids:
+        logger.info(f"[ExpiryTask] Cancelled stale unassigned order {order_id}")
 
 
 LOCKED_POOL_TIMEOUT_MINUTES = 30
@@ -489,7 +489,10 @@ def expire_stale_preparing_orders_task():
                 CancelOrderService.execute(
                     order_id=str(order.id),
                     actor=system_user,
-                    reason=f'Restaurant exceeded PREPARING timeout of {preparing_timeout} minutes without marking READY'
+                    reason=f'Restaurant exceeded PREPARING timeout of {preparing_timeout} minutes without marking READY',
+                    category='restaurant_delay',
+                    fault='VENDOR',
+                    affects_restaurant_reputation=True,
                 )
                 cancelled_ids.append(str(order.id))
             except Exception as e:
@@ -547,6 +550,9 @@ def expire_stale_assigned_orders_task():
                     'Expired: Driver did not pick up within 30 minutes '
                     'of assignment.'
                 ),
+                category='driver_no_show',
+                fault='DRIVER',
+                affects_restaurant_reputation=False,
             )
             cancelled += 1
         except Exception as exc:
@@ -596,6 +602,9 @@ def expire_stale_picked_orders_task():
                     'Expired: Driver did not complete delivery within 2 hours '
                     'of pickup.'
                 ),
+                category='driver_no_show',
+                fault='DRIVER',
+                affects_restaurant_reputation=False,
             )
             cancelled += 1
         except Exception as exc:
@@ -607,8 +616,6 @@ def expire_stale_picked_orders_task():
         logger.info(
             f"[PickedExpiry] Cancelled {cancelled} stale PICKED orders."
         )
-
-
 
 
 

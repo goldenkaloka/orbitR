@@ -68,7 +68,18 @@ def cleanup_unpaid_orders():
             try:
                 order.status = OrderFSM.transition(order.status, 'CANCELLED')
                 order.status_changed_at = timezone.now()
-                order.save(update_fields=['status', 'status_changed_at', 'updated_at'])
+                order.cancelled_at = timezone.now()
+                order.cancelled_by = 'SYSTEM'
+                order.cancellation_fault = 'NONE'
+                order.cancellation_category = 'payment_timeout'
+                order.cancellation_reason = 'Payment timeout before collection'
+                order.affects_restaurant_reputation = False
+                order.save(update_fields=[
+                    'status', 'status_changed_at', 'cancelled_at', 'cancelled_by',
+                    'cancellation_fault', 'cancellation_category',
+                    'cancellation_reason', 'affects_restaurant_reputation',
+                    'updated_at',
+                ])
                 cancelled_orders.append(order)
             except Exception as e:
                 logger.error(f"[UnpaidCleanup] Failed to cancel order {order.id}: {e}")
@@ -77,7 +88,15 @@ def cleanup_unpaid_orders():
         try:
             transaction.on_commit(lambda o=order: EventBus.publish(OrderCancelled(
                 aggregate_id=o.id,
-                payload={'actor_id': 'system', 'reason': 'payment_timeout_30min', 'order_id': str(o.id)}
+                payload={
+                    'actor_id': 'system',
+                    'reason': 'payment_timeout_30min',
+                    'order_id': str(o.id),
+                    'cancelled_by': 'SYSTEM',
+                    'cancellation_fault': 'NONE',
+                    'cancellation_category': 'payment_timeout',
+                    'affects_restaurant_reputation': False,
+                }
             )))
         except Exception as e:
             logger.error(f"[UnpaidCleanup] Failed to publish event for order {order.id}: {e}")

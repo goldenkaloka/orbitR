@@ -90,21 +90,32 @@ def on_payment_refunded(event: PaymentRefunded):
     payable_id = event.payload.get('payable_id')
     logger.info(f"Payment refunded for {event.payload.get('type')} {payable_id}")
 
-    if event.payload.get('type') != 'order':
-        return
-
-    order_id = payable_id
-    from apps.orders.models import Order
+    payable_type = event.payload.get('type')
+    from apps.orders.models import Order, PoolMember
     try:
-        order = Order.objects.select_related('customer').get(id=order_id)
-        r_title, r_body = refund_processed(str(order.id)[:8])
+        if payable_type == 'order':
+            order = Order.objects.select_related('customer').get(id=payable_id)
+            user_id = str(order.customer.id)
+            short_id = str(order.id)[:8]
+            data = {"order_id": str(order.id), "type": "refund_processed"}
+        elif payable_type == 'pool_member':
+            member = PoolMember.objects.select_related('user', 'pool').get(id=payable_id)
+            user_id = str(member.user.id)
+            short_id = str(member.pool_id)[:8]
+            data = {"pool_id": str(member.pool_id), "type": "refund_processed"}
+        else:
+            return
+
+        r_title, r_body = refund_processed(short_id)
         NotificationService.send_push(
-            user_id=str(order.customer.id),
+            user_id=user_id,
             title=r_title, body=r_body,
-            data={"order_id": str(order.id), "type": "refund_processed"},
+            data=data,
         )
     except Order.DoesNotExist:
-        logger.error(f"Order {order_id} not found for refund notification")
+        logger.error(f"Order {payable_id} not found for refund notification")
+    except PoolMember.DoesNotExist:
+        logger.error(f"Pool member {payable_id} not found for refund notification")
 
 
 def register_handlers():

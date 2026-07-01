@@ -730,6 +730,10 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
                 revenue = orders.filter(status='DELIVERED').aggregate(Sum('total_amount'))['total_amount__sum'] or 0
                 count = orders.count()
+                cancelled_count = orders.filter(status='CANCELLED').count()
+                vendor_fault_cancellations = orders.filter(cancellation_fault='VENDOR').count()
+                public_reputation_cancellations = orders.filter(affects_restaurant_reputation=True).count()
+                cancellation_rate = round((cancelled_count / count) * 100, 2) if count else 0
 
                 avg_prep_duration = orders.filter(
                     confirmed_at__isnull=False,
@@ -754,7 +758,11 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "orders_today": count,
                     "avg_prep_time": avg_prep,
                     "wallet_balance": float(wallet.balance),
-                    "pending_payout": float(wallet.pending_balance)
+                    "pending_payout": float(wallet.pending_balance),
+                    "cancelled_orders_today": cancelled_count,
+                    "vendor_fault_cancellations_today": vendor_fault_cancellations,
+                    "public_reputation_cancellations_today": public_reputation_cancellations,
+                    "cancellation_rate_today": cancellation_rate,
                 }
             elif user.role == 'driver':
                 wallet, _ = Wallet.objects.get_or_create(user=user)
@@ -966,9 +974,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['POST'], url_path='rider-cancel')
     def rider_cancel(self, request, pk=None):
         reason = request.data.get('reason', 'Cancelled by driver')
+        category = request.data.get('category', 'driver_cancelled')
         from domain.services.order_services import CancelOrderService
         try:
-            order = CancelOrderService.execute(pk, request.user, reason=reason)
+            order = CancelOrderService.execute(pk, request.user, reason=reason, category=category)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -982,7 +991,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         try:
             from domain.services.order_services import CancelOrderService
             reason = request.data.get('reason', 'Rejected by restaurant')
-            order = CancelOrderService.execute(pk, request.user, reason=reason)
+            category = request.data.get('category', 'vendor_rejected')
+            order = CancelOrderService.execute(pk, request.user, reason=reason, category=category)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -995,7 +1005,12 @@ class OrderViewSet(viewsets.ModelViewSet):
     def cancel(self, request, pk=None):
         try:
             from domain.services.order_services import CancelOrderService
-            order = CancelOrderService.execute(pk, request.user, reason=request.data.get('reason', 'Cancelled by customer'))
+            order = CancelOrderService.execute(
+                pk,
+                request.user,
+                reason=request.data.get('reason', 'Cancelled by customer'),
+                category=request.data.get('category', 'customer_changed_mind'),
+            )
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -1012,7 +1027,13 @@ class OrderViewSet(viewsets.ModelViewSet):
             if not item_id:
                 return Response({"error": "item_id is required"}, status=400)
             reason = request.data.get('reason', 'Item cancelled by restaurant')
-            item = CancelOrderItemService.execute(pk, item_id, request.user, reason=reason)
+            item = CancelOrderItemService.execute(
+                pk,
+                item_id,
+                request.user,
+                reason=reason,
+                category=request.data.get('category', 'item_unavailable'),
+            )
             order = Order.objects.get(id=pk)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:

@@ -104,7 +104,14 @@ class OrderAdmin(LeafletGeoAdminMixin, ModelAdmin):
         error_count = 0
         for order in queryset:
             try:
-                CancelOrderService.execute(order.id, request.user, reason="Cancelled via Admin Panel")
+                CancelOrderService.execute(
+                    order.id,
+                    request.user,
+                    reason="Cancelled via Admin Panel",
+                    category='admin_cancelled',
+                    fault='PLATFORM',
+                    affects_restaurant_reputation=False,
+                )
                 success_count += 1
             except Exception as e:
                 error_count += 1

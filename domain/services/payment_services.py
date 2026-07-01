@@ -241,6 +241,16 @@ def _create_double_entry(payment, from_user, to_user, amount, entry_type, status
     return txn
 
 
+def _refunded_principal_total(payment) -> Decimal:
+    """Amount of the original payment already removed from escrow by refunds."""
+    total = Decimal('0')
+    for txn in payment.transactions.filter(
+        transaction_type__in=['platform_to_customer_refund', 'platform_cancel_fee']
+    ).only('amount'):
+        total += Decimal(str(txn.amount or 0))
+    return total
+
+
 class CompletePaymentService:
     @staticmethod
     def execute(payment_id=None, provider_reference=None, success=True, rrn=None, reference_id=None):
@@ -458,7 +468,12 @@ class ReleasePaymentService:
             if not vendor_phone:
                 raise ValueError(f"Cannot process payment: Restaurant has no owner phone number")
 
-            platform_cut = payment.amount - restaurant_payout - driver_payout
+            refunded_principal = _refunded_principal_total(payment)
+            net_collected_amount = payment.amount - refunded_principal
+            if net_collected_amount < 0:
+                raise ValueError("Refunded amount exceeds collected payment amount.")
+
+            platform_cut = net_collected_amount - restaurant_payout - driver_payout
             if platform_cut < 0:
                 raise ValueError(
                     "Cannot release payment because restaurant and driver payouts exceed collected amount."
@@ -552,7 +567,7 @@ class ReleasePaymentService:
                 payment.save()
 
                 # Release escrow: retained payout liabilities stay in platform cash but are not revenue.
-                _release_escrow(payment.amount, primary_value)
+                _release_escrow(net_collected_amount, primary_value)
 
                 # Accounting records only — actual money is already sent via split_settlement
                 if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
@@ -662,22 +677,32 @@ class RefundPaymentService:
             payments = Payment.objects.select_for_update().filter(
                 payable_type=payable_type,
                 payable_id=payable_id,
-                status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED'],
+                status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED', 'PARTIALLY_REFUNDED'],
             )
             
             if not payments.exists():
                 # Legacy fallback for old callers passing order_id only
                 if payable_type == 'order':
                     payments = Payment.objects.select_for_update().filter(
-                        order_id=payable_id, status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED'],
+                        order_id=payable_id, status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED', 'PARTIALLY_REFUNDED'],
                     )
 
             gateway = get_payment_gateway()
             
             for payment in payments:
-                base_amount = override_amount if override_amount is not None else payment.amount
+                already_refunded = _refunded_principal_total(payment)
+                remaining_amount = payment.amount - already_refunded
+                if remaining_amount <= 0:
+                    continue
+
+                base_amount = override_amount if override_amount is not None else remaining_amount
+                if base_amount <= 0:
+                    continue
+                if base_amount > remaining_amount:
+                    raise ValueError("Refund amount cannot exceed the remaining refundable payment amount.")
                 cancel_fee = base_amount * cancel_fee_pct
                 refund_amount = base_amount - cancel_fee
+                is_partial_refund = base_amount < remaining_amount
 
                 # Determine if payment was disbursed before we change its status
                 was_disbursed = payment.payable_type == 'order' and payment.status == 'DISBURSED'
@@ -689,16 +714,18 @@ class RefundPaymentService:
 
                 response = gateway.refund(transaction_id=payment.provider_reference, amount=refund_amount)
                 if response and response.get('success'):
-                    payment.status = PaymentFSM.transition(payment.status, 'REFUNDED')
+                    next_status = 'PARTIALLY_REFUNDED' if is_partial_refund else 'REFUNDED'
+                    payment.status = PaymentFSM.transition(payment.status, next_status)
                     payment.refund_id = response.get('refund_id')
-                    payment.refunded_at = timezone.now()
+                    if not is_partial_refund:
+                        payment.refunded_at = timezone.now()
                     payment.save()
 
                     # Escrow release
                     if was_disbursed:
                         _release_escrow_disbursed_refund(payment)
                     else:
-                        _release_escrow_refund(payment.amount, cancel_fee)
+                        _release_escrow_refund(base_amount, cancel_fee)
 
                     # Determine refund recipient
                     recipient = None

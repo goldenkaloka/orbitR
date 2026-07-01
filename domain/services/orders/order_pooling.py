@@ -579,7 +579,15 @@ class PoolOrderService:
                 batch.save(update_fields=['status', 'updated_at'])
 
                 from apps.orders.models import Order
-                Order.objects.filter(batch_id=batch_id).update(status='CANCELLED')
+                Order.objects.filter(batch_id=batch_id).update(
+                    status='CANCELLED',
+                    cancelled_at=timezone.now(),
+                    cancelled_by='SYSTEM',
+                    cancellation_fault='SYSTEM',
+                    cancellation_category='pool_cancelled',
+                    cancellation_reason=f'Pool {pool_id} was cancelled',
+                    affects_restaurant_reputation=False,
+                )
 
                 logger.info(f"[PoolOrderService] Cancelled batch {batch_id} (was {batch.status}) for pool {pool_id}")
         except DeliveryBatch.DoesNotExist:

@@ -15,6 +15,34 @@ class Order(models.Model):
         (FULFILLMENT_DELIVERY, 'Delivery'),
         (FULFILLMENT_PICKUP, 'Pickup'),
     )
+    CANCELLED_BY_CHOICES = (
+        ('CUSTOMER', 'Customer'),
+        ('VENDOR', 'Restaurant'),
+        ('DRIVER', 'Driver'),
+        ('ADMIN', 'Admin'),
+        ('SYSTEM', 'System'),
+    )
+    CANCELLATION_FAULT_CHOICES = (
+        ('CUSTOMER', 'Customer fault'),
+        ('VENDOR', 'Restaurant fault'),
+        ('DRIVER', 'Driver fault'),
+        ('PLATFORM', 'Platform fault'),
+        ('SYSTEM', 'System/automatic'),
+        ('NONE', 'No fault'),
+    )
+    CANCELLATION_CATEGORY_CHOICES = (
+        ('customer_changed_mind', 'Customer changed mind'),
+        ('payment_timeout', 'Payment timeout'),
+        ('vendor_rejected', 'Restaurant rejected'),
+        ('item_unavailable', 'Item unavailable'),
+        ('restaurant_delay', 'Restaurant delay'),
+        ('driver_cancelled', 'Driver cancelled'),
+        ('driver_no_show', 'Driver no-show'),
+        ('system_timeout', 'System timeout'),
+        ('admin_cancelled', 'Admin cancelled'),
+        ('pool_cancelled', 'Pool cancelled'),
+        ('other', 'Other'),
+    )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', db_index=True)
@@ -77,6 +105,12 @@ class Order(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
     status_changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    cancelled_by = models.CharField(max_length=20, choices=CANCELLED_BY_CHOICES, null=True, blank=True, db_index=True)
+    cancellation_fault = models.CharField(max_length=20, choices=CANCELLATION_FAULT_CHOICES, null=True, blank=True, db_index=True)
+    cancellation_category = models.CharField(max_length=40, choices=CANCELLATION_CATEGORY_CHOICES, null=True, blank=True, db_index=True)
+    cancellation_reason = models.TextField(null=True, blank=True)
+    affects_restaurant_reputation = models.BooleanField(default=False, db_index=True)
 
     def save(self, *args, **kwargs):
         if self.delivery_location:
@@ -96,6 +130,7 @@ class Order(models.Model):
         indexes = [
             models.Index(fields=['restaurant', 'status'], name='order_vendor_status_idx'),
             models.Index(fields=['driver', 'created_at'], name='order_driver_created_idx'),
+            models.Index(fields=['restaurant', 'cancellation_fault', 'cancelled_at'], name='order_cancel_fault_idx'),
         ]
 
     def __str__(self):

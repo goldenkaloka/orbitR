@@ -258,7 +258,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OrderItem
-        fields = ['food', 'food_name', 'quantity', 'cancelled_quantity', 'active_quantity', 'price', 'section_id', 'section_name']
+        fields = ['id', 'food', 'food_name', 'quantity', 'cancelled_quantity', 'active_quantity', 'price', 'section_id', 'section_name']
         extra_kwargs = {'price': {'read_only': True}}
 
     def get_food_name(self, obj):
@@ -302,10 +302,15 @@ class OrderSerializer(serializers.ModelSerializer):
             'items', 'fulfillment_type', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
             'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
             'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry', 'payment_status',
+            'cancelled_at', 'cancelled_by', 'cancellation_fault', 'cancellation_category',
+            'cancellation_reason', 'affects_restaurant_reputation',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
-                           'original_delivery_fee', 'discount_applied', 'discount_amount']
+                           'original_delivery_fee', 'discount_applied', 'discount_amount',
+                           'cancelled_at', 'cancelled_by', 'cancellation_fault',
+                           'cancellation_category', 'cancellation_reason',
+                           'affects_restaurant_reputation']
 
 
     def get_restaurant_latitude(self, obj):

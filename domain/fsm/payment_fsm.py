@@ -7,15 +7,17 @@ class PaymentFSM:
         'COLLECTED',
         'ON_HOLD',
         'DISBURSED',
+        'PARTIALLY_REFUNDED',
         'REFUNDED',
         'FAILED'
     ]
 
     ALLOWED_TRANSITIONS = {
         'INITIATED': ['COLLECTED', 'FAILED'],
-        'COLLECTED': ['ON_HOLD', 'DISBURSED', 'REFUNDED', 'FAILED'],
-        'ON_HOLD': ['COLLECTED', 'DISBURSED', 'REFUNDED', 'FAILED'],
-        'DISBURSED': ['REFUNDED'],
+        'COLLECTED': ['ON_HOLD', 'DISBURSED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'FAILED'],
+        'ON_HOLD': ['COLLECTED', 'DISBURSED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'FAILED'],
+        'DISBURSED': ['PARTIALLY_REFUNDED', 'REFUNDED'],
+        'PARTIALLY_REFUNDED': ['DISBURSED', 'PARTIALLY_REFUNDED', 'REFUNDED'],
         'FAILED': ['INITIATED'],  # Retry transitions back to initiated
     }
 
