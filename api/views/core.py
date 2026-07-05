@@ -784,14 +784,29 @@ class OrderViewSet(viewsets.ModelViewSet):
                 avg_secs = int(avg_seconds % 60)
                 avg_prep = f"{avg_minutes:02d}:{avg_secs:02d}" if avg_seconds > 0 else "—"
 
+                # Aggregate wallet balance if owner
+                wallet_balance = float(wallet.balance)
+                pending_payout = float(wallet.pending_balance)
+                if not staff_section_ids and restaurant:
+                    from apps.wallets.models import Wallet as WalletModel
+                    section_balances = WalletModel.objects.filter(
+                        section__restaurant=restaurant
+                    ).aggregate(Sum('balance'))['balance__sum'] or 0
+                    wallet_balance += float(section_balances)
+                    
+                    section_pending = WalletModel.objects.filter(
+                        section__restaurant=restaurant
+                    ).aggregate(Sum('pending_balance'))['pending_balance__sum'] or 0
+                    pending_payout += float(section_pending)
+
                 data = {
                     "revenue_today": float(revenue),
                     "orders_today": count,
                     "avg_prep_time": f"{configured_prep_minutes} min",
                     "configured_prep_time": configured_prep_minutes,
                     "actual_avg_prep_time": avg_prep,
-                    "wallet_balance": float(wallet.balance),
-                    "pending_payout": float(wallet.pending_balance),
+                    "wallet_balance": wallet_balance,
+                    "pending_payout": pending_payout,
                     "cancelled_orders_today": cancelled_count,
                     "vendor_fault_cancellations_today": vendor_fault_cancellations,
                     "public_reputation_cancellations_today": public_reputation_cancellations,
