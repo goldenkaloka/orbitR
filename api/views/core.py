@@ -974,9 +974,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"error": "Driver simulation is disabled"}, status=403)
 
         try:
+            from apps.payments.models import Payment
+
             order = Order.objects.get(id=pk)
             if not order.delivery_otp:
                 return Response({"error": "Order must be picked up before simulated delivery"}, status=400)
+
+            # Ensure a Payment record exists so the downstream event chain
+            # (OrderDelivered → PaymentReleaseRequested → ReleasePaymentService
+            #  → WalletDomainService.credit) can find it and credit wallets.
+            payment = Payment.objects.filter(
+                payable_type='order', payable_id=str(order.id)
+            ).first()
+            if payment is None:
+                Payment.objects.create(
+                    payable_type='order',
+                    payable_id=str(order.id),
+                    order=order,
+                    amount=order.total_amount or 0,
+                    status='COLLECTED',
+                    provider_reference=f"SIM_{order.id}",
+                )
+                order.is_paid = True
+                order.save(update_fields=['is_paid'])
+
             order = DeliverOrderService.execute(
                 pk,
                 request.user,
