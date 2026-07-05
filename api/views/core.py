@@ -127,6 +127,32 @@ def invalidate_restaurant_cache(restaurant):
         except Exception:
             cache.delete(cache_key)
 
+def _release_payment_sync(order):
+    """Release payment and credit wallets synchronously after delivery.
+
+    Called from deliver and simulate-deliver endpoints so wallet
+    credit is immediate and does not depend on Celery. Idempotent via the
+    DISBURSED guard inside ReleasePaymentService.
+    """
+    try:
+        from apps.payments.models import Payment
+        from domain.services.payment_services import ReleasePaymentService
+
+        payment = Payment.objects.filter(
+            payable_type='order', payable_id=str(order.id)
+        ).first()
+        if payment is None:
+            logger.warning(f"No payment found for order {order.id}; skipping release.")
+            return
+
+        if payment.status == 'INITIATED':
+            payment.status = 'COLLECTED'
+            payment.save(update_fields=['status'])
+
+        ReleasePaymentService.execute(payment.id)
+    except Exception:
+        logger.exception(f"Payment release failed for order {order.id}")
+
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
@@ -956,25 +982,6 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=403)
         except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
-
-    def _release_payment_sync(order):
-        """Release payment and credit wallets synchronously after delivery.
-        
-        Called directly from deliver and simulate-deliver endpoints so wallet
-        credit is immediate and does not depend on Celery. Idempotent via the
-        DISBURSED guard inside ReleasePaymentService.
-        """
-        try:
-            from apps.payments.models import Payment
-            from domain.services.payment_services import ReleasePaymentService
-
-            payment = Payment.objects.filter(
-                payable_type='order', payable_id=str(order.id)
-            ).first()
-            if payment is not None:
-                ReleasePaymentService.execute(payment.id)
-        except Exception:
-            logger.exception(f"Payment release failed for order {order.id}")
 
     @action(detail=True, methods=['POST'])
     def deliver(self, request, pk=None):
