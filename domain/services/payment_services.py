@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from apps.orders.models import Order
 from apps.payments.models import FailedPayout, Payment, Transaction
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -531,7 +532,10 @@ class ReleasePaymentService:
             # PRIACCT_IDENTIFIER = platform primary account
             # OTHER_IDENTIFIERS = vendor phone | driver phone (pipe-separated)
             # SPLIT_VALUES = vendor amount | driver amount (pipe-separated)
-            primary_account = get_payment_gateway().config.get('PRIMARY_ACCOUNT')
+            gateway = get_payment_gateway()
+            primary_account = getattr(gateway, 'config', {}).get('PRIMARY_ACCOUNT')
+            if not primary_account and getattr(settings, 'MOCK_PAYMENTS', False):
+                primary_account = 'MOCK_PRIMARY_ACCOUNT'
             if not primary_account:
                 raise ValueError("AIRPAY_PRIMARY_ACCOUNT not configured")
 
@@ -550,7 +554,6 @@ class ReleasePaymentService:
             h = hashlib.sha256(str(payment.id).encode())
             split_request_id = str(int(h.hexdigest(), 16))[-15:]
 
-            gateway = get_payment_gateway()
             response = gateway.split_settlement(
                 airpay_id=payment.provider_reference,
                 rrn=payment.rrn,

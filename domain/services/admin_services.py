@@ -112,6 +112,12 @@ class DisputeOrderService:
         from apps.orders.models import Dispute
         from apps.payments.models import Payment
 
+        valid_categories = {choice[0] for choice in Dispute.CATEGORY_CHOICES}
+        if category not in valid_categories:
+            raise ValueError("Invalid dispute category")
+        if not reason or not str(reason).strip():
+            raise ValueError("Dispute reason is required")
+
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
 
@@ -202,6 +208,14 @@ class DisputeResolutionService:
                 return dispute
 
             # REFUND or PARTIAL: refund the payment
+            if refund_amount is not None and refund_amount <= 0:
+                raise ValueError("Refund amount must be greater than zero")
+            if resolution == 'RESOLVED_PARTIAL' and refund_amount is None:
+                raise ValueError("Partial dispute resolution requires refund_amount")
+            if refund_amount is not None and refund_amount > order.total_amount:
+                raise ValueError("Refund amount cannot exceed the order total")
+            if resolution == 'RESOLVED_PARTIAL' and refund_amount >= order.total_amount:
+                raise ValueError("Partial refund must be less than the order total")
             if refund_amount is None:
                 refund_amount = order.total_amount
 

@@ -18,7 +18,7 @@ from api.views.core import (
     UserViewSet,
 )
 from api.views.demands import BuyerDemandViewSet, ShopViewSet
-from api.views.driver import DeliveryProofViewSet, DriverViewSet
+from api.views.driver import DriverViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet
 from api.views.payments import AirpayWebhookView, InitiatePaymentView, PlatformRevenueView
@@ -44,7 +44,6 @@ router.register(r'orders', OrderViewSet, basename='order')
 router.register(r'pools', PoolOrderViewSet, basename='pool')
 router.register(r'disputes', DisputeViewSet, basename='dispute')
 router.register(r'drivers', DriverViewSet, basename='driver')
-router.register(r'delivery-proofs', DeliveryProofViewSet, basename='delivery-proof')
 router.register(r'wallets', WalletViewSet, basename='wallet')
 router.register(r'admin', AdminViewSet, basename='admin')
 router.register(r'notifications', NotificationViewSet, basename='notification')

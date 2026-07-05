@@ -814,6 +814,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                     "today_earnings": float(driver.today_earnings or 0),
                     "rating": float(driver.rating),
                     "can_assign": driver.can_assign,
+                    "driver_latitude": driver.location.y if driver.location else None,
+                    "driver_longitude": driver.location.x if driver.location else None,
                 }
             else:
                 return Response({"error": "Stats not available for this role"}, status=400)
@@ -970,6 +972,11 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='simulate-deliver')
     def simulate_deliver(self, request, pk=None):
+        return Response(
+            {"error": "Simulated delivery completion is disabled. Use OTP or QR proof."},
+            status=410,
+        )
+
         if not settings.ALLOW_DRIVER_SIMULATION:
             return Response({"error": "Driver simulation is disabled"}, status=403)
 
@@ -1229,6 +1236,21 @@ class DisputeViewSet(viewsets.ModelViewSet):
     queryset = Dispute.objects.all()
     serializer_class = DisputeSerializer
     permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        return Response(
+            {"error": "Create disputes from the order dispute action."},
+            status=405,
+        )
+
+    def update(self, request, *args, **kwargs):
+        return Response({"error": "Use the resolve action to update disputes."}, status=405)
+
+    def partial_update(self, request, *args, **kwargs):
+        return Response({"error": "Use the resolve action to update disputes."}, status=405)
+
+    def destroy(self, request, *args, **kwargs):
+        return Response({"error": "Disputes cannot be deleted."}, status=405)
 
     def get_queryset(self):
         user = self.request.user

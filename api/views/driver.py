@@ -1,15 +1,15 @@
 import math
 
-from api.serializers.core import DeliveryProofSerializer, DriverSerializer
+from api.serializers.core import DriverSerializer
 from apps.core.geo_utils import ZONE_RESOLUTION, get_zone_from_h3, haversine_distance, latlng_to_h3
-from apps.delivery.models import DeliveryProof, Driver
+from apps.delivery.models import Driver
 from apps.orders.models import Order
 from django.conf import settings
 from django.contrib.gis.geos import Point
 from django.core.cache import cache
 from django.utils import timezone
 from domain.fsm.driver_fsm import DriverFSM
-from rest_framework import status, viewsets
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
@@ -158,48 +158,3 @@ class DriverViewSet(viewsets.ModelViewSet):
         driver.last_heartbeat = timezone.now()
         driver.save(update_fields=['last_heartbeat'])
         return Response({'status': 'ok', 'last_heartbeat': driver.last_heartbeat})
-
-    @action(detail=False, methods=['POST'], url_path='simulate-proof')
-    def simulate_proof(self, request):
-        if not settings.ALLOW_DRIVER_SIMULATION:
-            return Response({"error": "Driver simulation is disabled"}, status=403)
-
-        order_id = request.data.get('order_id')
-        if not order_id:
-            return Response({"error": "order_id is required"}, status=400)
-
-        driver = request.user.driver_profile
-        try:
-            order = Order.objects.get(id=order_id)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
-
-        if order.driver_id != driver.id:
-            return Response({"error": "Only the assigned driver can submit proof"}, status=403)
-
-        if order.status != 'PICKED':
-            return Response({"error": "Delivery proof can only be submitted after pickup"}, status=400)
-
-        proof, _ = DeliveryProof.objects.update_or_create(
-            order=order,
-            defaults={
-                'delivered_by': driver,
-                'photo_url': f'https://orbitr.local/simulated-delivery-proof/{order.id}.jpg',
-                'verified_at': timezone.now(),
-            },
-        )
-        return Response(DeliveryProofSerializer(proof).data, status=201)
-
-class DeliveryProofViewSet(viewsets.ModelViewSet):
-    queryset = DeliveryProof.objects.all()
-    serializer_class = DeliveryProofSerializer
-    permission_classes = [IsAuthenticated, IsDriver]
-
-    def perform_create(self, serializer):
-        # Ensure only the assigned driver can submit proof
-        order = serializer.validated_data['order']
-        driver = self.request.user.driver_profile
-        if order.driver != driver:
-            from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied("You are not the driver assigned to this order.")
-        serializer.save(delivered_by=driver)
