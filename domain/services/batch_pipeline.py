@@ -381,9 +381,54 @@ class BatchPipeline:
                 if not BatchFSM.sections_all_ready(batch_ref):
                     return
                 if batch_ref.status in ('ACCUMULATING', 'SOFT_LOCK', 'FINALIZING', 'PRE_ASSIGNING', 'PARTIAL_BATCH'):
+                    # Recalculate route and pricing if not finalized yet (driver_payout is 0)
+                    update_fields = ['status', 'waiting_since', 'updated_at']
+                    if batch_ref.driver_payout == Decimal('0'):
+                        from infrastructure.external_services.mapbox_routing import MapboxRoutingService
+                        orders = list(batch_ref.orders.all())
+                        route_dict = None
+                        route_distance = Decimal('0')
+                        try:
+                            route = MapboxRoutingService.get_route_for_batch(orders)
+                            if route:
+                                route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
+                        except Exception as exc:
+                            logger.warning(f"[BatchPipeline] Mapbox routing failed during all-ready check: {exc}")
+
+                        if route_dict and route_dict.get('total_distance_km'):
+                            route_distance = Decimal(str(route_dict['total_distance_km']))
+
+                        pricing = BatchPipeline._calculate_pricing(orders)
+                        driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
+                            orders, route_dict, pricing
+                        )
+                        company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+
+                        batch_ref.route_optimization = route_dict
+                        batch_ref.route_distance_km = route_distance
+                        batch_ref.user_paid_total = user_paid_total
+                        batch_ref.original_total_fee = pricing['original_total']
+                        batch_ref.discounted_total_fee = pricing['discounted_total']
+                        batch_ref.driver_payout = driver_payout
+                        batch_ref.company_profit = company_profit
+                        
+                        update_fields.extend([
+                            'route_optimization', 'route_distance_km', 'user_paid_total',
+                            'original_total_fee', 'discounted_total_fee', 'driver_payout',
+                            'company_profit'
+                        ])
+
+                        # Save routing sequence for orders
+                        delivery_seq_map = _build_delivery_seq_map(route_dict)
+                        for order in orders:
+                            seq = delivery_seq_map.get(str(order.id))
+                            if seq is not None:
+                                order.route_sequence = seq
+                                order.save(update_fields=['route_sequence'])
+
                     batch_ref.status = BatchFSM.transition(batch_ref, 'ALL_SECTIONS_READY')
                     batch_ref.waiting_since = timezone.now()
-                    batch_ref.save(update_fields=['status', 'waiting_since', 'updated_at'])
+                    batch_ref.save(update_fields=update_fields)
                     transaction.on_commit(
                         lambda bid=str(batch_ref.id): dispatch_batch_task.delay(bid)
                     )
