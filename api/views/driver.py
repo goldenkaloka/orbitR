@@ -1,7 +1,7 @@
 import math
 
 from api.serializers.core import DeliveryProofSerializer, DriverSerializer
-from apps.core.geo_utils import ZONE_RESOLUTION, haversine_distance, latlng_to_h3
+from apps.core.geo_utils import ZONE_RESOLUTION, get_zone_from_h3, haversine_distance, latlng_to_h3
 from apps.delivery.models import DeliveryProof, Driver
 from apps.orders.models import Order
 from django.conf import settings
@@ -141,7 +141,16 @@ class DriverViewSet(viewsets.ModelViewSet):
                 heading=request.data.get('heading', 0.0),
             )
 
-        return Response({'status': 'location updated'})
+        zone_name = None
+        zone = get_zone_from_h3(driver.h3_index) if driver.h3_index else None
+        if zone:
+            zone_name = zone.name
+
+        return Response({
+            'status': 'location updated',
+            'zone': zone_name,
+            'h3_index': driver.h3_index,
+        })
 
     @action(detail=False, methods=['POST'], url_path='heartbeat')
     def heartbeat(self, request):

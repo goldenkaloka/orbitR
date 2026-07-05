@@ -130,6 +130,41 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({'detail': 'No zone found for these coordinates'}, status=404)
 
     @action(detail=False, methods=['GET'])
+    def nearby(self, request):
+        """Return zones within a given distance of a lat/lng point."""
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        max_distance = request.query_params.get('max_distance', '30')
+
+        if not lat or not lng:
+            return Response({'error': 'lat and lng are required'}, status=400)
+
+        try:
+            lat_f = float(lat)
+            lng_f = float(lng)
+            dist_km = float(max_distance)
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid lat, lng or max_distance'}, status=400)
+
+        from django.contrib.gis.geos import Point
+        from django.contrib.gis.measure import D
+
+        cache_key = f'geo:zones_nearby:{lat_f}:{lng_f}:{dist_km}'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        point = Point(lng_f, lat_f, srid=4326)
+        nearby = OperationalZone.objects.filter(
+            is_active=True,
+            boundary__dwithin=(point, D(km=dist_km)),
+        )
+        serializer = OperationalZoneMinimalSerializer(nearby, many=True)
+        data = serializer.data
+        cache.set(cache_key, data, 300)
+        return Response(data)
+
+    @action(detail=False, methods=['GET'])
     def autocomplete(self, request):
         """
         Proxy for location search. Tries Mapbox Search Box first,
