@@ -401,7 +401,8 @@ class OrderSerializer(serializers.ModelSerializer):
             return None
         
         request = self.context.get('request')
-        role = getattr(request, 'user', None).role if request and hasattr(request, 'user') else None
+        user = getattr(request, 'user', None) if request else None
+        role = user.serialized_role if user and hasattr(user, 'serialized_role') else (user.role if user else None)
 
         order_count = getattr(obj.batch, 'orders_count', None)
         if order_count is None:
@@ -424,9 +425,10 @@ class OrderSerializer(serializers.ModelSerializer):
             result['driver_payout'] = float(obj.batch.driver_payout) if obj.batch.driver_payout else None
             result['user_paid_total'] = float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None
             result['company_profit'] = float(obj.batch.company_profit) if obj.batch.company_profit else None
-        elif role == 'driver':
+        elif role in ('driver', 'vendor', 'vendor_staff'):
             result['driver_payout'] = float(obj.batch.driver_payout) if obj.batch.driver_payout else None
-        elif role in ('vendor', 'customer'):
+
+        if role in ('vendor', 'vendor_staff', 'customer', 'admin'):
             result['user_paid_total'] = float(obj.batch.user_paid_total) if obj.batch.user_paid_total else None
 
         return result

@@ -184,7 +184,8 @@ class BatchViewSet(viewsets.ViewSet):
             delivered = orders.filter(status='DELIVERED').count()
             total = orders.count()
             
-            role = getattr(request, 'user', None).role if hasattr(request, 'user') and request.user else None
+            user = getattr(request, 'user', None)
+            role = user.serialized_role if user and hasattr(user, 'serialized_role') else (user.role if user else None)
 
             result = {
                 'id': str(batch.id),
@@ -201,9 +202,10 @@ class BatchViewSet(viewsets.ViewSet):
                 result['driver_payout'] = float(batch.driver_payout) if batch.driver_payout else None
                 result['user_paid_total'] = float(batch.user_paid_total) if batch.user_paid_total else None
                 result['company_profit'] = float(batch.company_profit) if batch.company_profit else None
-            elif role == 'driver':
+            elif role in ('driver', 'vendor', 'vendor_staff'):
                 result['driver_payout'] = float(batch.driver_payout) if batch.driver_payout else None
-            elif role in ('vendor', 'customer'):
+
+            if role in ('vendor', 'vendor_staff', 'customer', 'admin'):
                 result['user_paid_total'] = float(batch.user_paid_total) if batch.user_paid_total else None
 
             result.update({
