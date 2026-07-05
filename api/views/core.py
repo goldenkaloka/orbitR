@@ -957,13 +957,33 @@ class OrderViewSet(viewsets.ModelViewSet):
         except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
 
+    def _release_payment_sync(order):
+        """Release payment and credit wallets synchronously after delivery.
+        
+        Called directly from deliver and simulate-deliver endpoints so wallet
+        credit is immediate and does not depend on Celery. Idempotent via the
+        DISBURSED guard inside ReleasePaymentService.
+        """
+        try:
+            from apps.payments.models import Payment
+            from domain.services.payment_services import ReleasePaymentService
+
+            payment = Payment.objects.filter(
+                payable_type='order', payable_id=str(order.id)
+            ).first()
+            if payment is not None:
+                ReleasePaymentService.execute(payment.id)
+        except Exception:
+            logger.exception(f"Payment release failed for order {order.id}")
+
     @action(detail=True, methods=['POST'])
     def deliver(self, request, pk=None):
         otp = request.data.get('otp')
         bypass = request.data.get('bypass_geofence', False)
-        
+
         try:
             order = DeliverOrderService.execute(pk, request.user, otp=otp, bypass_geofence=bypass)
+            _release_payment_sync(order)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -972,11 +992,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['POST'], url_path='simulate-deliver')
     def simulate_deliver(self, request, pk=None):
-        return Response(
-            {"error": "Simulated delivery completion is disabled. Use OTP or QR proof."},
-            status=410,
-        )
-
         if not settings.ALLOW_DRIVER_SIMULATION:
             return Response({"error": "Driver simulation is disabled"}, status=403)
 
@@ -987,13 +1002,7 @@ class OrderViewSet(viewsets.ModelViewSet):
             if not order.delivery_otp:
                 return Response({"error": "Order must be picked up before simulated delivery"}, status=400)
 
-            # Ensure a Payment record exists so the downstream event chain
-            # (OrderDelivered → PaymentReleaseRequested → ReleasePaymentService
-            #  → WalletDomainService.credit) can find it and credit wallets.
-            payment = Payment.objects.filter(
-                payable_type='order', payable_id=str(order.id)
-            ).first()
-            if payment is None:
+            if not Payment.objects.filter(payable_type='order', payable_id=str(order.id)).exists():
                 Payment.objects.create(
                     payable_type='order',
                     payable_id=str(order.id),
@@ -1011,6 +1020,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 otp=order.delivery_otp,
                 bypass_geofence=False,
             )
+            _release_payment_sync(order)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
@@ -1021,6 +1031,7 @@ class OrderViewSet(viewsets.ModelViewSet):
     def complete_pickup(self, request, pk=None):
         try:
             order = CompletePickupService.execute(pk, request.user)
+            _release_payment_sync(order)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)

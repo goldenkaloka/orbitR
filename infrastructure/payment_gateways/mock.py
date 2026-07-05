@@ -28,6 +28,3 @@ class MockGateway(PaymentGateway):
 
     def refund(self, transaction_id, amount, **kwargs):
         return {'success': True, 'refund_id': f"MOCK_REFUND_{transaction_id}"}
-
-    def split_settlement(self, airpay_id, rrn, *args, **kwargs):
-        return {'success': True}

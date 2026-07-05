@@ -1,11 +1,9 @@
-import hashlib
 import logging
 import uuid
 from decimal import Decimal
 
 from apps.orders.models import Order
-from apps.payments.models import FailedPayout, Payment, Transaction
-from django.conf import settings
+from apps.payments.models import Payment, Transaction
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -17,7 +15,6 @@ from domain.events.types import (
     PaymentRefunded,
 )
 from domain.fsm.payment_fsm import PaymentFSM
-from domain.utils import is_valid_tz_phone
 from infrastructure.payment_gateways.factory import get_payment_gateway
 
 logger = logging.getLogger(__name__)
@@ -404,7 +401,6 @@ class ReleasePaymentService:
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
 
-            # Guard: prevent re-releasing an already-disbursed payment
             if payment.status == 'DISBURSED':
                 logger.warning(f"Payment {payment.id} already disbursed; skipping release.")
                 return payment
@@ -413,8 +409,6 @@ class ReleasePaymentService:
             order = None
             restaurant_payout = Decimal('0')
             driver_payout = Decimal('0')
-            vendor_phone = None
-            driver_phone = None
 
             if payment.payable_type == 'order':
                 order = Order.objects.select_related(
@@ -436,22 +430,15 @@ class ReleasePaymentService:
                 else:
                     driver_payout = Decimal('0')
 
-                if order.restaurant and order.restaurant.owner:
-                    vendor_phone = order.restaurant.owner.phone
-                if order.driver and order.driver.user:
-                    driver_phone = order.driver.user.phone
-
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import OrderPool, PoolMember
                 member = PoolMember.objects.select_related(
                     'pool', 'pool__restaurant', 'pool__restaurant__owner', 'pool__batch'
                 ).get(id=payment.payable_id)
-                # Lock the pool row to prevent concurrent releases from double-paying the driver
                 OrderPool.objects.select_for_update().get(id=member.pool_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
                 restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
-                
-                # Align driver payout with the batch payout split equally among paid pool members
+
                 if member.pool.batch and member.pool.batch.driver_payout:
                     paid_member_count = member.pool.members.filter(status='PAID').count()
                     driver_payout = member.pool.batch.driver_payout / paid_member_count if paid_member_count > 0 else Decimal('0')
@@ -459,15 +446,9 @@ class ReleasePaymentService:
                     driver_payout = Decimal(str(member.delivery_fee_share or 0))
 
                 order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
-                if order and order.restaurant and order.restaurant.owner:
-                    vendor_phone = order.restaurant.owner.phone
-                if order and order.driver and order.driver.user:
-                    driver_phone = order.driver.user.phone
 
             if not order:
                 raise ValueError("No payout target found for this payment.")
-            if not vendor_phone:
-                raise ValueError(f"Cannot process payment: Restaurant has no owner phone number")
 
             refunded_principal = _refunded_principal_total(payment)
             net_collected_amount = payment.amount - refunded_principal
@@ -480,213 +461,98 @@ class ReleasePaymentService:
                     "Cannot release payment because restaurant and driver payouts exceed collected amount."
                 )
 
-            actual_restaurant_payout = restaurant_payout
-            actual_driver_payout = driver_payout
-            retained_liability = Decimal('0')
-            pay_sections_from_platform = ReleasePaymentService._has_section_wallet_targets(order)
+            _platform = get_platform_user()
+            payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
+            payment.save()
 
-            # Validate restaurant owner phone
-            if restaurant_payout > 0 and vendor_phone:
-                if pay_sections_from_platform:
-                    retained_liability += restaurant_payout
-                    actual_restaurant_payout = Decimal('0')
-                elif not is_valid_tz_phone(vendor_phone):
-                    logger.warning(
-                        f"Vendor phone number '{vendor_phone}' for payment {payment.id} is invalid. "
-                        f"retaining restaurant share of {restaurant_payout} as unpaid payout liability."
-                    )
-                    FailedPayout.objects.create(
-                        payment=payment,
-                        to_wallet=order.restaurant.owner,
-                        amount=restaurant_payout,
-                        transaction_type='platform_to_restaurant',
-                        reason='Invalid restaurant payout phone number',
-                        error_code='INVALID_VENDOR_PHONE',
-                        retry_count=0
-                    )
-                    retained_liability += restaurant_payout
-                    actual_restaurant_payout = Decimal('0')
+            # Release escrow
+            _release_escrow(net_collected_amount, platform_cut)
 
-            # Validate driver phone
-            if driver_payout > 0 and driver_phone:
-                if not is_valid_tz_phone(driver_phone):
-                    logger.warning(
-                        f"Driver phone number '{driver_phone}' for payment {payment.id} is invalid. "
-                        f"retaining driver share of {driver_payout} as unpaid payout liability."
-                    )
-                    FailedPayout.objects.create(
-                        payment=payment,
-                        to_wallet=order.driver.user,
-                        amount=driver_payout,
-                        transaction_type='platform_to_driver',
-                        reason='Invalid driver payout phone number',
-                        error_code='INVALID_DRIVER_PHONE',
-                        retry_count=0
-                    )
-                    retained_liability += driver_payout
-                    actual_driver_payout = Decimal('0')
-
-            primary_value = platform_cut + retained_liability
-
-            # Build split payload per Airpay docs:
-            # PRIACCT_IDENTIFIER = platform primary account
-            # OTHER_IDENTIFIERS = vendor phone | driver phone (pipe-separated)
-            # SPLIT_VALUES = vendor amount | driver amount (pipe-separated)
-            gateway = get_payment_gateway()
-            primary_account = getattr(gateway, 'config', {}).get('PRIMARY_ACCOUNT')
-            if not primary_account and getattr(settings, 'MOCK_PAYMENTS', False):
-                primary_account = 'MOCK_PRIMARY_ACCOUNT'
-            if not primary_account:
-                raise ValueError("AIRPAY_PRIMARY_ACCOUNT not configured")
-
-            other_identifiers = []
-            split_values = []
-
-            if actual_restaurant_payout > 0 and vendor_phone:
-                other_identifiers.append(vendor_phone)
-                split_values.append(float(actual_restaurant_payout))
-
-            if actual_driver_payout > 0 and driver_phone:
-                other_identifiers.append(driver_phone)
-                split_values.append(float(actual_driver_payout))
-
-            # Generate deterministic 15-character split_request_id for gateway idempotency
-            h = hashlib.sha256(str(payment.id).encode())
-            split_request_id = str(int(h.hexdigest(), 16))[-15:]
-
-            response = gateway.split_settlement(
-                airpay_id=payment.provider_reference,
-                rrn=payment.rrn,
-                primary_account=primary_account,
-                primary_value=float(primary_value),
-                other_identifiers=other_identifiers,
-                split_values=split_values,
-                split_request_id=split_request_id,
-            )
-
-            if response and response.get('success'):
-                _platform = get_platform_user()
-                payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
-                payment.save()
-
-                # Release escrow: retained payout liabilities stay in platform cash but are not revenue.
-                _release_escrow(net_collected_amount, primary_value)
-
-                # Accounting records only — actual money is already sent via split_settlement
-                if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
-                    if pay_sections_from_platform:
-                        ReleasePaymentService._distribute_restaurant_payout(order, restaurant_payout)
-                    else:
-                        _create_double_entry(
-                            payment=payment,
-                            from_user=_platform,
-                            to_user=order.restaurant.owner,
-                            amount=restaurant_payout,
-                            entry_type='platform_to_restaurant',
-                        )
-
-                if driver_payout > 0 and order.driver and order.driver.user:
-                    _create_double_entry(
-                        payment=payment,
-                        from_user=_platform,
-                        to_user=order.driver.user,
-                        amount=driver_payout,
-                        entry_type='platform_to_driver',
-                    )
-
-                # Credit actual wallets so balances reflect in the app
-                if actual_restaurant_payout > 0 and order.restaurant and order.restaurant.owner and not pay_sections_from_platform:
+            # Credit wallets (ledger only — no real money moves)
+            has_section_items = order.items.filter(section__isnull=False).exists() if order else False
+            if restaurant_payout > 0 and order.restaurant:
+                if has_section_items:
+                    _distribute_restaurant_payout(order, restaurant_payout)
+                elif order.restaurant.owner:
                     WalletDomainService.credit(
                         user=order.restaurant.owner,
-                        amount=actual_restaurant_payout,
+                        amount=restaurant_payout,
                         description=f'Order payout — #{str(order.id)[:8]}',
                     )
 
-                if actual_driver_payout > 0 and order.driver and order.driver.user:
-                    WalletDomainService.credit(
-                        user=order.driver.user,
-                        amount=actual_driver_payout,
-                        description=f'Delivery payout — #{str(order.id)[:8]}',
-                    )
-
-                if platform_cut > 0:
-                    _create_double_entry(
-                        payment=payment,
-                        from_user=_platform,
-                        to_user=_platform,
-                        amount=platform_cut,
-                        entry_type='platform_revenue',
-                    )
-
-                transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(
-                    aggregate_id=payment.id,
-                    payload={
-                        'order_id': str(order.id),
-                        'restaurant_payout': str(restaurant_payout),
-                        'driver_payout': str(driver_payout),
-                    }
-                )))
-            else:
-                error_msg = response.get('error', 'Unknown Error') if response else 'No response from gateway'
-                error_code = response.get('error_code', 'UNKNOWN') if response else 'NO_RESPONSE'
-                FailedPayout.objects.create(
-                    payment=payment,
-                    to_wallet=order.restaurant.owner,
-                    amount=restaurant_payout,
-                    transaction_type='platform_to_restaurant',
-                    reason=error_msg,
-                    error_code=error_code,
-                    retry_count=0
+            if driver_payout > 0 and order.driver and order.driver.user:
+                WalletDomainService.credit(
+                    user=order.driver.user,
+                    amount=driver_payout,
+                    description=f'Delivery payout — #{str(order.id)[:8]}',
                 )
-                if driver_payout > 0 and order.driver and order.driver.user:
-                    FailedPayout.objects.create(
-                        payment=payment,
-                        to_wallet=order.driver.user,
-                        amount=driver_payout,
-                        transaction_type='platform_to_driver',
-                        reason=error_msg,
-                        error_code=error_code,
-                        retry_count=0
-                    )
-                logger.error(f"Split settlement failed for payment {payment.id}: [{error_code}] {error_msg}")
+
+            # Double-entry accounting records
+            if restaurant_payout > 0 and order.restaurant and order.restaurant.owner:
+                _create_double_entry(
+                    payment=payment,
+                    from_user=_platform,
+                    to_user=order.restaurant.owner,
+                    amount=restaurant_payout,
+                    entry_type='platform_to_restaurant',
+                )
+
+            if driver_payout > 0 and order.driver and order.driver.user:
+                _create_double_entry(
+                    payment=payment,
+                    from_user=_platform,
+                    to_user=order.driver.user,
+                    amount=driver_payout,
+                    entry_type='platform_to_driver',
+                )
+
+            if platform_cut > 0:
+                _create_double_entry(
+                    payment=payment,
+                    from_user=_platform,
+                    to_user=_platform,
+                    amount=platform_cut,
+                    entry_type='platform_revenue',
+                )
+
+            transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(
+                aggregate_id=payment.id,
+                payload={
+                    'order_id': str(order.id),
+                    'restaurant_payout': str(restaurant_payout),
+                    'driver_payout': str(driver_payout),
+                }
+            )))
 
             return payment
 
-    @staticmethod
-    def _has_section_wallet_targets(order):
-        return order.items.filter(section__isnull=False).exists()
 
-    @staticmethod
-    def _distribute_restaurant_payout(order, restaurant_payout):
-        """
-        Distributes the restaurant payout among section (stall) wallets only.
-        The restaurant owner and driver are already paid directly via split settlement.
-        Section staff rely on wallet credit since they don't receive phone money.
-        """
-        from apps.wallets.models import Wallet
-        from domain.services.wallet_services import WalletDomainService
+def _distribute_restaurant_payout(order, restaurant_payout):
+    """Distribute restaurant payout proportionally to section (stall) wallets."""
+    from apps.wallets.models import Wallet
+    from domain.services.wallet_services import WalletDomainService
 
-        items = list(order.items.select_related('food', 'section').all())
-        if not items:
-            return
+    items = list(order.items.select_related('food', 'section').all())
+    if not items:
+        return
 
-        total_items_price = sum(item.price for item in items)
-        if total_items_price == 0:
-            return
+    total_items_price = sum(item.price for item in items)
+    if total_items_price == 0:
+        return
 
-        distributed_amount = Decimal('0')
-        cumulative_price = Decimal('0')
-        for item in items:
-            cumulative_price += Decimal(str(item.price))
-            cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
-            item_payout = cumulative_target - distributed_amount
-            distributed_amount += item_payout
+    distributed_amount = Decimal('0')
+    cumulative_price = Decimal('0')
+    for item in items:
+        cumulative_price += Decimal(str(item.price))
+        cumulative_target = (restaurant_payout * cumulative_price / total_items_price).quantize(Decimal('0.01'))
+        item_payout = cumulative_target - distributed_amount
+        distributed_amount += item_payout
 
-            if item_payout <= 0 or not item.section:
-                continue
+        if item_payout <= 0 or not item.section:
+            continue
 
-            wallet, _ = Wallet.objects.get_or_create(section=item.section)
-            WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
+        wallet, _ = Wallet.objects.get_or_create(section=item.section)
+        WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
 
 class RefundPaymentService:
     @staticmethod
@@ -792,9 +658,9 @@ class RefundPaymentService:
         Uses the same restaurant_payout formula as _distribute_restaurant_payout.
         
         NOTE: This only claws back section (stall) wallet credits.
-        Restaurant owner and driver phone payouts (sent via split_settlement)
-        are NOT clawed back — the platform absorbs that loss. A future enhancement
-        could track negative balances or deduct from future payouts.
+        Restaurant owner and driver wallet credits are NOT clawed back —
+        the platform absorbs that loss. A future enhancement could track
+        negative balances or deduct from future payouts.
         """
         from apps.wallets.models import Wallet
         from domain.services.wallet_services import WalletDomainService

@@ -127,14 +127,6 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
             'provider_ref': provider_ref
         }
         
-        # Mock split_settlement (Step 4 - Disbursement)
-        mock_sdk_instance.split_settlement.return_value = {
-            'success': True,
-            'status': 'Success',
-            'transactionId': 'DISB_999'
-        }
-
-
         # --- STEP 1: CREATE ORDER ---
         from django.contrib.gis.geos import Point
         order_url = '/api/orders/'
