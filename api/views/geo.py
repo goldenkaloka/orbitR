@@ -96,7 +96,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
 
         if zone_index:
             data = OperationalZoneMinimalSerializer(zone_index.zone).data
-            cache.set(cache_key, data, 3600)
+            cache.set(cache_key, data, 300)
             return Response(data)
 
         # Expand search to immediate H3 neighbours
@@ -108,7 +108,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
 
         if neighbor_zone:
             data = OperationalZoneMinimalSerializer(neighbor_zone.zone).data
-            cache.set(cache_key, data, 3600)
+            cache.set(cache_key, data, 300)
             return Response(data)
 
         # Fallback: PostGIS spatial containment query.
@@ -121,12 +121,12 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             )
             if spatial_zone:
                 data = OperationalZoneMinimalSerializer(spatial_zone).data
-                cache.set(cache_key, data, 3600)
+                cache.set(cache_key, data, 300)
                 return Response(data)
         except Exception:
             pass
 
-        cache.set(cache_key, {'detail': 'No zone found for these coordinates'}, 600)
+        cache.set(cache_key, {'detail': 'No zone found for these coordinates'}, 300)
         return Response({'detail': 'No zone found for these coordinates'}, status=404)
 
     @action(detail=False, methods=['GET'])
