@@ -65,7 +65,7 @@ class MapboxRoutingService:
             return None
 
         url = (
-            f"https://api.mapbox.com/directions/v5/mapbox/driving/"
+            f"https://api.mapbox.com/directions/v5/mapbox/cycling/"
             f"{origin_lng},{origin_lat};{destination_lng},{destination_lat}"
         )
         params = {
