@@ -591,6 +591,21 @@ class ReleasePaymentService:
                         entry_type='platform_to_driver',
                     )
 
+                # Credit actual wallets so balances reflect in the app
+                if actual_restaurant_payout > 0 and order.restaurant and order.restaurant.owner and not pay_sections_from_platform:
+                    WalletDomainService.credit(
+                        user=order.restaurant.owner,
+                        amount=actual_restaurant_payout,
+                        description=f'Order payout — #{str(order.id)[:8]}',
+                    )
+
+                if actual_driver_payout > 0 and order.driver and order.driver.user:
+                    WalletDomainService.credit(
+                        user=order.driver.user,
+                        amount=actual_driver_payout,
+                        description=f'Delivery payout — #{str(order.id)[:8]}',
+                    )
+
                 if platform_cut > 0:
                     _create_double_entry(
                         payment=payment,
