@@ -500,7 +500,7 @@ class DriverSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
-    is_platform = serializers.BooleanField(source='serves_all', read_only=True)
+    is_platform = serializers.SerializerMethodField()
     recommended = serializers.SerializerMethodField()
     home_zone_name = serializers.CharField(source='home_zone.name', read_only=True)
     current_zone_name = serializers.SerializerMethodField()
@@ -508,7 +508,7 @@ class DriverSerializer(serializers.ModelSerializer):
     class Meta:
         model = Driver
         fields = ['id', 'user', 'status', 'location', 'latitude', 'longitude',
-                  'rating', 'serves_all', 'is_platform', 'can_assign', 'priority',
+                  'rating', 'driver_type', 'is_platform', 'can_assign', 'priority',
                   'home_zone', 'home_zone_name', 'current_zone_name',
                   'max_active_orders', 'current_active_orders', 'recommended']
 
@@ -517,6 +517,9 @@ class DriverSerializer(serializers.ModelSerializer):
 
     def get_longitude(self, obj):
         return obj.location.x if obj.location else None
+
+    def get_is_platform(self, obj):
+        return obj.driver_type == 'platform'
 
     def get_recommended(self, obj):
         return str(obj.id) == self.context.get('recommended_id', '')

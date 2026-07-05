@@ -203,9 +203,9 @@ class AdminViewSet(viewsets.GenericViewSet):
     @action(detail=False, methods=['POST'], url_path='promote-driver')
     def promote_driver(self, request):
         """
-        Promote a registered user to permanent driver.
+        Promote a registered user to platform driver.
         Body: { user_id, ?can_assign, ?priority, ?home_restaurant_id, ?home_zone_id, ?max_active_orders, ?vehicle_type }
-        Admin-promoted drivers are always platform drivers (`serves_all=True`).
+        Admin-promoted drivers are always platform drivers (`driver_type='platform'`).
         """
         user_id = request.data.get('user_id')
         if not user_id:
@@ -233,14 +233,14 @@ class AdminViewSet(viewsets.GenericViewSet):
     def update_driver(self, request):
         """
         Update driver properties.
-        Body: { driver_id, ?serves_all, ?can_assign, ?priority, ?status, ?home_zone_id, ?max_active_orders }
+        Body: { driver_id, ?driver_type, ?can_assign, ?priority, ?status, ?home_zone_id, ?max_active_orders }
         """
         driver_id = request.data.get('driver_id')
         if not driver_id:
             return Response({'error': 'driver_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         fields = {}
-        for key in ('serves_all', 'can_assign', 'priority', 'status', 'home_zone_id',
+        for key in ('driver_type', 'can_assign', 'priority', 'status', 'home_zone_id',
                      'max_active_orders', 'current_active_orders', 'max_radius_km'):
             if key in request.data:
                 fields[key] = request.data[key]

@@ -91,7 +91,6 @@ class BatchViewSet(viewsets.ViewSet):
         available = [
             d for d in drivers
             if d.id != batch.driver.id
-            and d.status in ('AVAILABLE', 'ONLINE')
             and d.current_active_orders < d.max_active_orders
         ]
         return Response(DriverSerializer(available, many=True).data)

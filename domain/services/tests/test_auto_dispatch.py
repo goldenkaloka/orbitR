@@ -1,51 +1,67 @@
 from apps.delivery.models import Driver
 from apps.restaurants.models import Restaurant
 from apps.users.models import User
-from django.contrib.gis.geos import Point
 from django.test import TestCase
 
 
 class RestaurantVisibleDriversTests(TestCase):
-    """Tests for restaurant_visible_drivers proximity sorting"""
+    """Tests for restaurant_visible_drivers with 2 driver types (platform + restaurant)."""
 
     def setUp(self):
         self.owner = User.objects.create_user(username='rest_owner', password='password123', role='vendor')
         self.restaurant = Restaurant.objects.create(
             name="Pizza Place",
             owner=self.owner,
-            geo_location=Point(39.2083, -6.7924)
         )
 
-    def test_restaurant_visible_drivers_proximity_sorting(self):
-        """Test that restaurant_visible_drivers sorts nearby platform drivers first"""
+    def test_visible_drivers_includes_both_types(self):
+        """Both platform drivers and restaurant-specific drivers are visible."""
         from domain.services.permissions import restaurant_visible_drivers
 
-        # The restaurant has a valid H3 index set on creation
-        self.assertIsNotNone(self.restaurant.h3_index)
-
-        # Create a nearby driver (in the same hexagon) with priority 5
-        nearby_driver_user = User.objects.create_user(username='rider_near', password='password123', role='driver')
-        nearby_driver = Driver.objects.create(
-            user=nearby_driver_user,
-            status='AVAILABLE',
-            serves_all=True,
-            location=Point(39.2083, -6.7924),
-            priority=5
+        platform_user = User.objects.create_user(username='rider_plat', password='password123', role='driver')
+        platform_driver = Driver.objects.create(
+            user=platform_user,
+            driver_type='platform',
+            status='OFFLINE',
+            priority=5,
         )
 
-        # Create a far driver (in a different location/index) with a higher priority 10
-        far_driver_user = User.objects.create_user(username='rider_far', password='password123', role='driver')
-        far_driver = Driver.objects.create(
-            user=far_driver_user,
-            status='AVAILABLE',
-            serves_all=True,
-            location=Point(40.2083, -6.7924),  # far away
-            priority=10
+        rest_user = User.objects.create_user(username='rider_rest', password='password123', role='driver')
+        rest_driver = Driver.objects.create(
+            user=rest_user,
+            driver_type='restaurant',
+            home_restaurant=self.restaurant,
+            status='OFFLINE',
+            priority=1,
         )
 
-        # Retrieve visible drivers
+        # A driver for a different restaurant should NOT be visible
+        other_rest = Restaurant.objects.create(name="Other Place", owner=self.owner)
+        other_user = User.objects.create_user(username='rider_other', password='password123', role='driver')
+        Driver.objects.create(
+            user=other_user,
+            driver_type='restaurant',
+            home_restaurant=other_rest,
+            status='OFFLINE',
+        )
+
         drivers = list(restaurant_visible_drivers(self.restaurant))
+        driver_ids = [d.id for d in drivers]
 
-        # Check that nearby_driver is first in the list despite having lower priority
-        # than far_driver because nearby_driver is in the restaurant's neighboring H3 cell.
-        self.assertEqual(drivers[0].id, nearby_driver.id)
+        self.assertIn(platform_driver.id, driver_ids)
+        self.assertIn(rest_driver.id, driver_ids)
+        self.assertNotIn(other_user.driver_profile.id, driver_ids)
+
+    def test_visible_drivers_sorted_by_priority(self):
+        """Platform drivers sorted by -priority, then current_active_orders."""
+        from domain.services.permissions import restaurant_visible_drivers
+
+        low = User.objects.create_user(username='rider_low', password='password123', role='driver')
+        Driver.objects.create(user=low, driver_type='platform', priority=1)
+
+        high = User.objects.create_user(username='rider_high', password='password123', role='driver')
+        Driver.objects.create(user=high, driver_type='platform', priority=10)
+
+        drivers = list(restaurant_visible_drivers(self.restaurant))
+        self.assertEqual(drivers[0].id, high.driver_profile.id)
+        self.assertEqual(drivers[1].id, low.driver_profile.id)

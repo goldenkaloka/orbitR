@@ -516,7 +516,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
         recommended_id = None
         for d in drivers:
-            if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
+            if d.driver_type == 'platform' and d.current_active_orders < d.max_active_orders:
                 recommended_id = str(d.id)
                 break
 

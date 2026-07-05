@@ -31,7 +31,7 @@ class DriverAdmin(LeafletGeoAdminMixin, ModelAdmin):
     inlines = [DeliveryAssignmentInline]
 
     fieldsets = (
-        (None, {'fields': ('id', 'user', 'status', 'home_restaurant', 'home_zone', 'serves_all', 'can_assign')}),
+        (None, {'fields': ('id', 'user', 'status', 'driver_type', 'home_restaurant', 'home_zone', 'can_assign')}),
         ('Vehicle Info', {'fields': ('vehicle_type', 'vehicle_number')}),
         ('Capacity & Quality', {'fields': ('max_active_orders', 'current_active_orders', 'rating')}),
         ('Financials & Stats', {'fields': ('total_earnings', 'today_earnings')}),

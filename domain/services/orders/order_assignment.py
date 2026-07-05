@@ -13,7 +13,6 @@ from domain.services.batch_fsm import BatchFSM
 from domain.services.driver_service import release_driver
 from domain.services.permissions import (
     can_driver_delegate,
-    can_reach_restaurant,
     can_serve_restaurant,
     check_restaurant_permission,
 )
@@ -38,8 +37,6 @@ class AssignDriverService:
             driver = Driver.objects.select_for_update().get(id=driver_id)
             if not can_serve_restaurant(driver, order.restaurant_id):
                 raise PermissionError("Driver cannot serve this restaurant.")
-            if not can_reach_restaurant(driver, order.restaurant):
-                raise PermissionError("Driver is outside this restaurant's service zone.")
 
             order.status = OrderFSM.transition(order.status, 'ASSIGNED')
             order.driver = driver
@@ -114,8 +111,6 @@ class AssignBatchService:
             first_order = batch.orders.first()
             if first_order and not can_serve_restaurant(driver, first_order.restaurant_id):
                 raise PermissionError("Driver cannot serve this restaurant.")
-            if first_order and not can_reach_restaurant(driver, first_order.restaurant):
-                raise PermissionError("Driver is outside this restaurant's service zone.")
 
             orders = list(batch.orders.all())
             new_order_count = len(orders)

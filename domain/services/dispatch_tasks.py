@@ -174,7 +174,7 @@ def pre_assign_drivers_for_batch(batch_id: str):
         drivers = restaurant_visible_drivers(batch.restaurant)
         candidate = None
         for d in drivers:
-            if d.serves_all and d.status in ('AVAILABLE', 'ONLINE') and d.current_active_orders < d.max_active_orders:
+            if d.driver_type == 'platform' and d.current_active_orders < d.max_active_orders:
                 candidate = d
                 break
 

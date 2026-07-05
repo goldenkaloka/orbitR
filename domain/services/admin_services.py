@@ -62,6 +62,11 @@ class PromoteUserService:
 
     @staticmethod
     def to_driver(user_id: str, **extra_fields):
+        """
+        Admin promotes a user to platform driver.
+        Platform drivers (driver_type='platform') can optionally be assigned a
+        home_zone — they can then serve all restaurants within that zone.
+        """
         with transaction.atomic():
             user = User.objects.select_for_update().get(id=user_id)
             if user.role != 'customer':
@@ -71,15 +76,15 @@ class PromoteUserService:
             user.role = 'driver'
             user.save(update_fields=['role'])
 
-            defaults = {'status': 'OFFLINE', 'serves_all': True}
+            defaults = {'status': 'OFFLINE', 'driver_type': 'platform'}
             allowed_fields = {
-                'serves_all', 'can_assign', 'priority', 'home_restaurant_id',
+                'can_assign', 'priority', 'home_restaurant_id',
                 'home_zone_id', 'max_active_orders', 'vehicle_type',
             }
             for key in allowed_fields:
                 if key in extra_fields and extra_fields[key] is not None:
                     defaults[key] = extra_fields[key]
-            defaults['serves_all'] = True
+            defaults['driver_type'] = 'platform'
 
             driver, created = Driver.objects.get_or_create(
                 user=user,
@@ -220,6 +225,11 @@ class DisputeResolutionService:
 class RegisterTempDriverService:
     @staticmethod
     def execute(user_id: str, restaurant_id: str):
+        """
+        Vendor registers a customer as a restaurant driver.
+        Restaurant drivers (driver_type='restaurant') are tied to exactly one
+        restaurant via home_restaurant. They can only serve their own restaurant.
+        """
         with transaction.atomic():
             user = User.objects.select_for_update().get(id=user_id)
             restaurant = Restaurant.objects.get(id=restaurant_id)
@@ -232,6 +242,7 @@ class RegisterTempDriverService:
                 user=user,
                 defaults={
                     'home_restaurant': restaurant,
+                    'driver_type': 'restaurant',
                     'status': 'ONLINE',
                 }
             )
@@ -320,7 +331,7 @@ class UpdateDriverService:
         with transaction.atomic():
             driver = Driver.objects.select_for_update().get(id=driver_id)
             allowed = {
-                'status', 'serves_all', 'can_assign', 'priority',
+                'status', 'driver_type', 'can_assign', 'priority',
                 'home_zone_id', 'max_active_orders', 'current_active_orders',
                 'max_radius_km',
             }

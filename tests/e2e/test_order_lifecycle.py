@@ -245,7 +245,7 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
         # Grant delegation permission (platform driver status) and delegate successfully
-        self.driver.serves_all = True
+        self.driver.driver_type = 'platform'
         self.driver.save()
         
         response = self.client.post(delegate_url, {'new_driver_id': str(second_driver.id)}, format='json')

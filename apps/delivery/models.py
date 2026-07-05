@@ -15,19 +15,20 @@ class Driver(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='driver_profile')
     status = models.CharField(max_length=50, default='OFFLINE', db_index=True)
     last_heartbeat = models.DateTimeField(null=True, blank=True, db_index=True)
+    driver_type = models.CharField(
+        max_length=20, default='restaurant', db_index=True,
+        choices=(('platform', 'Platform Driver'), ('restaurant', 'Restaurant Driver')),
+        help_text='platform=serves all restaurants, restaurant=tied to home_restaurant'
+    )
     home_restaurant = models.ForeignKey(
         'restaurants.Restaurant', on_delete=models.CASCADE,
         related_name='drivers', null=True, blank=True,
-        help_text='Home restaurant this driver is affiliated with'
+        help_text='Home restaurant this driver is affiliated with (restaurant drivers only)'
     )
     home_zone = models.ForeignKey(
         'geo.OperationalZone', on_delete=models.SET_NULL,
         related_name='drivers', null=True, blank=True,
-        help_text='Base operational zone used to identify the driver when offline'
-    )
-    serves_all = models.BooleanField(
-        default=False,
-        help_text='Platform driver — can serve orders from any restaurant'
+        help_text='Assigned operational zone (platform drivers only)'
     )
     can_assign = models.BooleanField(
         default=False,
