@@ -97,16 +97,14 @@ class OrderPrepSmsService:
             "Tafadhali anza kuandaa sasa.",
         ])
 
-        messages = {}
         owner_phone = _clean_phone(order.restaurant.owner.phone)
-        if owner_phone:
-            messages[owner_phone] = owner_message
 
         section_ids = {item.section_id for item in items if item.section_id}
-        staff_rows = (
+        staff_rows = list(
             SectionStaff.objects.filter(section_id__in=section_ids)
             .select_related('user', 'section')
         )
+        messages = {}
         staff_lines = defaultdict(list)
         for item in items:
             if not item.section_id:
@@ -126,6 +124,9 @@ class OrderPrepSmsService:
                 *lines,
                 "Tafadhali anza kuandaa sasa.",
             ])
+
+        if not messages and owner_phone:
+            messages[owner_phone] = owner_message
 
         _send_once(messages)
 
@@ -174,11 +175,9 @@ class OrderPrepSmsService:
 
         owner_lines.append("Tafadhali kila stall ianze kuandaa sasa.")
 
-        messages = {}
         owner_phone = _clean_phone(restaurant.owner.phone)
-        if owner_phone:
-            messages[owner_phone] = "\n".join(owner_lines)
 
+        messages = {}
         staff_rows = (
             SectionStaff.objects.filter(section_id__in=section_item_lines.keys())
             .select_related('user', 'section')
@@ -196,5 +195,8 @@ class OrderPrepSmsService:
                 *lines,
                 "Tafadhali anza kuandaa sasa.",
             ])
+
+        if not messages and owner_phone:
+            messages[owner_phone] = "\n".join(owner_lines)
 
         _send_once(messages)

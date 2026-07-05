@@ -44,6 +44,8 @@ class SectionViewSet(viewsets.ModelViewSet):
         restaurant = instance.restaurant
         if restaurant.owner != self.request.user:
             raise PermissionDenied('Only the restaurant owner can delete sections')
+        if RestaurantSection.objects.filter(restaurant=restaurant).count() <= 1:
+            raise PermissionDenied('A restaurant must keep at least one section')
         instance.delete()
         invalidate_restaurant_cache(restaurant)
 
@@ -67,6 +69,11 @@ class SectionViewSet(viewsets.ModelViewSet):
             target_user = AppUser.objects.get(id=user_id)
         except AppUser.DoesNotExist:
             return Response({'error': 'User not found'}, status=404)
+
+        if target_user.id == section.restaurant.owner_id:
+            return Response({
+                'error': 'Restaurant owner already has full access and cannot be assigned as stall staff'
+            }, status=400)
 
         staff, created = SectionStaff.objects.get_or_create(
             user=target_user,

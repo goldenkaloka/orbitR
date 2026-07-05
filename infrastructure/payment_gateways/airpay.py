@@ -52,6 +52,12 @@ class AirpayGateway(PaymentGateway):
             import time
             order_id = str(int(time.time() * 1000000))[-15:]
             bank_code = kwargs.get('bank_code') or self._get_bank_code(phone)
+            if bank_code not in ('TIGO', 'AIRTEL'):
+                return {
+                    'success': False,
+                    'error': 'AirPay currently supports only Tigo Pesa and Airtel Money.',
+                    'code': 'UNSUPPORTED_PROVIDER',
+                }
             
             payload = {
                 'buyer_email': kwargs.get('buyer_email', 'customer@mwanachuo.tz'),
@@ -161,7 +167,7 @@ class AirpayGateway(PaymentGateway):
     def _get_bank_code(self, phone):
         """
         Determines the Tanzania mobile operator based on phone prefix.
-        Defaults to MPESA if unknown.
+        Returns None when the phone prefix is not currently supported.
         """
         p = str(phone).replace('+', '')
         if p.startswith('255'): p = p[3:]
@@ -177,7 +183,7 @@ class AirpayGateway(PaymentGateway):
         # Halotel: 61, 62
         if prefix in ['61', '62']: return 'HALOPESA'
         
-        return 'MPESA' # Fallback
+        return None
 
     def verify(self, response_data):
         """

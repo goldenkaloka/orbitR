@@ -64,7 +64,7 @@ class InitiatePaymentView(APIView):
                 if gateway_data.get('endpoint'):
                     base_response["endpoint"] = gateway_data['endpoint']
             else:
-                base_response["error"] = 'Payment initiation failed'
+                base_response["error"] = gateway_data.get('error') or 'Payment initiation failed'
                 base_response["code"] = gateway_data.get('code')
 
             return Response(base_response)

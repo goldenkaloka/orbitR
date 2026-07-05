@@ -33,6 +33,7 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 # Mocking settings for testing
 MOCK_PAYMENTS = config('MOCK_PAYMENTS', default=False, cast=bool)
 DISPATCH_DEBUG = config('DISPATCH_DEBUG', default=DEBUG, cast=bool)
+ALLOW_DRIVER_SIMULATION = config('ALLOW_DRIVER_SIMULATION', default=DEBUG, cast=bool)
 BATCH_DRIVER_ALERT_REMINDER_MINUTES = config('BATCH_DRIVER_ALERT_REMINDER_MINUTES', default=10, cast=int)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,backend', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])

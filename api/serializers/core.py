@@ -1,3 +1,4 @@
+import uuid
 from decimal import Decimal
 
 from api.serializers.utils import parse_coordinate_dict
@@ -10,6 +11,7 @@ from apps.users.models import User
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
 from rest_framework import serializers
+from django.core.files.storage import default_storage
 
 
 class NotificationSerializer(serializers.ModelSerializer):
@@ -104,7 +106,10 @@ class FoodSerializer(serializers.ModelSerializer):
                 if restaurant and section.restaurant != restaurant:
                     raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
         elif self.instance is None:
-            raise serializers.ValidationError({"section": "Section (Stall) is required."})
+            request = self.context.get('request')
+            user = getattr(request, 'user', None) if request else None
+            if not user or not getattr(user, 'is_authenticated', False):
+                raise serializers.ValidationError({"section": "Section is required."})
         return attrs
 
     def get_image_url(self, obj):
@@ -526,10 +531,38 @@ class DriverSerializer(serializers.ModelSerializer):
 
 
 class DeliveryProofSerializer(serializers.ModelSerializer):
+    proof_image = serializers.FileField(write_only=True, required=False)
+
     class Meta:
         model = DeliveryProof
-        fields = '__all__'
-        read_only_fields = ['id', 'created_at', 'verified_at']
+        fields = [
+            'id', 'order', 'delivered_by', 'photo_url', 'proof_image',
+            'verified_at', 'created_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'verified_at', 'delivered_by']
+
+    def validate(self, attrs):
+        if not attrs.get('proof_image') and not attrs.get('photo_url'):
+            raise serializers.ValidationError({
+                'proof_image': 'Delivery proof photo is required.'
+            })
+        return attrs
+
+    def create(self, validated_data):
+        proof_image = validated_data.pop('proof_image', None)
+        if proof_image:
+            safe_name = proof_image.name.replace('\\', '_').replace('/', '_')
+            path = default_storage.save(
+                f'delivery_proofs/{uuid.uuid4()}_{safe_name}',
+                proof_image,
+            )
+            validated_data['photo_url'] = default_storage.url(path)
+        order = validated_data.pop('order')
+        proof, _ = DeliveryProof.objects.update_or_create(
+            order=order,
+            defaults=validated_data,
+        )
+        return proof
 
 class DisputeSerializer(serializers.ModelSerializer):
     class Meta:

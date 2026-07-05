@@ -34,10 +34,16 @@ class MenuService:
                 if staff_sec:
                     food_kwargs['section'] = staff_sec.section
                 else:
-                    # Fallback to the first section of the restaurant
+                    # Owner-operated restaurants use an implicit default section.
                     first_section = RestaurantSection.objects.filter(restaurant=restaurant).first()
                     if not first_section:
-                        raise ValueError("A section (stall) must be created before adding foods.")
+                        first_section = RestaurantSection.objects.create(
+                            restaurant=restaurant,
+                            name='Main Kitchen',
+                            specialization='General',
+                            description='Default preparation area',
+                            prep_time=restaurant.average_prep_time or 20,
+                        )
                     food_kwargs['section'] = first_section
 
             food = Food.objects.create(**food_kwargs)

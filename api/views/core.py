@@ -714,6 +714,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 staff_section_ids = list(SectionStaff.objects.filter(user=user).values_list('section_id', flat=True))
                 if staff_section_ids:
                     wallet, _ = Wallet.objects.get_or_create(section_id=staff_section_ids[0])
+                    restaurant = Restaurant.objects.filter(
+                        sections__id__in=staff_section_ids
+                    ).distinct().first()
                     orders = Order.objects.filter(
                         items__section_id__in=staff_section_ids,
                         created_at__gte=start_of_day,
@@ -722,6 +725,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                     ).distinct()
                 else:
                     wallet, _ = Wallet.objects.get_or_create(user=user)
+                    restaurant = Restaurant.objects.filter(owner=user).first()
                     orders = Order.objects.filter(
                         restaurant__owner=user,
                         created_at__gte=start_of_day,
@@ -734,6 +738,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 vendor_fault_cancellations = orders.filter(cancellation_fault='VENDOR').count()
                 public_reputation_cancellations = orders.filter(affects_restaurant_reputation=True).count()
                 cancellation_rate = round((cancelled_count / count) * 100, 2) if count else 0
+                configured_prep_minutes = restaurant.average_prep_time if restaurant else 20
 
                 avg_prep_duration = orders.filter(
                     confirmed_at__isnull=False,
@@ -756,7 +761,9 @@ class OrderViewSet(viewsets.ModelViewSet):
                 data = {
                     "revenue_today": float(revenue),
                     "orders_today": count,
-                    "avg_prep_time": avg_prep,
+                    "avg_prep_time": f"{configured_prep_minutes} min",
+                    "configured_prep_time": configured_prep_minutes,
+                    "actual_avg_prep_time": avg_prep,
                     "wallet_balance": float(wallet.balance),
                     "pending_payout": float(wallet.pending_balance),
                     "cancelled_orders_today": cancelled_count,
@@ -955,6 +962,27 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         try:
             order = DeliverOrderService.execute(pk, request.user, otp=otp, bypass_geofence=bypass)
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (ValueError, InvalidStateTransitionError) as e:
+            return Response({"error": str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='simulate-deliver')
+    def simulate_deliver(self, request, pk=None):
+        if not settings.ALLOW_DRIVER_SIMULATION:
+            return Response({"error": "Driver simulation is disabled"}, status=403)
+
+        try:
+            order = Order.objects.get(id=pk)
+            if not order.delivery_otp:
+                return Response({"error": "Order must be picked up before simulated delivery"}, status=400)
+            order = DeliverOrderService.execute(
+                pk,
+                request.user,
+                otp=order.delivery_otp,
+                bypass_geofence=False,
+            )
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)
