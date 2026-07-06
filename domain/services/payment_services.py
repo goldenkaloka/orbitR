@@ -171,8 +171,8 @@ def _hold_escrow(amount: Decimal):
 def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
     """Move amount from escrow to cleared balance on disbursement."""
     wallet = _get_platform_wallet()
-    wallet.pending_balance -= total_amount
-    wallet.balance += platform_cut
+    wallet.pending_balance -= total_amount.quantize(Decimal('0.01'))
+    wallet.balance += platform_cut.quantize(Decimal('0.01'))
     wallet.save()
 
 
@@ -415,18 +415,18 @@ class ReleasePaymentService:
                     'restaurant', 'restaurant__owner', 'batch', 'driver', 'driver__user'
                 ).get(id=payment.payable_id)
                 commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
-                restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
+                restaurant_payout = (Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
 
                 if order.batch and order.batch.driver_payout:
                     batch_order_count = order.batch.orders.count()
-                    driver_payout = order.batch.driver_payout / batch_order_count if batch_order_count > 0 else Decimal('0')
+                    driver_payout = (order.batch.driver_payout / batch_order_count).quantize(Decimal('0.01')) if batch_order_count > 0 else Decimal('0')
                 elif order.driver:
                     from domain.services.pricing_service import PricingService
                     policy = PricingService.get_active_policy()
                     driver_share = Decimal('0.90')
                     if policy and policy.single_order_driver_share:
                         driver_share = policy.single_order_driver_share
-                    driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
+                    driver_payout = (Decimal(str(order.delivery_fee or 0)) * driver_share).quantize(Decimal('0.01'))
                 else:
                     driver_payout = Decimal('0')
 
@@ -437,13 +437,13 @@ class ReleasePaymentService:
                 ).get(id=payment.payable_id)
                 OrderPool.objects.select_for_update().get(id=member.pool_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
-                restaurant_payout = Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)
+                restaurant_payout = (Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
 
                 if member.pool.batch and member.pool.batch.driver_payout:
                     paid_member_count = member.pool.members.filter(status='PAID').count()
-                    driver_payout = member.pool.batch.driver_payout / paid_member_count if paid_member_count > 0 else Decimal('0')
+                    driver_payout = (member.pool.batch.driver_payout / paid_member_count).quantize(Decimal('0.01')) if paid_member_count > 0 else Decimal('0')
                 else:
-                    driver_payout = Decimal(str(member.delivery_fee_share or 0))
+                    driver_payout = Decimal(str(member.delivery_fee_share or 0)).quantize(Decimal('0.01'))
 
                 # Use this specific member's order (not just any pool order) so that
                 # _distribute_restaurant_payout uses the right items for section credit.
@@ -470,7 +470,7 @@ class ReleasePaymentService:
             if net_collected_amount < 0:
                 raise ValueError("Refunded amount exceeds collected payment amount.")
 
-            platform_cut = net_collected_amount - restaurant_payout - driver_payout
+            platform_cut = (net_collected_amount - restaurant_payout - driver_payout).quantize(Decimal('0.01'))
             if platform_cut < 0:
                 # Driver minimum guarantee can exceed what a single order's slice of the
                 # delivery/service fee covers.  The platform absorbs the shortfall rather
