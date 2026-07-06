@@ -16,8 +16,8 @@ from domain.services.permissions import check_restaurant_permission
 
 logger = logging.getLogger(__name__)
 
-PICKUP_GEOFENCE_RADIUS_METERS = 300
-DELIVERY_GEOFENCE_RADIUS_METERS = 300
+PICKUP_GEOFENCE_RADIUS_METERS = 6000
+DELIVERY_GEOFENCE_RADIUS_METERS = 6000
 
 
 class StartPreparingService:

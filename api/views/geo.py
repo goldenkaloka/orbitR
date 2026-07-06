@@ -167,8 +167,8 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['GET'])
     def autocomplete(self, request):
         """
-        Proxy for location search. Tries Mapbox Search Box first,
-        falls back to Geocoding v5 if it returns no results.
+        Location search. Returns local operational zones first
+        (by name match), then Mapbox results as additional suggestions.
         """
         query = request.query_params.get('q', '')
         if not query or len(query) < 2:
@@ -182,33 +182,46 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         if cached is not None:
             return Response(cached)
 
-        err = _mapbox_token_or_503(Response)
-        if err:
-            return err
-
         results = []
 
-        # ── Search Box API ────────────────────────────────────────────────
-        try:
-            url = (
-                f'https://api.mapbox.com/search/searchbox/v1/forward'
-                f'?access_token={_MAPBOX_TOKEN}'
-                f'&q={urllib.parse.quote(query)}'
-                f'&country=tz&limit=10&types=poi,address,place,locality'
-            )
-            if lat and lng:
-                url += f'&proximity={lng},{lat}'
-            resp = req_lib.get(url, timeout=5)
-            if resp.status_code == 200:
-                results = [
-                    _parse_searchbox_feature(f)
-                    for f in resp.json().get('features', [])
-                ]
-        except Exception as exc:
-            logger.warning('Search Box autocomplete failed: %s', exc)
+        # ── Local operational zones first ─────────────────────────────────
+        zone_names = set()
+        for zone in OperationalZone.objects.filter(is_active=True, name__icontains=query):
+            zone_names.add(zone.name.lower())
+            centroid = zone.boundary.centroid if zone.boundary else None
+            results.append({
+                'id': str(zone.id),
+                'name': zone.name,
+                'address': zone.description or '',
+                'lat': centroid.y if centroid else 0,
+                'lng': centroid.x if centroid else 0,
+                'feature_type': 'zone',
+                'source': 'local',
+            })
 
-        # ── Geocoding v5 fallback ─────────────────────────────────────────
-        if not results:
+        # ── Mapbox Search Box (additional suggestions) ────────────────────
+        err = _mapbox_token_or_503(Response)
+        if not err:
+            try:
+                url = (
+                    f'https://api.mapbox.com/search/searchbox/v1/forward'
+                    f'?access_token={_MAPBOX_TOKEN}'
+                    f'&q={urllib.parse.quote(query)}'
+                    f'&country=tz&limit=10&types=poi,address,place,locality'
+                )
+                if lat and lng:
+                    url += f'&proximity={lng},{lat}'
+                resp = req_lib.get(url, timeout=5)
+                if resp.status_code == 200:
+                    for feature in resp.json().get('features', []):
+                        parsed = _parse_searchbox_feature(feature)
+                        if parsed['name'].lower() not in zone_names:
+                            results.append(parsed)
+            except Exception as exc:
+                logger.warning('Search Box autocomplete failed: %s', exc)
+
+        # ── Geocoding v5 fallback (only if nothing found at all) ──────────
+        if not results and not err:
             try:
                 url = (
                     f'https://api.mapbox.com/geocoding/v5/mapbox.places'
@@ -226,7 +239,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             except Exception as exc:
                 logger.error('Geocoding v5 autocomplete fallback failed: %s', exc)
 
-        cache.set(cache_key, results, 3600)
+        cache.set(cache_key, results, 300)
         return Response(results)
 
     @action(detail=False, methods=['GET'])
