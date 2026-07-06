@@ -445,7 +445,22 @@ class ReleasePaymentService:
                 else:
                     driver_payout = Decimal(str(member.delivery_fee_share or 0))
 
-                order = Order.objects.filter(pool=member.pool).order_by('-created_at').first()
+                # Use this specific member's order (not just any pool order) so that
+                # _distribute_restaurant_payout uses the right items for section credit.
+                order = Order.objects.select_related(
+                    'restaurant', 'restaurant__owner', 'driver', 'driver__user', 'batch'
+                ).filter(pool=member.pool, customer=member.user).first()
+
+                # Fallback: any order from the pool (e.g. if customer field differs)
+                if not order:
+                    order = Order.objects.select_related(
+                        'restaurant', 'restaurant__owner', 'driver', 'driver__user', 'batch'
+                    ).filter(pool=member.pool).order_by('-created_at').first()
+
+                # Pool order drivers are set on the batch, not the order directly.
+                # Resolve the driver from the batch if order.driver is None.
+                if order and not order.driver and order.batch_id and order.batch.driver:
+                    order.driver = order.batch.driver
 
             if not order:
                 raise ValueError("No payout target found for this payment.")

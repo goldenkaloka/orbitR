@@ -43,11 +43,33 @@ class WalletViewSet(viewsets.GenericViewSet):
         staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
         if staff_link:
             wallet, _ = Wallet.objects.get_or_create(section=staff_link.section)
-        else:
-            wallet, _ = Wallet.objects.get_or_create(user=request.user)
+            wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
+            serializer = self.get_serializer(wallet)
+            return Response(serializer.data)
+
+        # User wallet (covers customers, drivers, vendors with no dedicated staff section)
+        wallet, _ = Wallet.objects.get_or_create(user=request.user)
         wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
-        serializer = self.get_serializer(wallet)
-        return Response(serializer.data)
+
+        # For vendors: aggregate all section wallets into the balance shown.
+        # This ensures the wallet sheet shows the same total as the stats card.
+        extra_balance = Decimal('0')
+        extra_pending = Decimal('0')
+        from apps.restaurants.models import Restaurant
+        restaurant = Restaurant.objects.filter(owner=request.user).first()
+        if restaurant:
+            from django.db.models import Sum
+            section_balances = Wallet.objects.filter(
+                section__restaurant=restaurant
+            ).aggregate(b=Sum('balance'), p=Sum('pending_balance'))
+            extra_balance = Decimal(str(section_balances['b'] or 0))
+            extra_pending = Decimal(str(section_balances['p'] or 0))
+
+        data = self.get_serializer(wallet).data
+        if extra_balance or extra_pending:
+            data['balance'] = str(Decimal(str(data['balance'])) + extra_balance)
+            data['pending_balance'] = str(Decimal(str(data['pending_balance'])) + extra_pending)
+        return Response(data)
 
     @action(detail=False, methods=['POST'])
     def calculate_fees(self, request):

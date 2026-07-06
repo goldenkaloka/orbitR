@@ -130,7 +130,7 @@ def invalidate_restaurant_cache(restaurant):
 def _release_payment_sync(order):
     """Release payment and credit wallets synchronously after delivery.
 
-    Called from deliver and simulate-deliver endpoints so wallet
+    Called from deliver and complete-pickup endpoints so wallet
     credit is immediate and does not depend on Celery. Idempotent via the
     DISBURSED guard inside ReleasePaymentService.
     """
@@ -1005,43 +1005,6 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         try:
             order = DeliverOrderService.execute(pk, request.user, otp=otp, bypass_geofence=bypass)
-            _release_payment_sync(order)
-            return Response(OrderSerializer(order).data)
-        except PermissionError as e:
-            return Response({"error": str(e)}, status=403)
-        except (ValueError, InvalidStateTransitionError) as e:
-            return Response({"error": str(e)}, status=400)
-
-    @action(detail=True, methods=['POST'], url_path='simulate-deliver')
-    def simulate_deliver(self, request, pk=None):
-        if not settings.ALLOW_DRIVER_SIMULATION:
-            return Response({"error": "Driver simulation is disabled"}, status=403)
-
-        try:
-            from apps.payments.models import Payment
-
-            order = Order.objects.get(id=pk)
-            if not order.delivery_otp:
-                return Response({"error": "Order must be picked up before simulated delivery"}, status=400)
-
-            if not Payment.objects.filter(payable_type='order', payable_id=str(order.id)).exists():
-                Payment.objects.create(
-                    payable_type='order',
-                    payable_id=str(order.id),
-                    order=order,
-                    amount=order.total_amount or 0,
-                    status='COLLECTED',
-                    provider_reference=f"SIM_{order.id}",
-                )
-                order.is_paid = True
-                order.save(update_fields=['is_paid'])
-
-            order = DeliverOrderService.execute(
-                pk,
-                request.user,
-                otp=order.delivery_otp,
-                bypass_geofence=False,
-            )
             _release_payment_sync(order)
             return Response(OrderSerializer(order).data)
         except PermissionError as e:

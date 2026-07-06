@@ -103,10 +103,9 @@ class DriverViewSet(viewsets.ModelViewSet):
             return Response({"error": "lat/lng out of range"}, status=400)
 
         driver = request.user.driver_profile
-        is_simulation = bool(request.data.get('simulate')) and settings.ALLOW_DRIVER_SIMULATION
 
         cache_key = f"driver_loc_throttle_{driver.id}"
-        if not is_simulation and cache.get(cache_key):
+        if cache.get(cache_key):
             return Response({'status': 'throttled', 'message': 'Location updates too frequent'}, status=200)
 
         if driver.status not in ['AVAILABLE', 'DELIVERING']:
@@ -114,7 +113,7 @@ class DriverViewSet(viewsets.ModelViewSet):
 
         new_loc = Point(lng_f, lat_f, srid=4326)
 
-        if driver.location and not is_simulation:
+        if driver.location:
             dist = haversine_distance(driver.location, new_loc)
             if dist < 50:
                 driver.last_heartbeat = timezone.now()
@@ -127,9 +126,7 @@ class DriverViewSet(viewsets.ModelViewSet):
         driver.last_heartbeat = timezone.now()
         driver.save(update_fields=['location', 'h3_index', 'last_heartbeat'])
 
-
-        if not is_simulation:
-            cache.set(cache_key, True, 10)
+        cache.set(cache_key, True, 10)
 
         from apps.delivery.tasks import broadcast_driver_location
         active_orders = Order.objects.filter(driver=driver, status__in=['ASSIGNED', 'PICKED'])
