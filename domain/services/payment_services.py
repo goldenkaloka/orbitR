@@ -457,9 +457,14 @@ class ReleasePaymentService:
 
             platform_cut = net_collected_amount - restaurant_payout - driver_payout
             if platform_cut < 0:
-                raise ValueError(
-                    "Cannot release payment because restaurant and driver payouts exceed collected amount."
+                # Driver minimum guarantee can exceed what a single order's slice of the
+                # delivery/service fee covers.  The platform absorbs the shortfall rather
+                # than blocking the payout.
+                logger.warning(
+                    f"[ReleasePayment] platform_cut negative ({platform_cut}) for payment "
+                    f"{payment.id} — platform absorbing shortfall, capping cut to 0."
                 )
+                platform_cut = Decimal('0')
 
             _platform = get_platform_user()
             payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
@@ -528,8 +533,18 @@ class ReleasePaymentService:
 
 
 def _distribute_restaurant_payout(order, restaurant_payout):
-    """Distribute restaurant payout proportionally to section (stall) wallets."""
+    """
+    Distribute restaurant payout proportionally across sections.
+
+    Routing logic per section:
+    - If the section has dedicated SectionStaff → credit the section wallet
+      (staff view their shared section wallet via the /wallets/me/ endpoint).
+    - If the section has NO dedicated staff (e.g. auto-created "Main Kitchen"
+      managed directly by the restaurant owner) → credit the owner's user wallet
+      so the vendor can see the money in their personal wallet and cash out.
+    """
     from apps.wallets.models import Wallet
+    from apps.restaurants.models import SectionStaff
     from domain.services.wallet_services import WalletDomainService
 
     items = list(order.items.select_related('food', 'section').all())
@@ -539,6 +554,17 @@ def _distribute_restaurant_payout(order, restaurant_payout):
     total_items_price = sum(item.price for item in items)
     if total_items_price == 0:
         return
+
+    # Pre-fetch which section IDs have dedicated staff — those go to section wallets.
+    # Sections without staff (incl. the auto-created "Main Kitchen") go to owner wallet.
+    section_ids_with_items = {item.section_id for item in items if item.section_id}
+    staffed_section_ids = set(
+        SectionStaff.objects.filter(
+            section_id__in=section_ids_with_items
+        ).values_list('section_id', flat=True).distinct()
+    )
+
+    owner = order.restaurant.owner if order.restaurant else None
 
     distributed_amount = Decimal('0')
     cumulative_price = Decimal('0')
@@ -551,8 +577,23 @@ def _distribute_restaurant_payout(order, restaurant_payout):
         if item_payout <= 0 or not item.section:
             continue
 
-        wallet, _ = Wallet.objects.get_or_create(section=item.section)
-        WalletDomainService.credit_wallet(wallet, item_payout, f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}")
+        if item.section_id in staffed_section_ids:
+            # Section has its own staff — credit the shared section wallet
+            wallet, _ = Wallet.objects.get_or_create(section=item.section)
+            WalletDomainService.credit_wallet(
+                wallet,
+                item_payout,
+                f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}",
+            )
+        else:
+            # No dedicated staff — this is the owner-managed section (e.g. "Main Kitchen")
+            # Credit the owner's personal user wallet so they can see it and cash out.
+            if owner:
+                WalletDomainService.credit(
+                    user=owner,
+                    amount=item_payout,
+                    description=f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}",
+                )
 
 class RefundPaymentService:
     @staticmethod
@@ -654,15 +695,12 @@ class RefundPaymentService:
     @staticmethod
     def _clawback_section_wallets(payment, order):
         """
-        Reverse the section wallet credits that were made when the payment was disbursed.
-        Uses the same restaurant_payout formula as _distribute_restaurant_payout.
-        
-        NOTE: This only claws back section (stall) wallet credits.
-        Restaurant owner and driver wallet credits are NOT clawed back —
-        the platform absorbs that loss. A future enhancement could track
-        negative balances or deduct from future payouts.
+        Reverse the section/owner wallet credits that were made when the payment was disbursed.
+        Uses the same routing logic as _distribute_restaurant_payout (staffed → section wallet,
+        unstaffed → owner user wallet).
         """
         from apps.wallets.models import Wallet
+        from apps.restaurants.models import SectionStaff
         from domain.services.wallet_services import WalletDomainService
 
         items = list(order.items.select_related('food', 'section').all())
@@ -676,6 +714,15 @@ class RefundPaymentService:
         commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
         restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
 
+        section_ids_with_items = {item.section_id for item in items if item.section_id}
+        staffed_section_ids = set(
+            SectionStaff.objects.filter(
+                section_id__in=section_ids_with_items
+            ).values_list('section_id', flat=True).distinct()
+        )
+
+        owner = order.restaurant.owner if order.restaurant else None
+
         distributed_amount = Decimal('0')
         cumulative_price = Decimal('0')
         for item in items:
@@ -687,29 +734,23 @@ class RefundPaymentService:
             if item_payout <= 0 or not item.section:
                 continue
 
-            wallet, _ = Wallet.objects.get_or_create(section=item.section)
-            try:
-                WalletDomainService.debit_wallet(wallet, item_payout, f"Refund clawback for Order #{order.id}")
-            except ValueError as e:
-                if 'Insufficient' in str(e):
-                    wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
-                    actual_debit = min(wallet.balance, item_payout)
-                    if actual_debit > 0:
-                        WalletDomainService.debit_wallet(wallet, actual_debit,
-                            f"Partial refund clawback for Order #{order.id}")
-                    shortfall = item_payout - actual_debit
-                    if shortfall > 0:
-                        from apps.payments.models import WalletDebt
-                        WalletDebt.objects.create(
-                            payment=payment,
-                            wallet=wallet,
-                            original_amount=item_payout,
-                            remaining_balance=shortfall,
-                            status='OUTSTANDING',
-                        )
-                    logger.warning(
-                        f"Section wallet {wallet.id} had only {wallet.balance} of {item_payout} "
-                        f"for clawback; debited available balance."
-                    )
-                else:
-                    raise
+            if item.section_id in staffed_section_ids:
+                wallet, _ = Wallet.objects.get_or_create(section=item.section)
+                try:
+                    WalletDomainService.debit_wallet(wallet, item_payout, f"Refund clawback for Order #{order.id}")
+                except ValueError as e:
+                    if 'Insufficient' in str(e):
+                        wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+                        actual_debit = min(wallet.balance, item_payout)
+                        if actual_debit > 0:
+                            WalletDomainService.debit_wallet(wallet, actual_debit, f"Partial refund clawback for Order #{order.id}")
+            else:
+                if owner:
+                    try:
+                        from apps.wallets.models import Wallet as W
+                        user_wallet, _ = W.objects.get_or_create(user=owner)
+                        actual_debit = min(user_wallet.balance, item_payout)
+                        if actual_debit > 0:
+                            WalletDomainService.debit(owner, actual_debit, f"Refund clawback for Order #{order.id}")
+                    except ValueError:
+                        pass

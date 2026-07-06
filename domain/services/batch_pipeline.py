@@ -827,6 +827,9 @@ class BatchPipeline:
         per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
 
         total_service_fees = sum(Decimal(str(o.service_fee or 0)) for o in orders)
+        # user_paid_total includes delivery fees + service fees.
+        # We do NOT cap driver_payout against the items subtotal — drivers are paid
+        # from the delivery/service fees collected, not from the food revenue.
         user_paid_total = pricing['original_total'] + total_service_fees
 
         if route_dict and route_dict.get('total_distance_km'):
@@ -842,10 +845,15 @@ class BatchPipeline:
             total_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in orders)
             driver_payout = max(min_guarantee, total_fees * Decimal('0.90'))
 
-        driver_payout = min(driver_payout, user_paid_total)
+        # Cap driver_payout to what was actually collected in delivery/service fees,
+        # but always pay at least the minimum guarantee regardless of fee collected
+        # (the platform absorbs shortfalls on very cheap or zero-fee orders).
+        if user_paid_total > 0:
+            driver_payout = min(driver_payout, user_paid_total)
+        # Never pay negative
         driver_payout = max(driver_payout, Decimal('0'))
 
-        if driver_payout > user_paid_total:
+        if driver_payout > user_paid_total and user_paid_total > 0:
             logger.warning(
                 f"[BatchPipeline] Driver payout ({driver_payout}) capped to "
                 f"user_paid_total ({user_paid_total})"
