@@ -78,8 +78,8 @@ class Restaurant(models.Model):
     commission_rate = models.DecimalField(
         max_digits=4, 
         decimal_places=3, 
-        default=Decimal('0.100'),
-        help_text="Percentage of food subtotal taken by the platform (e.g., 0.100 for 10%)"
+        default=Decimal('0.050'),
+        help_text="Percentage of food subtotal taken by the platform (e.g., 0.050 for 5%)"
     )
 
     category = models.CharField(max_length=100, default='General', db_index=True)

@@ -15,7 +15,7 @@ from rest_framework.response import Response
 logger = logging.getLogger(__name__)
 
 # Fee constants
-INSTANT_FEE_PERCENT = Decimal('0.01')  # 1%
+INSTANT_FEE_PERCENT = Decimal('0.005')  # 0.5%
 MINIMUM_CASHOUT = Decimal('1000')  # TSh 1000 minimum
 
 PROVIDERS = {

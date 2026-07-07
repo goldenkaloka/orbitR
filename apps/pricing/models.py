@@ -24,7 +24,7 @@ class PricingPolicy(models.Model):
     driver_min_guarantee = models.DecimalField(max_digits=10, decimal_places=2, default=2000.00, help_text="Minimum payout per order")
     driver_per_km_rate = models.DecimalField(max_digits=10, decimal_places=2, default=500.00, help_text="Payout per kilometer")
     driver_per_stop_rate = models.DecimalField(max_digits=10, decimal_places=2, default=300.00, help_text="Payout per stop (pickup/delivery)")
-    single_order_driver_share = models.DecimalField(max_digits=5, decimal_places=2, default=0.90, help_text="Driver share for non-batched orders (0.90 = 90%)")
+    single_order_driver_share = models.DecimalField(max_digits=5, decimal_places=2, default=0.95, help_text="Driver share for non-batched orders (0.95 = 95%)")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

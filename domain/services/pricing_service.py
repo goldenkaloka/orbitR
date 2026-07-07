@@ -89,7 +89,7 @@ class PricingService:
             driver_min_guarantee=Decimal('2000.00'),
             driver_per_km_rate=Decimal('500.00'),
             driver_per_stop_rate=Decimal('300.00'),
-            single_order_driver_share=Decimal('0.90')
+            single_order_driver_share=Decimal('0.95')
         )
         return policy
 

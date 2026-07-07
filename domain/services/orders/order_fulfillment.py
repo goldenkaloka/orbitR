@@ -143,7 +143,7 @@ class DeliverOrderService:
             else:
                 from domain.services.pricing_service import PricingService
                 policy = PricingService.get_active_policy()
-                driver_share = Decimal('0.90')
+                driver_share = Decimal('0.95')
                 if policy and policy.single_order_driver_share:
                     driver_share = policy.single_order_driver_share
                 order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share

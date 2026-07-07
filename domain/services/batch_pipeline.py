@@ -58,8 +58,10 @@ class BatchPipeline:
 
         # ── Busy restaurant guard ────────────────────────────────────────
         # If restaurant already has max concurrent ACCUMULATING batches,
-        # force-join the oldest batch instead of creating a new one.
-        # This prevents the kitchen from being overwhelmed by too many batches.
+        # close the oldest one immediately to free up a kitchen slot
+        # and create a new single batch for the new order.
+        # This prevents the kitchen from being overwhelmed while avoiding
+        # geographic mismatching detours.
         existing_count = DeliveryBatch.objects.filter(
             restaurant_id=order.restaurant_id,
             status='ACCUMULATING',
@@ -74,11 +76,11 @@ class BatchPipeline:
                 .first()
             )
             if oldest:
-                logger.warning(
+                logger.info(
                     f"[BatchPipeline] Restaurant {order.restaurant_id} at max batches "
-                    f"({existing_count}) — force-joining order {order.id} to batch {oldest.id}"
+                    f"({existing_count}) — closing oldest batch {oldest.id} early to free a slot"
                 )
-                return BatchPipeline._join_batch(order, oldest)
+                BatchPipeline._close_accumulating_batch(oldest.id)
 
         # No compatible batch found — create a new ACCUMULATING batch
         return BatchPipeline._create_single_batch(order)
@@ -137,19 +139,25 @@ class BatchPipeline:
         Check if an order is compatible with a batch.
         Criteria: H3 delivery proximity via disk rings.
         ACCUMULATING: k=3 ring. SOFT_LOCK: k=1 ring (stricter).
-        Also checks that the order isn't too distant from existing batch orders.
+        Must be compatible with ALL orders in the batch to prevent route divergence.
         """
         import h3
-        from apps.orders.models import OrderItem
 
-        first_order = batch.orders.first()
-        if not first_order or not order.h3_index or not first_order.h3_index:
+        if not order.h3_index:
             return True
 
         ring_k = 1 if is_soft_lock else 3
-        neighbor_cells = set(h3.grid_disk(first_order.h3_index, ring_k))
-        if order.h3_index not in neighbor_cells:
-            return False
+
+        for existing_order in batch.orders.all():
+            if existing_order.h3_index:
+                try:
+                    dist = h3.grid_distance(order.h3_index, existing_order.h3_index)
+                    if dist > ring_k:
+                        return False
+                except Exception:
+                    # Fallback to first-order check if grid_distance fails
+                    if existing_order == batch.orders.first():
+                        return False
 
         return True
 
@@ -178,10 +186,17 @@ class BatchPipeline:
             locked_batch.user_paid_total += Decimal(str(order.delivery_fee or 0)) + Decimal(str(order.service_fee or 0))
             locked_batch.original_total_fee += Decimal(str(order.delivery_fee or 0))
             locked_batch.discounted_total_fee += Decimal(str(order.delivery_fee or 0))
-            locked_batch.save(update_fields=[
+            # If the batch was already in SOFT_LOCK, extend the soft lock by 30 seconds
+            # to give the kitchen a buffer to prepare the new last-minute order.
+            update_fields = [
                 'last_order_confirmed_at',
                 'user_paid_total', 'original_total_fee', 'discounted_total_fee',
-            ])
+            ]
+            if locked_batch.status == 'SOFT_LOCK' and locked_batch.soft_lock_at:
+                locked_batch.soft_lock_at += timezone.timedelta(seconds=30)
+                update_fields.append('soft_lock_at')
+
+            locked_batch.save(update_fields=update_fields)
 
             BatchPipeline._create_section_statuses_from_orders(locked_batch, [order])
 
@@ -237,6 +252,15 @@ class BatchPipeline:
             locked_order.save(update_fields=['batch', 'route_sequence'])
 
             BatchPipeline._create_section_statuses_from_orders(batch, [locked_order])
+
+            batch_id_str = str(batch.id)
+            from domain.services.dispatch_tasks import close_accumulating_batch_task
+            transaction.on_commit(
+                lambda: close_accumulating_batch_task.apply_async(
+                    args=[batch_id_str],
+                    countdown=ACCUMULATE_WINDOW_MINUTES * 60
+                )
+            )
 
         logger.info(
             f"[BatchPipeline] Created ACCUMULATING batch {batch.id} for order {order.id}"
@@ -545,7 +569,7 @@ class BatchPipeline:
             service_fee = Decimal(str(pool.service_fee or 0))
             user_paid_total = delivery_fee + service_fee
 
-            driver_share = policy.single_order_driver_share if policy else Decimal('0.90')
+            driver_share = policy.single_order_driver_share if policy else Decimal('0.95')
             driver_payout = delivery_fee * driver_share
             if route_distance > 0:
                 calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
@@ -843,7 +867,7 @@ class BatchPipeline:
             )
         else:
             total_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in orders)
-            driver_payout = max(min_guarantee, total_fees * Decimal('0.90'))
+            driver_payout = max(min_guarantee, total_fees * Decimal('0.95'))
 
         # Cap driver_payout to what was actually collected in delivery/service fees,
         # but always pay at least the minimum guarantee regardless of fee collected

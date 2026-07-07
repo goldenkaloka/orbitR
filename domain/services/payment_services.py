@@ -414,7 +414,7 @@ class ReleasePaymentService:
                 order = Order.objects.select_related(
                     'restaurant', 'restaurant__owner', 'batch', 'driver', 'driver__user'
                 ).get(id=payment.payable_id)
-                commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
+                commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.050')
                 restaurant_payout = (Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
 
                 if order.batch and order.batch.driver_payout:
@@ -423,7 +423,7 @@ class ReleasePaymentService:
                 elif order.driver:
                     from domain.services.pricing_service import PricingService
                     policy = PricingService.get_active_policy()
-                    driver_share = Decimal('0.90')
+                    driver_share = Decimal('0.95')
                     if policy and policy.single_order_driver_share:
                         driver_share = policy.single_order_driver_share
                     driver_payout = (Decimal(str(order.delivery_fee or 0)) * driver_share).quantize(Decimal('0.01'))
@@ -436,7 +436,7 @@ class ReleasePaymentService:
                     'pool', 'pool__restaurant', 'pool__restaurant__owner', 'pool__batch'
                 ).get(id=payment.payable_id)
                 OrderPool.objects.select_for_update().get(id=member.pool_id)
-                commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.100')
+                commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.050')
                 restaurant_payout = (Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
 
                 if member.pool.batch and member.pool.batch.driver_payout:
@@ -726,7 +726,7 @@ class RefundPaymentService:
         if total_items_price == 0:
             return
 
-        commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.100')
+        commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.050')
         restaurant_payout = Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)
 
         section_ids_with_items = {item.section_id for item in items if item.section_id}

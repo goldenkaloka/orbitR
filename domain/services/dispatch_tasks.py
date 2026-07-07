@@ -618,4 +618,14 @@ def expire_stale_picked_orders_task():
         )
 
 
+@shared_task(name='domain.services.dispatch_tasks.close_accumulating_batch_task')
+def close_accumulating_batch_task(batch_id: str):
+    """
+    Transition a single accumulating batch to SOFT_LOCK.
+    This is called via Celery delay/countdown when a batch is created.
+    """
+    from domain.services.batch_pipeline import BatchPipeline
+    BatchPipeline._close_accumulating_batch(batch_id)
+
+
 
