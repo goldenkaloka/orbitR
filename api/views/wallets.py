@@ -257,7 +257,7 @@ class WalletViewSet(viewsets.GenericViewSet):
             return Response({
                 "error": f"Cashout failed: {e}",
                 "code": "DISBURSEMENT_FAILED",
-            }, status=502)
+            }, status=400)
 
         logger.info(
             f"Cashout successful for user {request.user.id}: "
