@@ -151,7 +151,7 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "code": "INVALID_PHONE",
             }, status=400)
 
-        instant_fee = amount * INSTANT_FEE_PERCENT
+        instant_fee = (amount * INSTANT_FEE_PERCENT).quantize(Decimal('0.01'))
         total_fees = instant_fee
         net_amount = amount - total_fees
 
