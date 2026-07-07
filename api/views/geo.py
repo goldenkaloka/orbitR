@@ -254,7 +254,13 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         if not lat or not lng:
             return Response({'error': 'lat and lng are required'}, status=400)
 
-        cache_key = f'geo:reverse_geocode:{lat}:{lng}'
+        try:
+            lat_rounded = round(float(lat), 4)
+            lng_rounded = round(float(lng), 4)
+            cache_key = f'geo:reverse_geocode:{lat_rounded}:{lng_rounded}'
+        except (ValueError, TypeError):
+            return Response({'error': 'Invalid lat or lng format'}, status=400)
+
         cached = cache.get(cache_key)
         if cached is not None:
             return Response(cached)
