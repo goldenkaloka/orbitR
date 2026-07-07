@@ -123,7 +123,7 @@ class MapboxRoutingService:
     @staticmethod
     def get_optimized_route(
         coordinates: List[Dict[str, Any]],
-        profile: str = 'driving-traffic'
+        profile: str = 'cycling'
     ) -> Optional[Route]:
         """Get optimized route for multiple stops using Mapbox Optimization API."""
         token = MapboxRoutingService._get_token()
