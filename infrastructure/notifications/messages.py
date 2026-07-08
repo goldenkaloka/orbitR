@@ -48,10 +48,11 @@ def order_delivered(short_id: str) -> tuple[str, str]:
         f"Oda #{short_id} imewasili. Furahia chakula chako! Tafadhali toa ukadiriaji."
     )
 
-def order_cancelled_customer(short_id: str) -> tuple[str, str]:
+def order_cancelled_customer(short_id: str, is_paid: bool = True) -> tuple[str, str]:
+    msg = f"Oda #{short_id} imefutwa. Tutakurudishia malipo yako hivi karibuni." if is_paid else f"Oda #{short_id} imefutwa."
     return (
         "Oda Imefutwa",
-        f"Oda #{short_id} imefutwa. Tutakurudishia malipo yako hivi karibuni."
+        msg
     )
 
 def order_cancelled_restaurant_delay(short_id: str) -> tuple[str, str]:

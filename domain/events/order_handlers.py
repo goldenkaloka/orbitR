@@ -37,7 +37,7 @@ def _notify_order_event(event):
             'DriverAssigned': driver_assigned(short_id)[1],
             'OrderPicked': f"{order_picked(short_id)[1]} PIN: {getattr(order, 'delivery_otp', '####')}",
             'OrderDelivered': order_delivered(short_id)[1],
-            'OrderCancelled': order_cancelled_customer(short_id)[1],
+            'OrderCancelled': order_cancelled_customer(short_id, is_paid=order.is_paid)[1],
         }
         status_msg = messages.get(event.event_type, f"Order status: {event.event_type}")
 
@@ -100,7 +100,7 @@ def _notify_order_event(event):
                 title=msg_title, body=status_msg, data=extra_data,
             )
         elif event.event_type == 'OrderCancelled':
-            cc_title, _ = order_cancelled_customer(short_id)
+            cc_title, _ = order_cancelled_customer(short_id, is_paid=order.is_paid)
             NotificationService.send_push(
                 user_id=str(order.customer.id),
                 title=cc_title, body=status_msg, data=extra_data,

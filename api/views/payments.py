@@ -217,7 +217,11 @@ class ClickpesaWebhookView(APIView):
             checksum = data.pop('checksum', None)
             data.pop('checksumMethod', None)
 
-            def sort_dict_keys(d: Any) -> Any:
+            if not checksum:
+                logger.warning("ClickPesa Webhook: Missing checksum in request payload.")
+                return False
+
+            def sort_dict_keys(d):
                 if isinstance(d, dict):
                     return {k: sort_dict_keys(v) for k, v in sorted(d.items())}
                 elif isinstance(d, list):
