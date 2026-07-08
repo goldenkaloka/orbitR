@@ -97,8 +97,12 @@ class ClickpesaGateway(PaymentGateway):
                 formatted_phone = '255' + formatted_phone[1:]
 
             # ClickPesa requires alphanumeric order references with no spaces/symbols (max 20 characters)
+            # We use 16 chars of UUID and append a random 3-char suffix to prevent duplicate conflicts (409) on retries
             import re
-            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(order_reference))[:16]
+            import random
+            import string
+            random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=3))
+            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(order_reference))[:16] + random_suffix
 
             payload = {
                 "amount": str(int(float(amount))),
@@ -147,8 +151,12 @@ class ClickpesaGateway(PaymentGateway):
                 formatted_phone = '255' + formatted_phone[1:]
 
             # ClickPesa requires alphanumeric order references (max 20 characters)
+            # We use 16 chars of UUID and append a random 3-char suffix to prevent duplicate conflicts (409) on retries
             import re
-            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(reference))[:16]
+            import random
+            import string
+            random_suffix = ''.join(random.choices(string.ascii_letters + string.digits, k=3))
+            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(reference))[:16] + random_suffix
 
             payload = {
                 "amount": int(float(amount)),

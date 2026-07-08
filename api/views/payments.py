@@ -214,11 +214,18 @@ class ClickpesaWebhookView(APIView):
                 return False
 
             data = dict(request.data)
-            checksum = data.pop('checksum', None)
+            checksum_in_body = data.pop('checksum', None)
             data.pop('checksumMethod', None)
 
+            # Retrieve signature from headers (check mixed-case, lowercase, or payload body fallback)
+            checksum = (
+                request.headers.get('X-ClickPesa-Signature')
+                or request.headers.get('x-clickpesa-signature')
+                or checksum_in_body
+            )
+
             if not checksum:
-                logger.warning("ClickPesa Webhook: Missing checksum in request payload.")
+                logger.warning("ClickPesa Webhook: Missing checksum in headers or request payload.")
                 return False
 
             def sort_dict_keys(d):
@@ -240,6 +247,7 @@ class ClickpesaWebhookView(APIView):
 
     def post(self, request, *args, **kwargs):
         logger.info(f"Received ClickPesa webhook data: {request.data}")
+        logger.info(f"ClickPesa webhook headers: {dict(request.headers)}")
 
         if not self._verify_checksum(request):
             logger.warning("ClickPesa Webhook: Checksum validation failed.")
@@ -259,12 +267,15 @@ class ClickpesaWebhookView(APIView):
                 f"order={order_ref} txn={transaction_id} status={transaction_status}"
             )
 
+            # Strip the 3-character random suffix to get the 16-character UUID prefix for lookup
+            lookup_ref = order_ref[:16] if order_ref else ''
+
             from apps.payments.models import Payment
             payment = Payment.objects.filter(provider_reference=transaction_id).first()
 
             if not payment:
                 for candidate in Payment.objects.filter(status='INITIATED'):
-                    if candidate.id.hex[:16] == order_ref:
+                    if candidate.id.hex[:16] == lookup_ref:
                         payment = candidate
                         break
 
@@ -273,7 +284,7 @@ class ClickpesaWebhookView(APIView):
                 from datetime import timedelta
                 time_threshold = timezone.now() - timedelta(hours=1)
                 for candidate in Payment.objects.filter(created_at__gte=time_threshold):
-                    if candidate.id.hex[:16] == order_ref:
+                    if candidate.id.hex[:16] == lookup_ref:
                         payment = candidate
                         break
 
