@@ -255,9 +255,36 @@ class ClickpesaWebhookView(APIView):
                 f"order={order_ref} txn={transaction_id} status={transaction_status}"
             )
 
+            from apps.payments.models import Payment
+            payment = Payment.objects.filter(provider_reference=transaction_id).first()
+
+            if not payment:
+                for candidate in Payment.objects.filter(status='INITIATED'):
+                    if candidate.id.hex[:16] == order_ref:
+                        payment = candidate
+                        break
+
+            if not payment:
+                from django.utils import timezone
+                from datetime import timedelta
+                time_threshold = timezone.now() - timedelta(hours=1)
+                for candidate in Payment.objects.filter(created_at__gte=time_threshold):
+                    if candidate.id.hex[:16] == order_ref:
+                        payment = candidate
+                        break
+
+            if not payment:
+                logger.error(f"ClickPesa Webhook: Could not resolve payment for reference {order_ref}")
+                return Response({"status": "error", "message": "Payment record not found"}, status=404)
+
+            if not payment.provider_reference:
+                payment.provider_reference = transaction_id
+                payment.save()
+
             success = transaction_status == 'SUCCESS'
 
             CompletePaymentService.execute(
+                payment_id=payment.id,
                 provider_reference=transaction_id,
                 success=success,
                 reference_id=order_ref,

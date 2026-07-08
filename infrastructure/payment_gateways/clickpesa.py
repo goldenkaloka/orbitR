@@ -96,9 +96,9 @@ class ClickpesaGateway(PaymentGateway):
             if formatted_phone.startswith('0'):
                 formatted_phone = '255' + formatted_phone[1:]
 
-            # ClickPesa requires alphanumeric order references with no spaces/symbols
+            # ClickPesa requires alphanumeric order references with no spaces/symbols (max 20 characters)
             import re
-            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(order_reference))
+            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(order_reference))[:16]
 
             payload = {
                 "amount": str(int(float(amount))),
@@ -146,9 +146,9 @@ class ClickpesaGateway(PaymentGateway):
             if formatted_phone.startswith('0'):
                 formatted_phone = '255' + formatted_phone[1:]
 
-            # ClickPesa requires alphanumeric order references
+            # ClickPesa requires alphanumeric order references (max 20 characters)
             import re
-            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(reference))
+            sanitized_ref = re.sub(r'[^a-zA-Z0-9]', '', str(reference))[:16]
 
             payload = {
                 "amount": int(float(amount)),
