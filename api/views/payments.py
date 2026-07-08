@@ -213,7 +213,12 @@ class ClickpesaWebhookView(APIView):
                 logger.error("ClickPesa SECRET_KEY not configured. Webhook skipped.")
                 return False
 
-            data = dict(request.data)
+            payload_data = request.data.get('data')
+            if not isinstance(payload_data, dict):
+                logger.warning("ClickPesa Webhook: Missing or invalid 'data' attribute in payload.")
+                return False
+
+            data = dict(payload_data)
             checksum_in_body = data.pop('checksum', None)
             data.pop('checksumMethod', None)
 
@@ -255,9 +260,10 @@ class ClickpesaWebhookView(APIView):
 
         try:
             data = request.data
-            transaction_id = data.get('transactionId')
-            transaction_status = str(data.get('status') or '').upper()
-            order_ref = data.get('orderReference')
+            event_data = data.get('data') or {}
+            transaction_id = event_data.get('id') or event_data.get('transactionId')
+            transaction_status = str(event_data.get('status') or '').upper()
+            order_ref = event_data.get('orderReference')
 
             if not transaction_id or not order_ref:
                 return Response({"status": "error", "message": "Missing transactionId or orderReference"}, status=400)
