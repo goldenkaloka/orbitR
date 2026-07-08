@@ -198,6 +198,77 @@ class AirpayWebhookView(APIView):
             return Response({"error": "Webhook processing failed."}, status=500)
 
 
+class ClickpesaWebhookView(APIView):
+    """
+    ClickPesa Webhook Callback Handler.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def _verify_checksum(self, request):
+        try:
+            config = getattr(settings, 'CLICKPESA_CONFIG', {})
+            secret_key = config.get('SECRET_KEY', '')
+            if not secret_key:
+                logger.error("ClickPesa SECRET_KEY not configured. Webhook skipped.")
+                return False
+
+            data = dict(request.data)
+            checksum = data.pop('checksum', None)
+            data.pop('checksumMethod', None)
+
+            def sort_dict_keys(d: Any) -> Any:
+                if isinstance(d, dict):
+                    return {k: sort_dict_keys(v) for k, v in sorted(d.items())}
+                elif isinstance(d, list):
+                    return [sort_dict_keys(x) for x in d]
+                else:
+                    return d
+
+            sorted_data = sort_dict_keys(data)
+            json_str = json.dumps(sorted_data, separators=(',', ':'))
+            expected_checksum = hmac.new(secret_key.encode(), json_str.encode(), hashlib.sha256).hexdigest()
+
+            return checksum and hmac.compare_digest(checksum, expected_checksum)
+        except Exception as e:
+            logger.error(f"Error validating ClickPesa webhook checksum: {str(e)}")
+            return False
+
+    def post(self, request, *args, **kwargs):
+        logger.info(f"Received ClickPesa webhook data: {request.data}")
+
+        if not self._verify_checksum(request):
+            logger.warning("ClickPesa Webhook: Checksum validation failed.")
+            return Response({"status": "error", "message": "Invalid signature"}, status=400)
+
+        try:
+            data = request.data
+            transaction_id = data.get('transactionId')
+            transaction_status = str(data.get('status') or '').upper()
+            order_ref = data.get('orderReference')
+
+            if not transaction_id or not order_ref:
+                return Response({"status": "error", "message": "Missing transactionId or orderReference"}, status=400)
+
+            logger.info(
+                f"Processing ClickPesa Webhook: "
+                f"order={order_ref} txn={transaction_id} status={transaction_status}"
+            )
+
+            success = transaction_status == 'SUCCESS'
+
+            CompletePaymentService.execute(
+                provider_reference=transaction_id,
+                success=success,
+                reference_id=order_ref,
+            )
+
+            return Response({"status": "success"}, status=200)
+        except Exception:
+            logger.exception("Error processing ClickPesa webhook callback")
+            return Response({"error": "Webhook processing failed."}, status=500)
+
+
 class PlatformRevenueView(APIView):
     """Platform revenue analytics from Transaction records."""
     permission_classes = [permissions.IsAdminUser]

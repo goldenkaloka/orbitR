@@ -1,6 +1,6 @@
 from django.conf import settings
 
-from .airpay import AirpayGateway
+from .clickpesa import ClickpesaGateway
 from .mock import MockGateway
 
 
@@ -12,4 +12,4 @@ def get_payment_gateway(provider=None, phone=None):
     if getattr(settings, 'MOCK_PAYMENTS', False):
         return MockGateway()
 
-    return AirpayGateway()
+    return ClickpesaGateway()

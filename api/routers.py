@@ -21,7 +21,7 @@ from api.views.demands import BuyerDemandViewSet, ShopViewSet
 from api.views.driver import DriverViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet
-from api.views.payments import AirpayWebhookView, InitiatePaymentView, PlatformRevenueView
+from api.views.payments import AirpayWebhookView, ClickpesaWebhookView, InitiatePaymentView, PlatformRevenueView
 from api.views.pools import PoolOrderViewSet
 from api.views.pricing import (
     DeliveryFeeLogViewSet,
@@ -68,6 +68,8 @@ urlpatterns = router.urls + [
     path('auth/ws-ticket/', WsTicketView.as_view(), name='ws-ticket'),
     path('payments/airpay/callback/', AirpayWebhookView.as_view(), name='airpay-callback'),
     path('payments/airpay/callback', AirpayWebhookView.as_view(), name='airpay-callback-no-slash'),
+    path('payments/clickpesa/callback/', ClickpesaWebhookView.as_view(), name='clickpesa-callback'),
+    path('payments/clickpesa/callback', ClickpesaWebhookView.as_view(), name='clickpesa-callback-no-slash'),
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
     path('payments/revenue/', PlatformRevenueView.as_view(), name='platform-revenue'),
     path('search/', UniversalSearchView.as_view(), name='universal-search'),

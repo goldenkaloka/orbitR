@@ -541,6 +541,14 @@ AIRPAY_CONFIG = {
     'PAYOUT_URL': config('AIRPAY_PAYOUT_URL', default='https://kraken.airpay.tz/airpay/pay/v1/api/disburse'),
 }
 
+CLICKPESA_CONFIG = {
+    'CLIENT_ID': config('CLICKPESA_CLIENT_ID', default=''),
+    'API_KEY': config('CLICKPESA_API_KEY', default=''),
+    'SECRET_KEY': config('CLICKPESA_SECRET_KEY', default=''),
+    'SANDBOX': config('PAYMENT_SANDBOX', default='True') == 'True',
+    'BASE_URL': config('CLICKPESA_BASE_URL', default='https://api.clickpesa.com'),
+}
+
 # SMS & Notifications (RafikiSMS)
 RAFIKI_CONFIG = {
     'API_KEY': os.getenv('RAFIKI_API_KEY', ''),
