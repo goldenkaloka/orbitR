@@ -125,7 +125,12 @@ class ClickpesaGateway(PaymentGateway):
                 }
             else:
                 logger.error(f"ClickPesa Collection failed: HTTP {response.status_code}: {response.text}")
-                return {'success': False, 'error': f"ClickPesa API Error: {response.status_code}"}
+                try:
+                    res_json = response.json()
+                    error_msg = res_json.get('message') or f"ClickPesa API Error: {response.status_code}"
+                except Exception:
+                    error_msg = f"ClickPesa API Error: {response.status_code}"
+                return {'success': False, 'error': error_msg}
         except Exception as e:
             logger.error(f"ClickPesa collection exception: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -180,7 +185,12 @@ class ClickpesaGateway(PaymentGateway):
                 }
             else:
                 logger.error(f"ClickPesa Payout failed: HTTP {response.status_code}: {response.text}")
-                return {'success': False, 'error': f"ClickPesa Payout API Error: {response.status_code}"}
+                try:
+                    res_json = response.json()
+                    error_msg = res_json.get('message') or f"ClickPesa Payout API Error: {response.status_code}"
+                except Exception:
+                    error_msg = f"ClickPesa Payout API Error: {response.status_code}"
+                return {'success': False, 'error': error_msg}
         except Exception as e:
             logger.error(f"ClickPesa payout exception: {str(e)}")
             return {'success': False, 'error': str(e)}
@@ -249,7 +259,14 @@ class ClickpesaGateway(PaymentGateway):
             if response.status_code == 200:
                 res_data = response.json()
                 return {'success': True, 'refund_id': res_data.get('refundId') or res_data.get('id')}
-            return {'success': False, 'error': f"ClickPesa Refund API Error: {response.status_code}"}
+            else:
+                logger.error(f"ClickPesa Refund failed: HTTP {response.status_code}: {response.text}")
+                try:
+                    res_json = response.json()
+                    error_msg = res_json.get('message') or f"ClickPesa Refund API Error: {response.status_code}"
+                except Exception:
+                    error_msg = f"ClickPesa Refund API Error: {response.status_code}"
+                return {'success': False, 'error': error_msg}
         except Exception as e:
             logger.error(f"ClickPesa refund exception: {str(e)}")
             return {'success': False, 'error': str(e)}

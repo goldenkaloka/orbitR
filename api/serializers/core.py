@@ -294,6 +294,7 @@ class OrderSerializer(serializers.ModelSerializer):
     route_sequence = serializers.ReadOnlyField()
     pool_id = serializers.SerializerMethodField()
     group_breakdown = serializers.SerializerMethodField()
+    is_reviewed = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -306,7 +307,7 @@ class OrderSerializer(serializers.ModelSerializer):
             'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
             'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry', 'payment_status',
             'cancelled_at', 'cancelled_by', 'cancellation_fault', 'cancellation_category',
-            'cancellation_reason', 'affects_restaurant_reputation',
+            'cancellation_reason', 'affects_restaurant_reputation', 'is_reviewed',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
@@ -315,6 +316,9 @@ class OrderSerializer(serializers.ModelSerializer):
                            'cancellation_category', 'cancellation_reason',
                            'affects_restaurant_reputation']
 
+
+    def get_is_reviewed(self, obj):
+        return obj.reviews.filter(review_type='restaurant').exists()
 
     def get_restaurant_latitude(self, obj):
         return obj.restaurant.geo_location.y if obj.restaurant and obj.restaurant.geo_location else None

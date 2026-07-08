@@ -21,6 +21,15 @@ class UserManager(BaseUserManager):
 
         return self.create_user(phone, username, password, **extra_fields)
 
+def get_default_free_tokens():
+    try:
+        from apps.marketplace.models import PostingTokenConfig
+        config = PostingTokenConfig.objects.first()
+        return config.free_tokens_for_new_users if config else 5
+    except Exception:
+        return 5
+
+
 class User(AbstractUser):
     ROLE_CHOICES = (
         ('customer', 'customer'),
@@ -37,6 +46,7 @@ class User(AbstractUser):
     avatar_url = models.URLField(max_length=500, blank=True, null=True)
     onesignal_id = models.CharField(max_length=255, blank=True, null=True, help_text="OneSignal Player/Subscription ID for push notifications")
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    posting_tokens_balance = models.PositiveIntegerField(default=get_default_free_tokens)
 
     objects = UserManager()
 

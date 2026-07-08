@@ -184,3 +184,69 @@ class SellerOffer(models.Model):
 
     def __str__(self):
         return f"TSh {self.price} by {self.seller.username} on {self.demand.title}"
+
+
+class PostingTokenConfig(models.Model):
+    free_tokens_for_new_users = models.PositiveIntegerField(default=5, help_text="Number of free tokens granted to new users on registration")
+    token_deduction_per_listing = models.PositiveIntegerField(default=1, help_text="Number of tokens deducted per product listing")
+    
+    class Meta:
+        verbose_name = "Posting Token Configuration"
+        verbose_name_plural = "Posting Token Configurations"
+        
+    def __str__(self):
+        return f"Tokens Config - Free: {self.free_tokens_for_new_users}, Cost: {self.token_deduction_per_listing}"
+
+
+class PostingTokenBundleOption(models.Model):
+    id = models.CharField(max_length=50, primary_key=True, help_text="Unique identifier (e.g., 'starter', 'pro', 'business')")
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    price = models.DecimalField(max_digits=12, decimal_places=2)
+    tokens_granted = models.PositiveIntegerField()
+    is_active = models.BooleanField(default=True)
+    
+    class Meta:
+        verbose_name = "Posting Token Bundle Option"
+        verbose_name_plural = "Posting Token Bundle Options"
+        
+    def __str__(self):
+        return f"{self.name} ({self.tokens_granted} tokens for TSh {self.price})"
+
+
+class PostingTokenBundlePurchase(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='token_bundle_purchases')
+    bundle = models.ForeignKey(PostingTokenBundleOption, on_delete=models.CASCADE, related_name='purchases')
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    tokens_granted = models.PositiveIntegerField()
+    is_paid = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.user.username} - {self.bundle.name} - {'Paid' if self.is_paid else 'Pending'}"
+
+
+class PostingTokenTransaction(models.Model):
+    TRANSACTION_TYPE_CHOICES = (
+        ('SIGNUP_BONUS', 'Signup Bonus'),
+        ('PURCHASE', 'Bundle Purchase'),
+        ('LISTING_DEDUCTION', 'Listing Fee Deduction'),
+        ('LISTING_REFUND', 'Listing Fee Refund'),
+        ('ADMIN_ADJUSTMENT', 'Admin Manual Adjustment'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='token_transactions')
+    transaction_type = models.CharField(max_length=20, choices=TRANSACTION_TYPE_CHOICES)
+    amount = models.IntegerField(help_text="Token balance change amount (positive or negative)")
+    balance_after = models.PositiveIntegerField(help_text="Token balance after this transaction completed")
+    description = models.CharField(max_length=255, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.transaction_type} - {self.amount:+d} ({self.balance_after} left)"

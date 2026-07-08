@@ -49,6 +49,15 @@ class PaymentTargetResolver:
                 'user': product.seller,
                 'description': f"Listing Fee for {product.name}"
             }
+        elif payable_type == 'posting_token_bundle':
+            from apps.marketplace.models import PostingTokenBundlePurchase
+            purchase = PostingTokenBundlePurchase.objects.get(id=payable_id)
+            return {
+                'amount': purchase.amount,
+                'phone': purchase.user.phone,
+                'user': purchase.user,
+                'description': f"Purchase of {purchase.bundle.name} posting bundle"
+            }
         else:
             raise ValueError(f"Unknown payable_type: {payable_type}")
 
@@ -288,6 +297,8 @@ class CompletePaymentService:
                         CompletePaymentService._handle_pool_payment(payment)
                     elif payment.payable_type == 'marketplace_product':
                         CompletePaymentService._handle_marketplace_payment(payment)
+                    elif payment.payable_type == 'posting_token_bundle':
+                        CompletePaymentService._handle_posting_token_bundle_payment(payment)
                     
                     payment.save()
                     
@@ -393,6 +404,47 @@ class CompletePaymentService:
             amount=payment.amount,
             entry_type='platform_revenue',
         )
+
+    @staticmethod
+    def _handle_posting_token_bundle_payment(payment):
+        from apps.marketplace.models import PostingTokenBundlePurchase, PostingTokenTransaction
+        purchase = PostingTokenBundlePurchase.objects.get(id=payment.payable_id)
+        if purchase.is_paid:
+            return
+            
+        with transaction.atomic():
+            purchase.is_paid = True
+            purchase.save(update_fields=['is_paid', 'updated_at'])
+            
+            user = purchase.user
+            user.posting_tokens_balance += purchase.tokens_granted
+            user.save(update_fields=['posting_tokens_balance'])
+            
+            # Record Token transaction log
+            PostingTokenTransaction.objects.create(
+                user=user,
+                transaction_type='PURCHASE',
+                amount=purchase.tokens_granted,
+                balance_after=user.posting_tokens_balance,
+                description=f"Purchased {purchase.bundle.name} bundle ({purchase.tokens_granted} tokens)"
+            )
+            
+            # Double entry entries / platform revenue
+            _create_double_entry(
+                payment=payment,
+                from_user=user,
+                to_user=get_platform_user(),
+                amount=payment.amount,
+                entry_type='posting_bundle_purchase',
+            )
+            _record_platform_revenue(payment.amount, f"Posting token bundle purchase: {purchase.id}")
+            _create_double_entry(
+                payment=payment,
+                from_user=get_platform_user(),
+                to_user=get_platform_user(),
+                amount=payment.amount,
+                entry_type='platform_revenue',
+            )
 
 class ReleasePaymentService:
     @staticmethod

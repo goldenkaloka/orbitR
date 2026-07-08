@@ -2,7 +2,10 @@ from django.contrib import admin
 from leaflet.admin import LeafletGeoAdminMixin
 from unfold.admin import ModelAdmin
 
-from .models import MarketplaceCategory, MarketplaceProduct, ProductImage
+from .models import (
+    MarketplaceCategory, MarketplaceProduct, ProductImage,
+    PostingTokenConfig, PostingTokenBundleOption, PostingTokenBundlePurchase, PostingTokenTransaction
+)
 
 
 class ProductImageInline(admin.TabularInline):
@@ -37,3 +40,29 @@ class MarketplaceProductAdmin(LeafletGeoAdminMixin, ModelAdmin):
     def expire_selected(self, request, queryset):
         queryset.update(status='EXPIRED')
     expire_selected.short_description = "Mark selected products as expired"
+
+
+@admin.register(PostingTokenConfig)
+class PostingTokenConfigAdmin(ModelAdmin):
+    list_display = ('free_tokens_for_new_users', 'token_deduction_per_listing')
+
+
+@admin.register(PostingTokenBundleOption)
+class PostingTokenBundleOptionAdmin(ModelAdmin):
+    list_display = ('id', 'name', 'price', 'tokens_granted', 'is_active')
+    list_filter = ('is_active',)
+    search_fields = ('name',)
+
+
+@admin.register(PostingTokenBundlePurchase)
+class PostingTokenBundlePurchaseAdmin(ModelAdmin):
+    list_display = ('user', 'bundle', 'amount', 'tokens_granted', 'is_paid', 'created_at')
+    list_filter = ('is_paid', 'bundle')
+    search_fields = ('user__username', 'bundle__name')
+
+
+@admin.register(PostingTokenTransaction)
+class PostingTokenTransactionAdmin(ModelAdmin):
+    list_display = ('user', 'transaction_type', 'amount', 'balance_after', 'created_at')
+    list_filter = ('transaction_type',)
+    search_fields = ('user__username', 'description')
