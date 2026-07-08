@@ -246,8 +246,8 @@ class ClickpesaWebhookView(APIView):
             return False
 
     def post(self, request, *args, **kwargs):
-        logger.info(f"Received ClickPesa webhook data: {request.data}")
-        logger.info(f"ClickPesa webhook headers: {dict(request.headers)}")
+        logger.warning(f"Received ClickPesa webhook data: {request.data}")
+        logger.warning(f"ClickPesa webhook headers: {dict(request.headers)}")
 
         if not self._verify_checksum(request):
             logger.warning("ClickPesa Webhook: Checksum validation failed.")
