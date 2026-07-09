@@ -93,3 +93,13 @@ def cleanup_unpaid_products():
                 logger.error(f"[MarketplaceCleanup] Failed to delete product {product.id}: {e}")
 
     return f"Deleted {len(abandoned)} unpaid products."
+
+
+@shared_task
+def sweep_expired_products():
+    """
+    Daily task to transition products past their expiry date to EXPIRED.
+    """
+    from domain.services.marketplace_services import MarketplaceService
+    count = MarketplaceService.mark_expired_products()
+    return f"Auto-expired {count} products."

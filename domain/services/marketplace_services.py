@@ -44,28 +44,51 @@ class MarketplaceService:
             return recent_duplicate
 
         with transaction.atomic():
-            product = MarketplaceProduct.objects.create(
-                **validated_data
-            )
+            # Lock the seller record to prevent race conditions
+            seller_locked = seller.__class__.objects.select_for_update().get(id=seller.id)
+            from apps.marketplace.models import PostingTokenConfig, PostingTokenTransaction, ProductImage
             
-            if images:
-                from apps.marketplace.models import ProductImage
-                for i, img in enumerate(images):
-                    ProductImage.objects.create(
-                        product=product,
-                        image=img,
-                        is_primary=(i == 0)
-                    )
+            config = PostingTokenConfig.objects.first()
+            deduction = config.token_deduction_per_listing if config else 1
             
-            # 2. Publish Event on Commit
-            transaction.on_commit(lambda: EventBus.publish(MarketplaceProductCreated(
-                aggregate_id=product.id,
-                payload={
-                    'seller_id': str(product.seller.id),
-                    'price': float(product.price),
-                    'fee_to_pay': float(product.calculate_listing_fee())
-                }
-            )))
+            if seller_locked.posting_tokens_balance >= deduction:
+                seller_locked.posting_tokens_balance -= deduction
+                seller_locked.save(update_fields=['posting_tokens_balance'])
+                
+                validated_data['status'] = 'ACTIVE'
+                validated_data['is_fee_paid'] = True
+                validated_data['expiry_date'] = timezone.now() + timedelta(days=21)
+                
+                product = MarketplaceProduct.objects.create(**validated_data)
+                
+                # Record the transaction ledger entry
+                PostingTokenTransaction.objects.create(
+                    user=seller_locked,
+                    transaction_type='LISTING_DEDUCTION',
+                    amount=-deduction,
+                    balance_after=seller_locked.posting_tokens_balance,
+                    description=f"Deducted {deduction} token(s) for listing: {product.name}"
+                )
+                
+                if images:
+                    for i, img in enumerate(images):
+                        ProductImage.objects.create(
+                            product=product,
+                            image=img,
+                            is_primary=(i == 0)
+                        )
+                
+                # Publish activation event on commit
+                transaction.on_commit(lambda: EventBus.publish(MarketplaceProductActivated(
+                    aggregate_id=product.id,
+                    payload={
+                        'activated_by': str(seller_locked.id),
+                        'expiry_date': product.expiry_date.isoformat(),
+                        'method': 'posting_token'
+                    }
+                )))
+            else:
+                raise ValueError("You do not have enough posting tokens left. Please buy more.")
         
         return product
 

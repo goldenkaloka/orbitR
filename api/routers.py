@@ -20,7 +20,7 @@ from api.views.core import (
 from api.views.demands import BuyerDemandViewSet, ShopViewSet
 from api.views.driver import DriverViewSet
 from api.views.geo import OperationalZoneViewSet
-from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet
+from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet, PostingTokenBundleViewSet
 from api.views.payments import AirpayWebhookView, ClickpesaWebhookView, InitiatePaymentView, PlatformRevenueView
 from api.views.pools import PoolOrderViewSet
 from api.views.pricing import (
@@ -49,6 +49,7 @@ router.register(r'admin', AdminViewSet, basename='admin')
 router.register(r'notifications', NotificationViewSet, basename='notification')
 router.register(r'reviews', ReviewViewSet, basename='review')
 router.register(r'marketplace/products', MarketplaceProductViewSet, basename='marketplace-product')
+router.register(r'marketplace/posting-tokens', PostingTokenBundleViewSet, basename='posting-token')
 router.register(r'marketplace/categories', MarketplaceCategoryViewSet, basename='marketplace-category')
 router.register(r'marketplace/shops', ShopViewSet, basename='shop')
 router.register(r'marketplace/demands', BuyerDemandViewSet, basename='demand')

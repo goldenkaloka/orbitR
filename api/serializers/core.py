@@ -31,7 +31,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'phone', 'role', 'serialized_role',
             'is_driver', 'driver_id', 'is_restaurant_owner', 'is_stall_staff',
-            'can_be_driver'
+            'can_be_driver', 'posting_tokens_balance'
         ]
 
     def get_is_driver(self, obj):

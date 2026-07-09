@@ -3,6 +3,8 @@ from apps.marketplace.models import (
     MarketplaceCategory,
     MarketplaceProduct,
     ProductImage,
+    PostingTokenBundleOption,
+    PostingTokenBundlePurchase,
 )
 from rest_framework import serializers
 
@@ -132,3 +134,17 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
                             'or flat latitude/longitude fields.'
             })
         return attrs
+
+
+class PostingTokenBundleOptionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PostingTokenBundleOption
+        fields = ['id', 'name', 'description', 'price', 'tokens_granted', 'is_active']
+
+
+class PostingTokenBundlePurchaseSerializer(serializers.ModelSerializer):
+    bundle_name = serializers.ReadOnlyField(source='bundle.name')
+
+    class Meta:
+        model = PostingTokenBundlePurchase
+        fields = ['id', 'user', 'bundle', 'bundle_name', 'amount', 'tokens_granted', 'is_paid', 'created_at']

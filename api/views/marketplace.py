@@ -2,10 +2,19 @@ from api.serializers.marketplace import (
     MarketplaceCategorySerializer,
     MarketplaceProductListSerializer,
     MarketplaceProductSerializer,
+    PostingTokenBundleOptionSerializer,
+    PostingTokenBundlePurchaseSerializer,
 )
 from apps.core.cache_keys import stable_cache_key
-from apps.marketplace.models import MarketplaceCategory, MarketplaceProduct, ProductImage
+from apps.marketplace.models import (
+    MarketplaceCategory,
+    MarketplaceProduct,
+    ProductImage,
+    PostingTokenBundleOption,
+    PostingTokenBundlePurchase,
+)
 from django.core.cache import cache
+from django.db import transaction
 from django.db.models import Prefetch, Q
 from domain.services.marketplace_services import MarketplaceService
 from rest_framework import permissions, status, viewsets
@@ -58,7 +67,18 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             from django.contrib.gis.db.models.functions import Distance
             from django.contrib.gis.geos import Point
             from django.db.models import Case, FloatField, Value, When
+            from apps.core.geo_utils import latlng_to_h3, get_neighbors
+            
             user_location = Point(float(lng), float(lat), srid=4326)
+            user_h3 = latlng_to_h3(float(lat), float(lng))
+            
+            if user_h3:
+                # Filter to immediate neighbors (k=2 rings) to limit calculations
+                neighbor_cells = get_neighbors(user_h3, 2)
+                # If there are products in neighbor cells, restrict. Otherwise keep full to guarantee fallback.
+                if queryset.filter(h3_index__in=neighbor_cells).exists():
+                    queryset = queryset.filter(h3_index__in=neighbor_cells)
+            
             queryset = queryset.annotate(
                 distance=Case(
                     When(location__isnull=False, then=Distance('location', user_location)),
@@ -70,7 +90,7 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             zone_h3 = self.request.query_params.get('zone')
             if zone_h3:
                 from apps.core.geo_utils import get_neighbors
-                neighbor_cells = get_neighbors(zone_h3, 1)
+                neighbor_cells = get_neighbors(zone_h3, 2)
                 queryset = queryset.filter(h3_index__in=neighbor_cells)
 
         category_id = self.request.query_params.get('category')
@@ -116,11 +136,16 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         except Exception:
             version = 0
 
+        # Resolve spatial index cell for cache hashing to maximize cache hit rate
+        user_h3 = "none"
+        if lat and lng:
+            from apps.core.geo_utils import latlng_to_h3
+            user_h3 = latlng_to_h3(float(lat), float(lng)) or "none"
+
         cache_key = stable_cache_key(
             f"marketplace_list:v{version}",
             {
-                "lat": lat or "none",
-                "lng": lng or "none",
+                "h3": user_h3,
                 "category": category,
                 "zone": zone,
                 "limit": limit or "default",
@@ -154,10 +179,13 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 raise ValidationError(
                     {'images': f'Only JPEG, PNG, and WebP images are allowed.'}
                 )
-        product = MarketplaceService.create_product(
-            validated_data={**serializer.validated_data, 'seller': self.request.user},
-            images=images
-        )
+        try:
+            product = MarketplaceService.create_product(
+                validated_data={**serializer.validated_data, 'seller': self.request.user},
+                images=images
+            )
+        except ValueError as e:
+            raise ValidationError({'detail': str(e)})
         serializer.instance = product
         self.invalidate_list_cache()
 
@@ -238,6 +266,38 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         if product.status == 'ACTIVE':
             return Response({'message': 'Product is already active'}, status=400)
             
+        use_posting_token = request.data.get('use_posting_token', False)
+        if use_posting_token:
+            from apps.marketplace.models import PostingTokenConfig, PostingTokenTransaction
+            with transaction.atomic():
+                user_locked = request.user.__class__.objects.select_for_update().get(id=request.user.id)
+                config = PostingTokenConfig.objects.first()
+                deduction = config.token_deduction_per_listing if config else 1
+                
+                if user_locked.posting_tokens_balance < deduction:
+                    return Response({'error': 'You do not have enough posting tokens left. Please buy more.'}, status=400)
+                    
+                user_locked.posting_tokens_balance -= deduction
+                user_locked.save(update_fields=['posting_tokens_balance'])
+                
+                # Record transaction ledger
+                PostingTokenTransaction.objects.create(
+                    user=user_locked,
+                    transaction_type='LISTING_DEDUCTION',
+                    amount=-deduction,
+                    balance_after=user_locked.posting_tokens_balance,
+                    description=f"Deducted {deduction} token(s) for paying listing: {product.name}"
+                )
+                
+                MarketplaceService.activate_product(product_id=str(product.id), actor=user_locked)
+                
+            self.invalidate_list_cache()
+            return Response({
+                'message': 'Product paid and activated successfully using a posting token!',
+                'status': 'ACTIVE',
+                'instant_success': True
+            })
+
         phone = request.data.get('phone', request.user.phone)
         from domain.services.payment_services import InitiatePaymentService
         try:
@@ -280,41 +340,108 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         product = self.get_object()
         if product.status != 'EXPIRED':
              return Response({'message': 'Only expired products can be reactivated'}, status=400)
-        
-        # Ensure product is marked as renewal for correct fee calculation
-        product.listing_type = 'RENEWAL'
-        product.save(update_fields=['listing_type'])
-        
-        phone = request.data.get('phone', request.user.phone)
-        from domain.services.payment_services import InitiatePaymentService
-        try:
-            result = InitiatePaymentService.execute(
-                payable_type='marketplace_product',
-                payable_id=product.id,
-                phone=phone,
-                bank_code=request.data.get('bank_code'),
-                actor=request.user,
+        use_posting_token = request.data.get('use_posting_token', False)
+        if not use_posting_token:
+            return Response({'error': 'Reactivation requires a posting token. Please purchase a token bundle.'}, status=400)
+            
+        from apps.marketplace.models import PostingTokenConfig, PostingTokenTransaction
+        with transaction.atomic():
+            user_locked = request.user.__class__.objects.select_for_update().get(id=request.user.id)
+            config = PostingTokenConfig.objects.first()
+            deduction = config.token_deduction_per_listing if config else 1
+            
+            if user_locked.posting_tokens_balance < deduction:
+                return Response({'error': 'You do not have enough posting tokens left. Please buy more.'}, status=400)
+                
+            user_locked.posting_tokens_balance -= deduction
+            user_locked.save(update_fields=['posting_tokens_balance'])
+            
+            # Ensure product is marked as renewal
+            product.listing_type = 'RENEWAL'
+            product.save(update_fields=['listing_type'])
+            
+            # Record transaction ledger
+            PostingTokenTransaction.objects.create(
+                user=user_locked,
+                transaction_type='LISTING_DEDUCTION',
+                amount=-deduction,
+                balance_after=user_locked.posting_tokens_balance,
+                description=f"Deducted {deduction} token(s) for reactivating listing: {product.name}"
             )
-        except Exception:
-            return Response({'error': 'Payment initiation failed.'}, status=400)
+            
+            MarketplaceService.activate_product(product_id=str(product.id), actor=user_locked)
+            
+        self.invalidate_list_cache()
+        return Response({
+            'message': 'Product reactivated successfully using a posting token!',
+            'status': 'ACTIVE',
+            'instant_success': True
+        })
 
-        payment = result['payment']
-        response = result['gateway_response']
 
-        if response.get('success'):
-            if response.get('instant_success'):
-                self.invalidate_list_cache()
-                return Response({
-                    'payment_id': payment.id,
-                    'message': 'Mock Reactivation Successful! Product is now ACTIVE.',
-                    'status': 'ACTIVE',
-                    'instant_success': True
-                })
+class PostingTokenBundleViewSet(viewsets.ViewSet):
+    permission_classes = [permissions.IsAuthenticated]
 
-            return Response({
-                'payment_id': payment.id,
-                'message': 'USSD Push initiated for reactivation. Please check your phone.',
-                'status': 'PENDING'
-            })
-        else:
-            return Response({'error': 'Reactivation payment failed'}, status=400)
+    def list(self, request):
+        """List active posting token bundle options from the database."""
+        options = PostingTokenBundleOption.objects.filter(is_active=True).order_by('price')
+        serializer = PostingTokenBundleOptionSerializer(options, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['POST'])
+    def purchase(self, request):
+        """Initiate payment to purchase a posting token bundle."""
+        bundle_id = request.data.get('bundle_id')
+        phone = request.data.get('phone', request.user.phone)
+        bank_code = request.data.get('bank_code')
+
+        try:
+            bundle = PostingTokenBundleOption.objects.get(id=bundle_id, is_active=True)
+        except PostingTokenBundleOption.DoesNotExist:
+            return Response({'error': 'Invalid or inactive bundle_id'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from domain.services.payment_services import InitiatePaymentService
+
+        with transaction.atomic():
+            # Create a purchase log record
+            purchase = PostingTokenBundlePurchase.objects.create(
+                user=request.user,
+                bundle=bundle,
+                amount=bundle.price,
+                tokens_granted=bundle.tokens_granted
+            )
+
+            # Initiate payment via ClickPesa
+            result = InitiatePaymentService.execute(
+                payable_type='posting_token_bundle',
+                payable_id=purchase.id,
+                phone=phone,
+                bank_code=bank_code,
+                actor=request.user
+            )
+
+            payment = result['payment']
+            gateway_data = result.get('gateway_response', {})
+
+            push_sent = gateway_data.get('success', False)
+
+            base_response = {
+                "success": push_sent,
+                "purchase_id": str(purchase.id),
+                "payment_id": str(payment.id),
+                "status": payment.status,
+                "is_push": result.get('is_push', False),
+            }
+
+            if push_sent:
+                base_response["provider_reference"] = gateway_data.get('provider_reference')
+                base_response["message"] = gateway_data.get('message')
+                base_response["instant_success"] = gateway_data.get('instant_success')
+                if gateway_data.get('params'):
+                    base_response["params"] = gateway_data['params']
+                if gateway_data.get('endpoint'):
+                    base_response["endpoint"] = gateway_data['endpoint']
+            else:
+                base_response["error"] = gateway_data.get('error') or 'Payment initiation failed'
+
+            return Response(base_response)

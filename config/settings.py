@@ -682,6 +682,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.reliability.tasks.expire_strikes',
         'schedule': crontab(hour=3, minute=0),
     },
+    'sweep-expired-products-daily': {
+        'task': 'apps.marketplace.tasks.sweep_expired_products',
+        'schedule': crontab(hour=0, minute=5),
+    },
 }
 
 PREPARING_ORDER_TIMEOUT_MINUTES = config('PREPARING_ORDER_TIMEOUT_MINUTES', default=45, cast=int)
