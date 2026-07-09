@@ -1,6 +1,6 @@
 import logging
 import uuid
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from apps.orders.models import Order
 from apps.payments.models import Payment, Transaction
@@ -25,41 +25,44 @@ class PaymentTargetResolver:
     def resolve(payable_type, payable_id):
         if payable_type == 'order':
             order = Order.objects.get(id=payable_id)
-            return {
-                'amount': order.total_amount,
-                'phone': order.customer.phone,
-                'user': order.customer,
-                'description': f"Payment for Order #{order.id}"
-            }
+            base_amount = order.total_amount
+            phone = order.customer.phone
+            user = order.customer
+            desc = f"Payment for Order #{order.id}"
         elif payable_type == 'pool_member':
             from apps.orders.models import PoolMember
             member = PoolMember.objects.get(id=payable_id)
-            return {
-                'amount': member.items_subtotal + member.delivery_fee_share + member.service_fee_share,
-                'phone': member.user.phone,
-                'user': member.user,
-                'description': f"Pool Member Share - {member.user.username}"
-            }
+            base_amount = member.items_subtotal + member.delivery_fee_share + member.service_fee_share
+            phone = member.user.phone
+            user = member.user
+            desc = f"Pool Member Share - {member.user.username}"
         elif payable_type == 'marketplace_product':
             from apps.marketplace.models import MarketplaceProduct
             product = MarketplaceProduct.objects.get(id=payable_id)
-            return {
-                'amount': product.calculate_listing_fee(),
-                'phone': product.seller.phone,
-                'user': product.seller,
-                'description': f"Listing Fee for {product.name}"
-            }
+            base_amount = product.calculate_listing_fee()
+            phone = product.seller.phone
+            user = product.seller
+            desc = f"Listing Fee for {product.name}"
         elif payable_type == 'posting_token_bundle':
             from apps.marketplace.models import PostingTokenBundlePurchase
             purchase = PostingTokenBundlePurchase.objects.get(id=payable_id)
-            return {
-                'amount': purchase.amount,
-                'phone': purchase.user.phone,
-                'user': purchase.user,
-                'description': f"Purchase of {purchase.bundle.name} posting bundle"
-            }
+            base_amount = purchase.amount
+            phone = purchase.user.phone
+            user = purchase.user
+            desc = f"Purchase of {purchase.bundle.name} posting bundle"
         else:
             raise ValueError(f"Unknown payable_type: {payable_type}")
+
+        # Apply 0.8% customer-side gateway fee surcharge (C = T / (1 - 0.008))
+        # Rounded to nearest whole TSh
+        surcharged_amount = (Decimal(str(base_amount)) / Decimal('0.992')).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+
+        return {
+            'amount': surcharged_amount,
+            'phone': phone,
+            'user': user,
+            'description': desc
+        }
 
 
 def _can_pay_target(actor, target):
