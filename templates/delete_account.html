@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mwanachuo - Request Account Deletion</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..900;1,9..144,400..900&family=Manrope:wght@200..800&family=Space+Mono:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #C2461E;
+            --primary-deep: #8B2D10;
+            --primary-light: #FFECE6;
+            --ink: #1A1613;
+            --muted: #7A726C;
+            --bg-warm: #FAF8F6;
+            --white: #FFFFFF;
+            --line: #EAE5E2;
+            --shadow: rgba(26, 22, 19, 0.05);
+            --error: #D32F2F;
+            --success: #2E7D32;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Manrope', sans-serif;
+            background-color: var(--bg-warm);
+            color: var(--ink);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 480px;
+            background: var(--white);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            box-shadow: 0 12px 40px var(--shadow);
+            padding: 40px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .logo {
+            font-family: 'Space Mono', monospace;
+            font-weight: 700;
+            font-size: 14px;
+            letter-spacing: 0.15em;
+            color: var(--primary);
+            text-transform: uppercase;
+            margin-bottom: 12px;
+            display: inline-block;
+        }
+
+        h1 {
+            font-family: 'Fraunces', serif;
+            font-size: 26px;
+            font-weight: 800;
+            line-height: 1.2;
+            color: var(--ink);
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            font-size: 14px;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-family: 'Space Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        input[type="text"],
+        input[type="password"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 14px 16px;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background-color: var(--bg-warm);
+            font-family: 'Manrope', sans-serif;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--ink);
+            transition: all 0.25s ease;
+            outline: none;
+        }
+
+        input:focus, select:focus, textarea:focus {
+            border-color: var(--primary);
+            background-color: var(--white);
+            box-shadow: 0 0 0 4px rgba(194, 70, 30, 0.1);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: flex-start;
+            margin: 24px 0;
+            gap: 12px;
+        }
+
+        .checkbox-group input {
+            margin-top: 3px;
+            accent-color: var(--primary);
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
+        .checkbox-label {
+            font-size: 13px;
+            color: var(--ink);
+            line-height: 1.4;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, var(--primary), var(--primary-deep));
+            color: var(--white);
+            border: none;
+            border-radius: 100px;
+            font-family: 'Space Mono', monospace;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(194, 70, 30, 0.2);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(194, 70, 30, 0.3);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        .alert {
+            padding: 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+
+        .alert-error {
+            background-color: #FDF2F2;
+            color: var(--error);
+            border: 1px solid #FBD5D5;
+        }
+
+        .alert-success {
+            background-color: #F3FAF4;
+            color: var(--success);
+            border: 1px solid #DEF7EC;
+            text-align: center;
+        }
+
+        .alert-success h2 {
+            font-family: 'Fraunces', serif;
+            font-size: 20px;
+            margin-bottom: 8px;
+        }
+
+        .footer-note {
+            text-align: center;
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 24px;
+            line-height: 1.4;
+        }
+
+        .footer-note a {
+            color: var(--primary);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .footer-note a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <span class="logo">Mwanachuo / OrbitR</span>
+            <h1>Delete Account</h1>
+            <p class="subtitle">Please verify your details below to permanently delete your Mwanachuo user account and all associated personal data.</p>
+        </div>
+
+        {% if error %}
+            <div class="alert alert-error">
+                {{ error }}
+            </div>
+        {% endif %}
+
+        {% if success %}
+            <div class="alert alert-success">
+                <h2>Request Received</h2>
+                <p>Your account deletion request has been processed successfully. Your account has been deactivated, and all personal identifying records have been purged in compliance with Google Play Developer policies.</p>
+            </div>
+            <button onclick="window.location.reload()" style="background: var(--ink); box-shadow: none;">Request Another Deletion</button>
+        {% else %}
+            <form method="POST">
+                {% csrf_token %}
+                <div class="form-group">
+                    <label for="phone">Phone Number (with country code)</label>
+                    <input type="text" id="phone" name="phone" placeholder="e.g. +255689112851" required value="{{ phone|default:'' }}">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" placeholder="••••••••" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="reason">Reason for leaving (Optional)</label>
+                    <select id="reason" name="reason">
+                        <option value="">Select a reason...</option>
+                        <option value="privacy">Privacy concerns</option>
+                        <option value="unused">I no longer use the app</option>
+                        <option value="issues">Technical issues / bugs</option>
+                        <option value="other">Other reason</option>
+                    </select>
+                </div>
+
+                <div class="checkbox-group">
+                    <input type="checkbox" id="confirm" name="confirm" required>
+                    <label for="confirm" class="checkbox-label">
+                        I understand that this action is permanent and cannot be undone. All my active listings, tokens, and profile data will be permanently removed.
+                    </label>
+                </div>
+
+                <button type="submit">Permanently Delete Account</button>
+            </form>
+        {% endif %}
+
+        <div class="footer-note">
+            Need help? Contact our support team at <a href="mailto:support@mwanachuoshop.com">support@mwanachuoshop.com</a>.
+        </div>
+    </div>
+</body>
+</html>

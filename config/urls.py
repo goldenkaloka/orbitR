@@ -1,4 +1,5 @@
 from apps.geo.views import ZonesGeoJSON
+from apps.users.views import DeleteAccountView
 from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
@@ -40,6 +41,7 @@ urlpatterns = [
     path('api/schema/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/schema/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
     path('geo/zones.geojson', ZonesGeoJSON.as_view(), name='zones_geojson'),
+    path('delete-account/', DeleteAccountView.as_view(), name='delete_account'),
 ]
 
 if settings.DEBUG:
