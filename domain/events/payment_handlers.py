@@ -32,24 +32,8 @@ def on_payment_collected(event: PaymentCollected):
     payable_type = event.payload.get('payable_type')
     payable_id = event.payload.get('payable_id')
     logger.info(f"Payment collected for {payable_type} {payable_id}")
-
-    if payable_type != 'order':
-        return
-
-    try:
-        from apps.orders.models import Order
-        from django.db import transaction
-        from domain.services.order_services import ConfirmOrderService
-        with transaction.atomic():
-            order = Order.objects.select_for_update().get(id=payable_id)
-            if order.status != 'CREATED':
-                logger.info(f"Order {payable_id} already in {order.status} state. Skipping.")
-                return
-            order.is_paid = True
-            order.save(update_fields=['is_paid', 'updated_at'])
-            ConfirmOrderService.execute(payable_id, order.customer)
-    except Exception as e:
-        logger.error(f"Failed to confirm order after payment: {str(e)}")
+    # Order confirmation is handled synchronously inside CompletePaymentService._handle_order_payment.
+    # Nothing extra to do here — the handler is kept for future extensibility and logging.
 
 
 def on_payment_initiated(event: PaymentInitiated):
@@ -67,13 +51,14 @@ def on_payment_disbursed(event: PaymentDisbursed):
         payment = Payment.objects.get(id=event.aggregate_id)
         order = Order.objects.select_related('restaurant__owner', 'driver__user').get(id=order_id)
 
-        v_title, v_body = vendor_funds_received(str(order.id)[:8])
-        NotificationService.send_push(
-            user_id=str(order.restaurant.owner.id),
-            title=v_title, body=v_body,
-            data={"order_id": str(order.id), "type": "payment_received"},
-        )
-        if order.driver:
+        if order.restaurant and order.restaurant.owner:
+            v_title, v_body = vendor_funds_received(str(order.id)[:8])
+            NotificationService.send_push(
+                user_id=str(order.restaurant.owner.id),
+                title=v_title, body=v_body,
+                data={"order_id": str(order.id), "type": "payment_received"},
+            )
+        if order.driver and order.driver.user:
             d_title, d_body = driver_earning_credited(str(order.id)[:8])
             NotificationService.send_push(
                 user_id=str(order.driver.user.id),

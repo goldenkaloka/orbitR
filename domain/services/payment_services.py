@@ -172,40 +172,44 @@ def _get_platform_wallet():
 
 def _hold_escrow(amount: Decimal):
     """Record that amount is expected from gateway (escrow hold)."""
-    wallet = _get_platform_wallet()
-    wallet.pending_balance += amount
-    wallet.save()
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        wallet.pending_balance += amount
+        wallet.save(update_fields=['pending_balance', 'updated_at'])
 
 
 def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
     """Move amount from escrow to cleared balance on disbursement."""
-    wallet = _get_platform_wallet()
-    wallet.pending_balance -= total_amount.quantize(Decimal('0.01'))
-    wallet.balance += platform_cut.quantize(Decimal('0.01'))
-    wallet.save()
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        wallet.pending_balance -= total_amount.quantize(Decimal('0.01'))
+        wallet.balance += platform_cut.quantize(Decimal('0.01'))
+        wallet.save(update_fields=['pending_balance', 'balance', 'updated_at'])
 
 
 def _record_platform_revenue(amount: Decimal, description: str):
     """Record platform-owned money that is not held for a future payout."""
     from apps.wallets.models import WalletTransaction
-    wallet = _get_platform_wallet()
-    wallet.balance += amount
-    wallet.save()
-    WalletTransaction.objects.create(
-        wallet=wallet,
-        amount=amount,
-        tx_type='CREDIT',
-        description=description,
-    )
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        wallet.balance += amount
+        wallet.save(update_fields=['balance', 'updated_at'])
+        WalletTransaction.objects.create(
+            wallet=wallet,
+            amount=amount,
+            tx_type='CREDIT',
+            description=description,
+        )
 
 
 def _release_escrow_refund(amount: Decimal, cancel_fee: Decimal):
     """On refund: release full amount from escrow, keep cancel fee as earned."""
-    wallet = _get_platform_wallet()
-    wallet.pending_balance -= amount
-    if cancel_fee > 0:
-        wallet.balance += cancel_fee
-    wallet.save()
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        wallet.pending_balance -= amount
+        if cancel_fee > 0:
+            wallet.balance += cancel_fee
+        wallet.save(update_fields=['pending_balance', 'balance', 'updated_at'])
 
 
 def _release_escrow_disbursed_refund(payment):
@@ -216,9 +220,10 @@ def _release_escrow_disbursed_refund(payment):
         transaction_type='platform_revenue',
     ).first()
     if platform_entry and platform_entry.amount > 0:
-        wallet = _get_platform_wallet()
-        wallet.balance -= platform_entry.amount
-        wallet.save()
+        with transaction.atomic():
+            wallet = _get_platform_wallet()
+            wallet.balance -= platform_entry.amount
+            wallet.save(update_fields=['balance', 'updated_at'])
 
 
 def _create_double_entry(payment, from_user, to_user, amount, entry_type, status='COMPLETED'):

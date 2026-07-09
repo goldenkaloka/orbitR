@@ -65,7 +65,7 @@ class MapboxRoutingService:
             return None
 
         url = (
-            f"https://api.mapbox.com/directions/v5/mapbox/cycling/"
+            f"https://api.mapbox.com/directions/v5/mapbox/walking/"
             f"{origin_lng},{origin_lat};{destination_lng},{destination_lat}"
         )
         params = {
@@ -123,7 +123,7 @@ class MapboxRoutingService:
     @staticmethod
     def get_optimized_route(
         coordinates: List[Dict[str, Any]],
-        profile: str = 'cycling'
+        profile: str = 'walking'
     ) -> Optional[Route]:
         """Get optimized route for multiple stops using Mapbox Optimization API."""
         token = MapboxRoutingService._get_token()
