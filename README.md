@@ -1,4 +1,4 @@
-# Mwanachuoshop Backend
+# OrbiR Backend
 
 The backend for the Mwanachuoshop super app. It is a Django REST Framework service for marketplace, food delivery, payments, realtime logistics events, and operational admin workflows.
 
