@@ -45,8 +45,8 @@ class SectionStaffAdmin(ModelAdmin):
 
 @admin.register(Restaurant)
 class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
-    list_display = ('display_header', 'location', 'max_delivery_radius_km', 'show_active', 'food_count', 'created_at')
-    list_filter = ('is_active', 'category', 'created_at')
+    list_display = ('display_header', 'source_type', 'is_verified_partner', 'dispatch_mode', 'location', 'max_delivery_radius_km', 'show_active', 'food_count', 'created_at')
+    list_filter = ('source_type', 'is_verified_partner', 'dispatch_mode', 'is_active', 'category', 'created_at')
     search_fields = ('name', 'location', 'owner__username', 'owner__email')
     ordering = ('-created_at',)
     date_hierarchy = 'created_at'
@@ -65,6 +65,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
 
     fieldsets = (
         (None, {'fields': ('id', 'name', 'owner', 'description', 'image', 'logo')}),
+        ('Operating model', {'fields': ('source_type', 'is_verified_partner', 'public_disclaimer', 'dispatch_mode')}),
         ('Location', {'fields': ('geo_location', 'location')}),
         ('Delivery', {'fields': ('max_delivery_radius_km',)}),
         ('Details', {'fields': ('category', 'price_range', 'rating', 'is_active')}),

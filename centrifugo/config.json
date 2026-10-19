@@ -26,7 +26,7 @@
     "proxy": {
       "subscribe": {
         "endpoint": "http://backend:8000/api/ws-subscribe-check/",
-        "timeout": "3s",
+        "timeout": "10s",
         "http": {
           "static_headers": {
             "X-Centrifugo-Proxy-Secret": "${CENTRIFUGO_VAR_PROXY_SECRET}"
@@ -81,6 +81,14 @@
         "name": "riders_global",
         "history_size": 20,
         "history_ttl": "300s",
+        "presence": true,
+        "force_recovery": true,
+        "subscribe_proxy_enabled": true
+      },
+      {
+        "name": "admins",
+        "history_size": 30,
+        "history_ttl": "600s",
         "presence": true,
         "force_recovery": true,
         "subscribe_proxy_enabled": true

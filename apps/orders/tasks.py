@@ -13,37 +13,6 @@ from domain.fsm.order_fsm import OrderFSM
 logger = logging.getLogger(__name__)
 
 
-@shared_task(name='apps.orders.tasks.prewarm_order_route_geometry', ignore_result=True)
-def prewarm_order_route_geometry(order_id):
-    from apps.core.cache_keys import stable_cache_key
-    from domain.services.mapbox_routing_service import MapboxRoutingService
-
-    order = Order.objects.select_related('restaurant').filter(id=order_id).first()
-    if not order or not order.restaurant or not order.restaurant.geo_location or not order.delivery_location:
-        return 'skipped'
-
-    res_lng = round(order.restaurant.geo_location.x, 6)
-    res_lat = round(order.restaurant.geo_location.y, 6)
-    dest_lng = round(order.delivery_location.x, 6)
-    dest_lat = round(order.delivery_location.y, 6)
-    cache_key = stable_cache_key('route_geom', {
-        'from': [res_lng, res_lat],
-        'to': [dest_lng, dest_lat],
-    })
-    if cache.get(cache_key) is not None:
-        return 'cached'
-
-    route = MapboxRoutingService.get_directions_route(
-        res_lng,
-        res_lat,
-        dest_lng,
-        dest_lat,
-    )
-    if route and route.coordinates:
-        cache.set(cache_key, route.coordinates, 60 * 60 * 2)
-        return 'warmed'
-    return 'miss'
-
 
 @shared_task
 def cleanup_unpaid_orders():
@@ -190,3 +159,59 @@ def cleanup_stale_idempotency_keys():
     if deleted:
         logger.info(f"[IdempotencyCleanup] Deleted {deleted} stale keys older than 24h")
     return f"Deleted {deleted} stale idempotency keys"
+
+
+@shared_task
+def concierge_confirmation_timeout_check():
+    """
+    Auto-cancels concierge orders stuck in AWAITING_CONFIRMATION for > 10 minutes.
+    Refunds the customer in full with platform fault and notifies them.
+    """
+    cutoff = timezone.now() - timedelta(minutes=10)
+    with transaction.atomic():
+        stale_orders = list(
+            Order.objects.select_for_update(skip_locked=True)
+            .filter(
+                status='AWAITING_CONFIRMATION',
+                created_at__lt=cutoff,
+            )
+        )
+
+    if not stale_orders:
+        return "No stale concierge orders to clean up."
+
+    from apps.users.models import User
+    from domain.services.orders.order_cancellation import CancelOrderService
+    from infrastructure.notifications.service import NotificationService
+
+    system_user = User.objects.filter(role='admin').first()
+    cancelled_count = 0
+
+    for order in stale_orders:
+        try:
+            CancelOrderService.execute(
+                order_id=str(order.id),
+                actor=system_user or order.customer,
+                reason="Restaurant confirmation timeout (10 minutes). Full refund issued.",
+                category='system_timeout',
+                fault='PLATFORM',
+            )
+            cancelled_count += 1
+            try:
+                NotificationService.send_push(
+                    user_id=str(order.customer_id),
+                    title="Order Cancelled — Restaurant Timeout",
+                    body=(
+                        f"We could not confirm order #{str(order.id)[:8]} with "
+                        f"{order.restaurant.name} within 10 minutes. Your payment has been refunded in full."
+                    ),
+                    data={"order_id": str(order.id), "type": "concierge_timeout_refund"},
+                )
+            except Exception as ne:
+                logger.warning(f"Could not notify customer for order {order.id}: {ne}")
+        except Exception as e:
+            logger.error(f"Failed to auto-cancel stale concierge order {order.id}: {e}")
+
+    logger.info(f"[ConciergeTimeout] Cancelled {cancelled_count} stale orders.")
+    return f"Auto-cancelled {cancelled_count} stale concierge orders."
+

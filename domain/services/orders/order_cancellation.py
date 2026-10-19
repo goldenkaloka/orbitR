@@ -126,9 +126,14 @@ class CancelOrderService:
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
 
+            # Idempotent double-tap: cancelling an already-cancelled order is a
+            # no-op (would otherwise re-run metadata application and refunds).
+            if order.status == 'CANCELLED':
+                return order
+
             cancel_status = None
             if actor.role == 'customer' and order.customer == actor:
-                if order.status not in ['PENDING_PAYMENT', 'CREATED', 'CONFIRMED']:
+                if order.status not in ['PENDING_PAYMENT', 'CREATED', 'AWAITING_CONFIRMATION', 'CONFIRMED']:
                     raise PermissionError("Cannot cancel after preparation started.")
                 cancel_status = order.status
             elif _is_vendor_or_staff(actor, order):
@@ -209,7 +214,8 @@ class CancelOrderItemService:
 
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
-            if not _is_vendor_or_staff(actor, order):
+            from domain.services.permissions import check_restaurant_permission
+            if not order.restaurant or not check_restaurant_permission(actor, order.restaurant):
                 raise PermissionError("Only restaurant staff can cancel items.")
 
             if order.status not in ('CONFIRMED', 'PREPARING'):

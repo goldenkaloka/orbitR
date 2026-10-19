@@ -201,6 +201,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
 
         # ── Mapbox Search Box (additional suggestions) ────────────────────
         err = _mapbox_token_or_503(Response)
+        mapbox_down = False
         if not err:
             try:
                 url = (
@@ -217,11 +218,17 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                         parsed = _parse_searchbox_feature(feature)
                         if parsed['name'].lower() not in zone_names:
                             results.append(parsed)
+                elif resp.status_code >= 500:
+                    mapbox_down = True
             except Exception as exc:
                 logger.warning('Search Box autocomplete failed: %s', exc)
+                # Circuit-break: a transport failure (timeout/DNS/refused)
+                # means the next Mapbox hop will likely fail too — skipping
+                # it caps worst-case latency at 5 s instead of 10 s.
+                mapbox_down = True
 
         # ── Geocoding v5 fallback (only if nothing found at all) ──────────
-        if not results and not err:
+        if not results and not err and not mapbox_down:
             try:
                 url = (
                     f'https://api.mapbox.com/geocoding/v5/mapbox.places'
@@ -239,7 +246,9 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             except Exception as exc:
                 logger.error('Geocoding v5 autocomplete fallback failed: %s', exc)
 
-        cache.set(cache_key, results, 300)
+        # Empty results during an outage must not be cached for the full
+        # TTL — 30 s bounds both negative-cache poisoning and retry load.
+        cache.set(cache_key, results, 300 if results else 30)
         return Response(results)
 
     @action(detail=False, methods=['GET'])
@@ -270,6 +279,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             return err
 
         results = []
+        reverse_down = False
 
         # ── Search Box reverse ────────────────────────────────────────────
         try:
@@ -284,11 +294,16 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                     _parse_searchbox_feature(f)
                     for f in resp.json().get('features', [])
                 ]
+            elif resp.status_code >= 500:
+                reverse_down = True
         except Exception as exc:
             logger.warning('Search Box reverse geocode failed: %s', exc)
+            # Circuit-break: skip the second Mapbox hop after a transport
+            # failure — worst case 5 s, not 10 s, inside the request path.
+            reverse_down = True
 
         # ── Geocoding v5 fallback ─────────────────────────────────────────
-        if not results:
+        if not results and not reverse_down:
             try:
                 url = (
                     f'https://api.mapbox.com/geocoding/v5/mapbox.places'
@@ -305,5 +320,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             except Exception as exc:
                 logger.error('Geocoding v5 reverse fallback failed: %s', exc)
 
-        cache.set(cache_key, results, 3600)
+        # An outage would otherwise pin an empty address on this coordinate
+        # for a full hour — short TTL for misses, full TTL for real results.
+        cache.set(cache_key, results, 3600 if results else 30)
         return Response(results)

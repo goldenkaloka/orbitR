@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.0/ref/settings/
 """
 
 import os
+import logging
 from pathlib import Path
 
 from django.urls import reverse_lazy
@@ -35,6 +36,11 @@ MOCK_PAYMENTS = config('MOCK_PAYMENTS', default=False, cast=bool)
 DISPATCH_DEBUG = config('DISPATCH_DEBUG', default=DEBUG, cast=bool)
 
 BATCH_DRIVER_ALERT_REMINDER_MINUTES = config('BATCH_DRIVER_ALERT_REMINDER_MINUTES', default=10, cast=int)
+
+# Pickup is enforced at the assigned restaurant, so this radius is tight.
+# Delivery stays wide because GPS drift and building entrances vary.
+PICKUP_GEOFENCE_RADIUS_METERS = config('PICKUP_GEOFENCE_RADIUS_METERS', default=300, cast=int)
+DELIVERY_GEOFENCE_RADIUS_METERS = config('DELIVERY_GEOFENCE_RADIUS_METERS', default=6000, cast=int)
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,backend', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 if not ALLOWED_HOSTS:
@@ -63,6 +69,14 @@ if not DEBUG:
 SECURE_REFERRER_POLICY = config('SECURE_REFERRER_POLICY', default='same-origin')
 SESSION_COOKIE_HTTPONLY = True
 CSRF_COOKIE_HTTPONLY = True
+
+# The API authenticates with JWTs, so sessions only back the admin login. The
+# default DB session backend costs ~6 queries on every request (load + create +
+# expire sweep), which dominated the measured query count on the hottest
+# customer endpoints. Store sessions in the Redis cache instead: zero DB traffic
+# per request. Redis is already a hard dependency (cache + Celery broker), and
+# `cached_db` is avoided on purpose because it still writes to the DB.
+SESSION_ENGINE = config('SESSION_ENGINE', default='django.contrib.sessions.backends.cache')
 
 
 # Application definition
@@ -106,6 +120,20 @@ INSTALLED_APPS = [
     'apps.reliability',
 ]
 
+# Dev-only profiling apps (Silky dashboard, QueryCount). Gated on DEBUG so
+# production images never import or expose them.
+if DEBUG:
+    try:
+        import silk
+        INSTALLED_APPS.append('silk')
+    except ImportError:
+        pass
+    try:
+        import querycount
+        INSTALLED_APPS.append('querycount')
+    except ImportError:
+        pass
+
 
 AUTH_USER_MODEL = 'users.User'
 
@@ -119,9 +147,17 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
     ],
-    'DEFAULT_THROTTLE_RATES': {
+'DEFAULT_THROTTLE_RATES': {
         'anon': '100/hour',
         'user': '1000/hour',
+        # Public marketplace catalogue reads. Every visitor to the storefront is
+        # anonymous, so the strict `anon` budget above would otherwise govern
+        # all browse traffic. Tuned for image-grid browsing and prefetch.
+        'catalog': config('CATALOG_THROTTLE_RATE', default='3000/hour'),
+        # Money-moving writes (payment initiate, pay_share, pay/reactivate,
+        # cashout) get a tighter budget than the blanket `user` rate so a
+        # compromised or buggy client cannot hammer the gateway.
+        'payments': config('PAYMENTS_THROTTLE_RATE', default='60/hour'),
     },
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
@@ -178,6 +214,17 @@ CORS_ALLOW_CREDENTIALS = True
 TRUST_PROXY_HEADERS = config('TRUST_PROXY_HEADERS', default=False, cast=bool)
 AIRPAY_ALLOW_UNSIGNED_WEBHOOKS = config('AIRPAY_ALLOW_UNSIGNED_WEBHOOKS', default=False, cast=bool)
 LOCAL_PICKUP_MAX_DISTANCE_KM = config('LOCAL_PICKUP_MAX_DISTANCE_KM', default=0.5, cast=float)
+
+# ---------------------------------------------------------------------------
+# Storefront cache purge (DDIA Ch.9 cache coherence)
+# ---------------------------------------------------------------------------
+# The Next storefront caches product/category reads for 60s in its Data Cache
+# and revalidates routes on the same window. When a listing mutates, the API
+# POSTs to <SITE_URL>/api/revalidate with these tags so the storefront reflects
+# the write immediately instead of waiting out the TTL. Both values must match
+# the storefront's REVALIDATE_SECRET; if unset, purges are skipped (TTL-only).
+STOREFRONT_REVALIDATE_URL = config('STOREFRONT_REVALIDATE_URL', default='')
+STOREFRONT_REVALIDATE_SECRET = config('STOREFRONT_REVALIDATE_SECRET', default='')
 DRIVER_RESTAURANT_MAX_DISTANCE_KM = config('DRIVER_RESTAURANT_MAX_DISTANCE_KM', default=5.0, cast=float)
 DRIVER_RESTAURANT_ZONE_RADIUS = config('DRIVER_RESTAURANT_ZONE_RADIUS', default=0, cast=int)
 
@@ -190,12 +237,84 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
-    'infrastructure.middleware.idempotency.IdempotencyMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    # After AuthenticationMiddleware: reads request.user to scope the
+    # IdempotencyKey lookup; earlier in the stack request.user does not
+    # exist yet and any request carrying X-Idempotency-Key 500s.
+    'infrastructure.middleware.idempotency.IdempotencyMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
+# ── Dev-only performance instrumentation (DEBUG only) ─────────────────────────
+# We measure the headless DRF API the Flutter customer app talks to:
+#   * querycount — prints per-request query totals + duplicates to the console
+#   * silk       — records full request/SQL/timing profiles at /silk/
+#   * nplusone   — logs lazy-loading N+1 access patterns
+# None of this loads in production.
+if DEBUG:
+    debug_pre_middleware = []
+    try:
+        import silk
+        debug_pre_middleware.append('silk.middleware.SilkyMiddleware')
+    except ImportError:
+        pass
+
+    debug_post_middleware = []
+    try:
+        import nplusone
+        debug_post_middleware.append('nplusone.ext.django.NPlusOneMiddleware')
+    except ImportError:
+        pass
+
+    try:
+        import querycount
+        debug_post_middleware.append('querycount.middleware.QueryCountMiddleware')
+    except ImportError:
+        pass
+
+    MIDDLEWARE = [
+        MIDDLEWARE[0],
+        *debug_pre_middleware,
+        *MIDDLEWARE[1:],
+        *debug_post_middleware,
+    ]
+
+    QUERYCOUNT = {
+        'THRESHOLDS': {
+            'MEDIUM': 50,
+            'HIGH': 200,
+            'MIN_TIME_TO_LOG': 0.01,
+            'MIN_QUERY_COUNT_TO_LOG': 0,
+        },
+        # Skip admin/silk/static/health noise — we only care about /api/.
+        'IGNORE_REQUEST_PATTERNS': [
+            r'^/admin/', r'^/silk/', r'^/static/', r'^/health/',
+        ],
+        'IGNORE_SQL_PATTERNS': [],
+        # Print up to N duplicate-query stacks to the console.
+        'DISPLAY_DUPLICATES': 5,
+        'RESPONSE_HEADER': 'X-DjangoQueryCount-Count',
+    }
+
+    # Profiling is opt-in: cProfile on every request multiplied the admin
+    # console latency by 5-20x. Enable with SILKY_PROFILER=True when needed.
+    SILKY_PYTHON_PROFILER = config('SILKY_PROFILER', default=False, cast=bool)
+    SILKY_PYTHON_PROFILER_BINARY = False
+    SILKY_INTERCEPT_PERCENT = config('SILKY_INTERCEPT_PERCENT', default=0, cast=int)
+    SILKY_MAX_RECORDED_REQUESTS = 10000
+    SILKY_MAX_RECORDED_REQUESTS_CHECK_PERCENT = 10
+    SILKY_MAX_REQUEST_BODY_SIZE = 2048
+    SILKY_MAX_RESPONSE_BODY_SIZE = 0  # don't store response bodies
+    # Always require a staff login to view profiles — the dev server is bound
+    # to the LAN (192.168.118.33), so never expose it unauthenticated.
+    SILKY_AUTHENTICATION = config('SILKY_AUTH', default=True, cast=bool)
+    SILKY_AUTHORISATION = config('SILKY_AUTH', default=True, cast=bool)
+
+    NPLUSONE_RAISE = False  # log instead of raising; CI opts in via env
+    NPLUSONE_LOGGER = logging.getLogger('nplusone')
+    NPLUSONE_LOG_LEVEL = logging.WARNING
 
 ROOT_URLCONF = 'config.urls'
 
@@ -271,7 +390,8 @@ USE_TZ = True
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-# MinIO / S3 Storage Configuration
+# S3 Storage Configuration (RustFS today; the API is plain S3, so any
+# compatible store drops in behind these settings)
 AWS_ACCESS_KEY_ID = config('MINIO_ACCESS_KEY', default=config('MINIO_ROOT_USER', default='minioadmin'))
 AWS_SECRET_ACCESS_KEY = config('MINIO_SECRET_KEY', default=config('MINIO_ROOT_PASSWORD', default='minioadmin'))
 AWS_STORAGE_BUCKET_NAME = config('MINIO_STORAGE_BUCKET_NAME', default='static')
@@ -282,13 +402,25 @@ AWS_S3_SIGNATURE_VERSION = 's3v4'
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = 'public-read'
 AWS_QUERYSTRING_AUTH = False
-AWS_S3_SECURE_URLS = True
+# Scheme for generated media URLs, including the colon. Local storage is plain
+# HTTP; production terminates TLS at nginx, so it stays https there.
+AWS_S3_URL_PROTOCOL = config('AWS_S3_URL_PROTOCOL', default='https:')
 AWS_S3_OBJECT_PARAMETERS = {
     'CacheControl': 'public, max-age=86400, immutable',
 }
 
 # External URL generation for Flutter/Web
 MINIO_EXTERNAL_URL = config('MINIO_EXTERNAL_URL', default='http://localhost:9000')
+if not DEBUG and ('localhost' in MINIO_EXTERNAL_URL or '127.0.0.1' in MINIO_EXTERNAL_URL):
+    # Every generated media URL is frozen into the Redis/CDN caches; a
+    # localhost host baked in production is a full-site image outage that
+    # survives config fixes until the caches expire. Fail at boot instead.
+    from django.core.exceptions import ImproperlyConfigured
+    raise ImproperlyConfigured(
+        "MINIO_EXTERNAL_URL points at localhost but DEBUG=False. Set it to "
+        "the publicly reachable object-store endpoint "
+        "(e.g. https://api.mwanachuoshop.com)."
+    )
 AWS_S3_CUSTOM_DOMAIN = f"{MINIO_EXTERNAL_URL.split('://')[-1]}/{AWS_STORAGE_BUCKET_NAME}"
 
 STORAGES = {
@@ -556,8 +688,24 @@ RAFIKI_CONFIG = {
     'BASE_URL': 'https://api.rafikisms.com',
 }
 import sys
+# Read .env file directly if present to prevent container-baked env vars from overriding
+_env_path = BASE_DIR / '.env'
+_mock_sms_from_file = None
+if _env_path.exists():
+    try:
+        with open(_env_path, 'r', encoding='utf-8') as _f:
+            for _line in _f:
+                if _line.strip().startswith('MOCK_SMS='):
+                    _mock_sms_from_file = _line.strip().split('=', 1)[1].strip().lower() in ('true', '1', 'yes')
+                    break
+    except Exception:
+        pass
 
-MOCK_SMS = config('MOCK_SMS', default=True, cast=bool)
+if _mock_sms_from_file is not None:
+    MOCK_SMS = _mock_sms_from_file
+else:
+    MOCK_SMS = config('MOCK_SMS', default=False, cast=bool)
+
 if 'test' in sys.argv or 'test_coverage' in sys.argv:
     MOCK_SMS = True
 
@@ -666,6 +814,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.orders.tasks.dispute_sla_check',
         'schedule': crontab(minute='*/5'),
     },
+    'concierge-confirmation-timeout-every-2-mins': {
+        'task': 'apps.orders.tasks.concierge_confirmation_timeout_check',
+        'schedule': crontab(minute='*/2'),
+    },
     'cleanup-stale-idempotency-keys': {
         'task': 'apps.orders.tasks.cleanup_stale_idempotency_keys',
         'schedule': crontab(minute=0, hour='*'),
@@ -744,6 +896,12 @@ LOGGING = {
         "perf.celery": {
             "handlers": ["console"],
             "level": config("PERF_CELERY_LOG_LEVEL", default="INFO"),
+            "propagate": False,
+        },
+        # N+1 query detector (dev only; module is a no-op when not loaded).
+        "nplusone": {
+            "handlers": ["console"],
+            "level": "WARNING",
             "propagate": False,
         },
     },

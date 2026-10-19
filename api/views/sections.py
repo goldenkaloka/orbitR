@@ -14,36 +14,47 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 
+def can_manage_restaurant_structure(user, restaurant):
+    return getattr(user, 'serialized_role', None) == 'admin' or restaurant.owner_id == user.id
+
+
 class SectionViewSet(viewsets.ModelViewSet):
     serializer_class = RestaurantSectionSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
-        owned = RestaurantSection.objects.filter(restaurant__owner=user)
-        managed = RestaurantSection.objects.filter(staff__user=user)
-        return (owned | managed).distinct()
+        if getattr(user, 'serialized_role', None) == 'admin':
+            queryset = RestaurantSection.objects.all()
+        else:
+            owned = RestaurantSection.objects.filter(restaurant__owner=user)
+            managed = RestaurantSection.objects.filter(staff__user=user)
+            queryset = (owned | managed).distinct()
+        restaurant_id = self.request.query_params.get('restaurant')
+        if restaurant_id:
+            queryset = queryset.filter(restaurant_id=restaurant_id)
+        return queryset
 
     def perform_create(self, serializer):
         restaurant_id = self.request.data.get('restaurant')
         from apps.restaurants.models import Restaurant
         restaurant = Restaurant.objects.get(id=restaurant_id)
-        if restaurant.owner != self.request.user:
-            raise PermissionDenied('Only the restaurant owner can create sections')
+        if not can_manage_restaurant_structure(self.request.user, restaurant):
+            raise PermissionDenied('Only the restaurant owner or admin can create sections')
         serializer.save(restaurant=restaurant)
         invalidate_restaurant_cache(restaurant)
 
     def perform_update(self, serializer):
         section = self.get_object()
-        if section.restaurant.owner != self.request.user:
-            raise PermissionDenied('Only the restaurant owner can edit sections')
+        if not can_manage_restaurant_structure(self.request.user, section.restaurant):
+            raise PermissionDenied('Only the restaurant owner or admin can edit sections')
         serializer.save()
         invalidate_restaurant_cache(section.restaurant)
 
     def perform_destroy(self, instance):
         restaurant = instance.restaurant
-        if restaurant.owner != self.request.user:
-            raise PermissionDenied('Only the restaurant owner can delete sections')
+        if not can_manage_restaurant_structure(self.request.user, restaurant):
+            raise PermissionDenied('Only the restaurant owner or admin can delete sections')
         if RestaurantSection.objects.filter(restaurant=restaurant).count() <= 1:
             raise PermissionDenied('A restaurant must keep at least one section')
         instance.delete()
@@ -57,7 +68,7 @@ class SectionViewSet(viewsets.ModelViewSet):
         Only the restaurant owner can call this.
         """
         section = self.get_object()
-        if section.restaurant.owner != request.user:
+        if not can_manage_restaurant_structure(request.user, section.restaurant):
             return Response({'error': 'Only the restaurant owner can manage staff'}, status=403)
 
         user_id = request.data.get('user_id')
@@ -99,7 +110,7 @@ class SectionViewSet(viewsets.ModelViewSet):
         Only the restaurant owner can call this.
         """
         section = self.get_object()
-        if section.restaurant.owner != request.user:
+        if not can_manage_restaurant_structure(request.user, section.restaurant):
             return Response({'error': 'Only the restaurant owner can manage staff'}, status=403)
 
         user_id = request.data.get('user_id')
@@ -126,7 +137,7 @@ class SectionViewSet(viewsets.ModelViewSet):
         Accessible to the restaurant owner only.
         """
         section = self.get_object()
-        if section.restaurant.owner != request.user:
+        if not can_manage_restaurant_structure(request.user, section.restaurant):
             return Response({'error': 'Only the restaurant owner can view staff'}, status=403)
 
         staff_members = SectionStaff.objects.filter(section=section).select_related('user')
@@ -146,11 +157,20 @@ class BatchSectionStatusViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        return BatchSectionStatus.objects.filter(
-            section__restaurant__owner=user
-        ) | BatchSectionStatus.objects.filter(
-            section__staff__user=user
-        )
+        if getattr(user, 'serialized_role', None) == 'admin':
+            queryset = BatchSectionStatus.objects.all()
+        else:
+            queryset = BatchSectionStatus.objects.filter(
+                section__restaurant__owner=user
+            ) | BatchSectionStatus.objects.filter(
+                section__staff__user=user
+            )
+        # Admin console reuses the vendor prep/delivery tabs and scopes the
+        # section-status feed to the restaurant it is operating.
+        restaurant_id = self.request.query_params.get('restaurant')
+        if restaurant_id:
+            queryset = queryset.filter(section__restaurant_id=restaurant_id)
+        return queryset
 
     @action(detail=True, methods=['post'])
     def mark_ready(self, request, pk=None):

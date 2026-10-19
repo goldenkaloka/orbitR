@@ -14,7 +14,10 @@ def compute_busy_restaurant_ids(restaurant_ids):
         Order.objects.filter(
             restaurant_id__in=restaurant_ids,
             batch__status='ACCUMULATING',
-            status__in=['confirmed', 'preparing'],
+            # Order statuses are uppercase (OrderFSM / order_status_valid
+            # constraint) — the old lowercase literals never matched, so the
+            # busy badge was permanently off.
+            status__in=['CONFIRMED', 'PREPARING'],
         ).values('restaurant_id', 'items__section').annotate(cnt=Count('id'))
     )
 

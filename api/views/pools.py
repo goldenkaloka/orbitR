@@ -7,12 +7,26 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 
 class PoolOrderViewSet(viewsets.ModelViewSet):
     queryset = OrderPool.objects.all()
     serializer_class = OrderPoolSerializer
     permission_classes = [IsAuthenticated]
+
+    #: Money-moving actions get a tighter budget than the blanket `user` rate
+    #: so a compromised or buggy client cannot hammer the payment gateway.
+    throttle_scope_map = {
+        'pay_share': 'payments',
+    }
+
+    def get_throttles(self):
+        scope = self.throttle_scope_map.get(self.action)
+        if scope:
+            self.throttle_scope = scope
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_queryset(self):
         user = self.request.user
@@ -243,10 +257,12 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             from django.contrib.gis.geos import Point
             try:
                 user_location = Point(float(lng), float(lat), srid=4326)
-                # Filter for pools within 1.0 km proximity (1000 meters)
+                # Filter for pools within 1.0 km proximity (1000 meters).
+                # Cap at 20 like the fallback branch — a dense city would
+                # otherwise return a multi-megabyte single response.
                 queryset = queryset.annotate(
                     distance=Distance('delivery_location', user_location)
-                ).filter(distance__lte=1000).order_by('distance')
+                ).filter(distance__lte=1000).order_by('distance')[:20]
             except (ValueError, TypeError):
                 return Response({'error': 'Invalid lat or lng'}, status=400)
         else:

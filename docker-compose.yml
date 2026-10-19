@@ -8,7 +8,7 @@ x-env: &env
   REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/1
   CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
   CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ENDPOINT: http://rustfs:9001
   MINIO_EXTERNAL_URL: ${MINIO_EXTERNAL_URL}
   MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
   MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
@@ -17,6 +17,8 @@ x-env: &env
   CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY}
   CENTRIFUGO_HMAC_SECRET: ${CENTRIFUGO_HMAC_SECRET}
   CENTRIFUGO_PROXY_SECRET: ${CENTRIFUGO_PROXY_SECRET}
+  STOREFRONT_REVALIDATE_URL: ${STOREFRONT_REVALIDATE_URL}
+  STOREFRONT_REVALIDATE_SECRET: ${STOREFRONT_REVALIDATE_SECRET}
 
 services:
   db:
@@ -27,6 +29,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-extensions.sql:/docker-entrypoint-initdb.d/01-extensions.sql:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
@@ -44,33 +47,55 @@ services:
       timeout: 5s
       retries: 5
 
-  minio:
-    image: minio/minio:latest
+  # Object storage.
+  #
+  # MinIO's images were pulled from the public registries after the 2021 AGPL
+  # relicensing, so `minio/minio` no longer resolves at all. RustFS is a Rust
+  # S3-compatible server that still speaks the same API, so the app and the
+  # boto3 provisioning step are unchanged. It even reads the MINIO_ROOT_USER /
+  # MINIO_ROOT_PASSWORD names natively.
+  #
+  # Container 9001 is the S3 API and 9000 is the web console. Both are
+  # published so product images can be fetched by the browser during local
+  # development — see MINIO_EXTERNAL_URL in .env.
+  rustfs:
+    image: rustfs/rustfs:latest
+    # Non-root image against a root-owned named volume.
+    user: "0:0"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
-      - minio_data:/data
-    command: server /data --console-address ":9001"
+      - rustfs_data:/data
+    ports:
+      - "9100:9000"
+      - "9101:9001"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-f", "http://localhost:9001/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  minio-init:
-    image: minio/mc:latest
+  # Bucket + public-read policy. `minio/mc` is also gone from the public
+  # registries, so this uses boto3 from the app image instead — one less
+  # external image to depend on.
+  storage-init:
+    image: orbitr-app:latest
+    pull_policy: never
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      until (/usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD}) do echo '...waiting for minio...' && sleep 1; done;
-      /usr/bin/mc mb local/${MINIO_STORAGE_BUCKET_NAME} || true;
-      /usr/bin/mc anonymous set public local/${MINIO_STORAGE_BUCKET_NAME};
-      exit 0;
-      "
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: python manage.py init_media_bucket
+    env_file:
+      - .env
+    environment:
+      <<: *env
+      MINIO_ENDPOINT: http://rustfs:9001
+    restart: "no"
 
   centrifugo:
     image: centrifugo/centrifugo:v6.8.1
@@ -85,6 +110,12 @@ services:
       CENTRIFUGO_ADMIN_PASSWORD: ${CENTRIFUGO_ADMIN_PASSWORD}
       CENTRIFUGO_ADMIN_SECRET: ${CENTRIFUGO_ADMIN_SECRET}
       CENTRIFUGO_ENGINE_REDIS_ADDRESS: "redis://:${REDIS_PASSWORD}@redis:6379/2"
+    ports:
+      # Expose the realtime gateway to the host so devices on the LAN can open
+      # the websocket directly (host 8000 is taken by the Django/gunicorn
+      # container). In production nginx fronts this, so the mapping is
+      # dev-only convenience.
+      - "8001:8000"
     depends_on:
       redis:
         condition: service_healthy
@@ -165,6 +196,28 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Storefront — read-only Next.js catalogue. It fetches the API over the
+  # compose network, so no browser ever talks to Django directly and no auth
+  # crosses this boundary.
+  web:
+    build: ../web
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: '1'
+      API_BASE_URL: http://backend:8000
+      SITE_URL: ${SITE_URL:-https://mwanachuoshop.com}
+      REVALIDATE_SECRET: ${STOREFRONT_REVALIDATE_SECRET}
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   nginx:
     build: ./nginx
     ports:
@@ -179,6 +232,8 @@ services:
         condition: service_started
       centrifugo:
         condition: service_started
+      web:
+        condition: service_started
     restart: unless-stopped
 
   certbot:
@@ -192,4 +247,4 @@ services:
 
 volumes:
   postgres_data:
-  minio_data:
+  rustfs_data:

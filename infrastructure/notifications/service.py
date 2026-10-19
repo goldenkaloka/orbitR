@@ -188,9 +188,13 @@ class NotificationService:
             return False
 
     @staticmethod
-    def notify_admins(title, body, data=None):
+    def notify_admins(title, body, data=None, sms=False):
         """
-        Send push notification to all admins
+        Send push notification to all admins.
+
+        SMS is opt-in via ``sms=True`` because it is billable per message —
+        dispatch alerts are throttled upstream by the batch offer_sent_at
+        cadence so this does not fire on every poll.
         """
         from apps.users.models import User
         admins = User.objects.filter(role='admin')
@@ -201,3 +205,8 @@ class NotificationService:
                 body=body,
                 data=data
             )
+            if sms and admin.phone:
+                try:
+                    NotificationService.send_sms(admin.phone, f"{title}: {body}")
+                except Exception as exc:
+                    logger.error(f"Admin SMS failed for {admin.id}: {exc}")

@@ -55,3 +55,8 @@ h3==4.1.0
 locust
 pytest==8.4.1
 pytest-django==4.11.1
+
+# Performance measurement (dev / CI only — gated behind DEBUG in settings)
+django-silk==5.3.2
+django-querycount==0.8.3
+nplusone==1.0.0

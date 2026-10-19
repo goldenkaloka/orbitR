@@ -47,8 +47,113 @@ class SectionStaff(models.Model):
 
 
 class Restaurant(models.Model):
+    SOURCE_PARTNER = 'PARTNER'
+    SOURCE_PLATFORM_MANAGED = 'PLATFORM_MANAGED'
+    SOURCE_TYPE_CHOICES = (
+        (SOURCE_PARTNER, 'Verified partner'),
+        (SOURCE_PLATFORM_MANAGED, 'Platform-managed concierge'),
+    )
+
+    # How OrbitR settles the actual restaurant for an order. This is separate
+    # from `owner`: an admin-created/platform-managed listing is often owned by
+    # the admin user in the database but is still a third-party restaurant that
+    # must be paid.
+    SETTLEMENT_PLATFORM_PREPAID = 'PLATFORM_PREPAID'
+    SETTLEMENT_DRIVER_FLOAT = 'DRIVER_FLOAT'
+    SETTLEMENT_COMPANY_OWNED = 'COMPANY_OWNED'
+    SETTLEMENT_VENDOR_PAYOUT = 'VENDOR_PAYOUT'
+    SETTLEMENT_CHOICES = (
+        (SETTLEMENT_PLATFORM_PREPAID, 'OrbitR pays restaurant before pickup'),
+        (SETTLEMENT_DRIVER_FLOAT, 'Driver pays from company float'),
+        (SETTLEMENT_COMPANY_OWNED, 'Company-owned — internal settlement'),
+        (SETTLEMENT_VENDOR_PAYOUT, 'Vendor payout (existing partner flow)'),
+    )
+
+    # ── Dispatch authority ────────────────────────────────────────────────────
+    # Who allocates a driver for this restaurant's batches. Distinct from
+    # source_type, which controls money/SMS routing and customer-facing
+    # disclosure — not who dispatches.
+    DISPATCH_ADMIN = 'admin'
+    DISPATCH_RESTRANT = 'restaurant'
+    DISPATCH_MODE_CHOICES = (
+        (DISPATCH_ADMIN, 'Admin dispatch'),
+        (DISPATCH_RESTRANT, 'Restaurant dispatch'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='restaurants', db_index=True)
+    source_type = models.CharField(
+        max_length=24,
+        choices=SOURCE_TYPE_CHOICES,
+        default=SOURCE_PARTNER,
+        db_index=True,
+        help_text="Partner restaurants are operated by the vendor; platform-managed listings are fulfilled by OrbitR ops.",
+    )
+    is_verified_partner = models.BooleanField(
+        default=True,
+        db_index=True,
+        help_text="True only when the restaurant directly manages and confirms its own listing.",
+    )
+    public_disclaimer = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Optional customer-facing note for platform-managed listings.",
+    )
+
+    # Real settlement configuration. For platform-managed listings the admin
+    # user is only the listing operator; these fields identify the actual
+    # restaurant/payee and how OrbitR pays it.
+    settlement_mode = models.CharField(
+        max_length=24,
+        choices=SETTLEMENT_CHOICES,
+        default=SETTLEMENT_VENDOR_PAYOUT,
+        db_index=True,
+        help_text="How the restaurant is paid for an order.",
+    )
+    payout_phone = models.CharField(
+        max_length=32,
+        blank=True,
+        default='',
+        help_text="Mobile-money number / Lipa Namba that receives the restaurant payout.",
+    )
+    payout_network = models.CharField(
+        max_length=32,
+        blank=True,
+        default='',
+        help_text="M_PESA, TIGO_PESA, AIRTEL_MONEY, HALOPESA.",
+    )
+    payout_account_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Name registered on the payout account.",
+    )
+
+    # Who allocates a driver when this restaurant's batches need one.
+    # admin      — admin dispatch queue owns allocation (default)
+    # restaurant — the restaurant allocates its own driver
+    # Admins may always allocate as an escalation, regardless of this value.
+    dispatch_mode = models.CharField(
+        max_length=20,
+        choices=DISPATCH_MODE_CHOICES,
+        default=DISPATCH_ADMIN,
+        db_index=True,
+        help_text="Who allocates drivers for this restaurant's batches.",
+    )
+
+    @property
+    def allows_multi_restaurant_batching(self):
+        """
+        Whether this restaurant's orders may share a batch with other
+        restaurants.
+
+        Restricted to platform-managed listings. Partner restaurants keep their
+        own driver pool and their own order data, so their batches must stay
+        single-restaurant — pooling them would expose one restaurant's orders to
+        another and force the partner's own drivers to serve it.
+        """
+        return self.source_type == self.SOURCE_PLATFORM_MANAGED
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True, null=True)
     image = models.ImageField(upload_to='restaurants/', blank=True, null=True)

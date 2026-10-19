@@ -217,19 +217,35 @@ class MapboxRoutingService:
 
         coordinates = []
 
+        # One pickup waypoint per distinct restaurant, not one per order.
+        #
+        # The driver visits a restaurant once no matter how many orders he is
+        # collecting there, so emitting a pickup per order made the optimiser
+        # route through the same kitchen several times. That inflated both
+        # total_distance_km and the stop count the driver is paid on — a three
+        # order single-restaurant batch was being paid for five stops instead of
+        # four. Matters much more now that batches can pool several restaurants.
+        seen_restaurants = {}
         for order in orders:
-            if order.restaurant and order.restaurant.geo_location:
-                coordinates.append({
-                    'lng': float(order.restaurant.geo_location.x),
-                    'lat': float(order.restaurant.geo_location.y),
-                    'order_id': str(order.id),
-                    'restaurant_id': str(order.restaurant_id),
-                    'type': 'pickup',
-                    'name': order.restaurant.name
-                })
+            if not (order.restaurant and order.restaurant.geo_location):
+                continue
+            key = str(order.restaurant_id)
+            if key in seen_restaurants:
+                continue
+            seen_restaurants[key] = True
+            coordinates.append({
+                'lng': float(order.restaurant.geo_location.x),
+                'lat': float(order.restaurant.geo_location.y),
+                'order_id': str(order.id),
+                'restaurant_id': key,
+                'type': 'pickup',
+                'name': order.restaurant.name
+            })
 
+        delivery_coordinates = []
+        for order in orders:
             if order.delivery_location:
-                coordinates.append({
+                delivery_coordinates.append({
                     'lng': float(order.delivery_location.x),
                     'lat': float(order.delivery_location.y),
                     'order_id': str(order.id),
@@ -237,6 +253,13 @@ class MapboxRoutingService:
                     'type': 'delivery',
                     'address': order.delivery_address
                 })
+
+        # All pickups before all dropoffs: the driver collects food first.
+        coordinates.extend(delivery_coordinates)
+
+        if not coordinates:
+            cls._emit_event('failed', batch_id, {'error': 'No coordinates available'})
+            return None
 
         result = cls.get_optimized_route(coordinates)
 

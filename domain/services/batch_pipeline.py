@@ -38,6 +38,64 @@ class BatchPipeline:
     Call BatchPipeline.on_order_confirmed(order) when a vendor confirms an order.
     """
 
+    TERMINAL_ORDER_STATUSES = (
+        'DELIVERED',
+        'CANCELLED',
+        'REFUNDED',
+        'RESOLVED',
+        'EXPIRED',
+    )
+
+    @staticmethod
+    def complete_batch_if_finished(batch_id):
+        """Move a batch to DELIVERED once every order is terminal.
+
+        Called after a delivery (and by the lifecycle poll) so a batch does not
+        stay DISPATCHED/PENDING_DRIVER forever when its orders are done.
+        """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.batch_fsm import BatchFSM
+
+        try:
+            with transaction.atomic():
+                batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+                if batch.status in ('DELIVERED', 'CANCELLED', 'EXPIRED'):
+                    return batch
+
+                still_active = batch.orders.exclude(
+                    status__in=BatchPipeline.TERMINAL_ORDER_STATUSES
+                ).exists()
+                if still_active:
+                    return batch
+
+                batch.status = BatchFSM.transition(batch, 'ALL_DELIVERED')
+                batch.delivered_at = timezone.now()
+                batch.save(update_fields=['status', 'delivered_at', 'updated_at'])
+                logger.info(
+                    f"[BatchPipeline] Batch {batch.id}: → DELIVERED "
+                    "(all orders terminal)"
+                )
+                return batch
+        except DeliveryBatch.DoesNotExist:
+            return None
+
+    @staticmethod
+    def close_finished_batches():
+        """Reconcile batches left open by deliveries/cancellations."""
+        from apps.orders.models import DeliveryBatch
+
+        batch_ids = DeliveryBatch.objects.exclude(
+            status__in=['DELIVERED', 'CANCELLED', 'EXPIRED']
+        ).values_list('id', flat=True)
+        for batch_id in batch_ids:
+            try:
+                BatchPipeline.complete_batch_if_finished(batch_id)
+            except Exception as exc:
+                logger.error(
+                    f"[BatchPipeline] Failed to close batch {batch_id}: {exc}"
+                )
+
+
     @staticmethod
     def on_order_confirmed(order):
         """
@@ -95,17 +153,29 @@ class BatchPipeline:
     @staticmethod
     def _find_compatible_batch(order):
         """
-        Find an existing ACCUMULATING or SOFT_LOCK batch for the same restaurant
-        that can accept this order.
+        Find an existing ACCUMULATING or SOFT_LOCK batch that can accept this order.
+
+        Platform-managed restaurants may join a batch shared with other
+        platform-managed restaurants. Partner restaurants are pinned to their
+        own restaurant's batches — see
+        Restaurant.allows_multi_restaurant_batching.
         """
         from apps.orders.models import DeliveryBatch, Order
+        from apps.restaurants.models import Restaurant
 
-        restaurant_id = order.restaurant_id
+        if order.restaurant and order.restaurant.allows_multi_restaurant_batching:
+            pool = list(
+                Restaurant.objects
+                .filter(source_type=Restaurant.SOURCE_PLATFORM_MANAGED)
+                .values_list('id', flat=True)
+            )
+        else:
+            pool = [order.restaurant_id]
 
         # Prefer ACCUMULATING first, then SOFT_LOCK
         accumulating = list(
             DeliveryBatch.objects.filter(
-                restaurant_id=restaurant_id,
+                restaurant_id__in=pool,
                 status='ACCUMULATING',
             )
             .annotate(order_count=models.Count('orders'))
@@ -114,12 +184,12 @@ class BatchPipeline:
         )
 
         for batch in accumulating:
-            if BatchPipeline._is_compatible(order, batch):
+            if BatchPipeline._batch_is_compatible(order, batch):
                 return batch
 
         soft_lock = list(
             DeliveryBatch.objects.filter(
-                restaurant_id=restaurant_id,
+                restaurant_id__in=pool,
                 status='SOFT_LOCK',
             )
             .annotate(order_count=models.Count('orders'))
@@ -128,10 +198,108 @@ class BatchPipeline:
         )
 
         for batch in soft_lock:
-            if BatchPipeline._is_compatible(order, batch, is_soft_lock=True):
+            if BatchPipeline._batch_is_compatible(order, batch, is_soft_lock=True):
                 return batch
 
         return None
+
+    @staticmethod
+    def _batch_is_compatible(order, batch, is_soft_lock=False):
+        """
+        Compatibility check for a candidate batch.
+
+        For platform-managed orders this also refuses a batch that already
+        contains a partner restaurant, so a pooled batch can never pick up an
+        order it is not allowed to serve.
+        """
+        from apps.restaurants.models import Restaurant
+
+        if not BatchPipeline._is_compatible(order, batch, is_soft_lock):
+            return False
+
+        if not (order.restaurant and order.restaurant.allows_multi_restaurant_batching):
+            return True
+
+        existing_ids = set(batch.orders.values_list('restaurant_id', flat=True))
+        if batch.restaurant_id:
+            existing_ids.add(batch.restaurant_id)
+        existing_ids.discard(order.restaurant_id)
+
+        if not existing_ids:
+            return True
+
+        eligible = Restaurant.objects.filter(
+            id__in=existing_ids,
+            source_type=Restaurant.SOURCE_PLATFORM_MANAGED,
+        ).count()
+
+        return eligible == len(existing_ids)
+
+    @staticmethod
+    def _sync_batch_restaurants(batch):
+        """
+        Keep BatchRestaurant rows (with pickup sequence) in step with the orders
+        actually in the batch.
+
+        Pickup order follows each restaurant's first order's route_sequence, so
+        the driver visits restaurants in the order the route already implies.
+        """
+        from apps.orders.models import BatchRestaurant, Order
+        from apps.restaurants.models import Restaurant
+
+        orders = list(
+            batch.orders.select_related('restaurant').order_by('route_sequence')
+        )
+
+        sequence_by_restaurant = {}
+        for order in orders:
+            if not order.restaurant_id:
+                continue
+            if order.restaurant_id not in sequence_by_restaurant:
+                sequence_by_restaurant[order.restaurant_id] = len(sequence_by_restaurant) + 1
+
+        existing = {
+            br.restaurant_id: br
+            for br in BatchRestaurant.objects.filter(batch=batch)
+        }
+
+        for restaurant_id, sequence in sequence_by_restaurant.items():
+            row = existing.get(restaurant_id)
+            if row:
+                if row.pickup_sequence != sequence:
+                    row.pickup_sequence = sequence
+                    row.save(update_fields=['pickup_sequence'])
+            else:
+                BatchRestaurant.objects.create(
+                    batch=batch,
+                    restaurant_id=restaurant_id,
+                    pickup_sequence=sequence,
+                )
+
+        for restaurant_id, row in existing.items():
+            if restaurant_id not in sequence_by_restaurant:
+                row.delete()
+
+        distinct = len(sequence_by_restaurant)
+        is_multi = distinct > 1
+
+        # zone_ids / is_inter_zone are informational here: they record the
+        # distinct pickup cells the batch spans so an admin can see at a glance
+        # whether a pooled batch is a cross-town run. Nothing in dispatch
+        # currently branches on them.
+        restaurant_h3 = [
+            h3 for h3 in (
+                Restaurant.objects
+                .filter(id__in=sequence_by_restaurant.keys())
+                .values_list('h3_index', flat=True)
+            ) if h3
+        ]
+
+        batch.batch_type = 'MULTI_RESTAURANT' if is_multi else 'SINGLE_RESTAURANT'
+        batch.zone_ids = sorted(set(restaurant_h3))
+        batch.is_inter_zone = is_multi and len(set(restaurant_h3)) > 1
+        batch.save(update_fields=['batch_type', 'zone_ids', 'is_inter_zone', 'updated_at'])
+        return distinct
 
     @staticmethod
     def _is_compatible(order, batch, is_soft_lock=False):
@@ -199,6 +367,14 @@ class BatchPipeline:
             locked_batch.save(update_fields=update_fields)
 
             BatchPipeline._create_section_statuses_from_orders(locked_batch, [order])
+            restaurant_count = BatchPipeline._sync_batch_restaurants(locked_batch)
+
+        if restaurant_count > 1:
+            logger.info(
+                f"[BatchPipeline] Order {order.id} joined multi-restaurant batch "
+                f"{batch.id} ({restaurant_count} restaurants, "
+                f"type={locked_batch.batch_type})"
+            )
 
         logger.info(
             f"[BatchPipeline] Order {order.id} joined batch {batch.id} "
@@ -252,6 +428,7 @@ class BatchPipeline:
             locked_order.save(update_fields=['batch', 'route_sequence'])
 
             BatchPipeline._create_section_statuses_from_orders(batch, [locked_order])
+            BatchPipeline._sync_batch_restaurants(batch)
 
             batch_id_str = str(batch.id)
             from domain.services.dispatch_tasks import close_accumulating_batch_task
@@ -408,7 +585,7 @@ class BatchPipeline:
                     # Recalculate route and pricing if not finalized yet (driver_payout is 0)
                     update_fields = ['status', 'waiting_since', 'updated_at']
                     if batch_ref.driver_payout == Decimal('0'):
-                        from infrastructure.external_services.mapbox_routing import MapboxRoutingService
+                        from domain.services.mapbox_routing_service import MapboxRoutingService
                         orders = list(batch_ref.orders.all())
                         route_dict = None
                         route_distance = Decimal('0')
@@ -758,17 +935,74 @@ class BatchPipeline:
 
         for bss in stuck:
             try:
+                escalated = False
                 with transaction.atomic():
                     batch = DeliveryBatch.objects.select_for_update().get(id=bss.batch_id)
+                    previous_status = batch.status
                     if batch.status in ('FINALIZING', 'SOFT_LOCK', 'PARTIAL_BATCH'):
                         batch.status = BatchFSM.transition(batch, 'SECTION_FAIL')
                         batch.save(update_fields=['status', 'updated_at'])
+                        # Only escalate on the *first* entry into PARTIAL_BATCH.
+                        # A batch already in PARTIAL_BATCH stays there (SECTION_FAIL
+                        # is a self-loop), so alerting on every poll would re-send
+                        # the push/SMS to admins every cycle — indefinitely.
+                        escalated = (
+                            previous_status != 'PARTIAL_BATCH'
+                            and batch.status == 'PARTIAL_BATCH'
+                        )
                     logger.warning(
                         f"[BatchPipeline] Section {bss.section_id} in batch {bss.batch_id} "
-                        f"stuck for >{SECTION_TIMEOUT_MINUTES}min — batch → PARTIAL_BATCH"
+                        f"stuck for >{SECTION_TIMEOUT_MINUTES}min — batch → {batch.status}"
                     )
+
+                # PARTIAL_BATCH is a holding state with no automatic recovery:
+                # the batch will not dispatch until the stuck section is marked
+                # READY. Alert an admin so a human can chase the kitchen or
+                # cancel, instead of the run parking silently.
+                if escalated:
+                    BatchPipeline._alert_stalled_batch(batch, bss)
             except Exception as exc:
                 logger.error(f"[BatchPipeline] Section timeout escalation failed: {exc}")
+
+    @staticmethod
+    def _alert_stalled_batch(batch, bss):
+        """Tell admins a batch is held up by a section that never went ready."""
+        from django.core.cache import cache
+        from infrastructure.notifications.messages import admin_batch_stalled
+        from infrastructure.notifications.service import NotificationService
+
+        # De-dupe guard: the stalled state never self-recovers, so repeating the
+        # alert (every poll cycle, or from racing workers) is pure noise. One
+        # alert per batch is enough; admins chase it from the dashboard.
+        dedupe_key = f"batch_stalled_alerted:{batch.id}"
+        if not cache.add(dedupe_key, 1, timeout=6 * 3600):
+            logger.info(
+                f"[BatchPipeline] Stalled alert already sent for batch {batch.id} — skipping"
+            )
+            return
+
+        try:
+            restaurant_ids = list(
+                batch.orders.values_list('restaurant_id', flat=True).distinct()
+            )
+            title, body = admin_batch_stalled(
+                str(batch.id)[:8].upper(),
+                len(restaurant_ids),
+                SECTION_TIMEOUT_MINUTES,
+            )
+            NotificationService.notify_admins(
+                title=title,
+                body=body,
+                sms=True,
+                data={
+                    'type': 'batch_stalled',
+                    'batch_id': str(batch.id),
+                    'restaurant_ids': [str(r) for r in restaurant_ids],
+                    'restaurant_count': len(restaurant_ids),
+                },
+            )
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] Failed to alert on stalled batch: {exc}")
 
 
     @staticmethod

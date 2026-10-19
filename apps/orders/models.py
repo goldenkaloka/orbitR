@@ -6,6 +6,14 @@ from apps.restaurants.models import Restaurant
 from apps.users.models import User
 from django.contrib.gis.db import models as gis_models
 from django.db import models
+from domain.fsm.order_fsm import OrderFSM
+
+# Order lifecycle vocabulary, sourced from OrderFSM (single source of truth).
+# Module-level because nested `class Meta` bodies cannot see class attributes.
+ORDER_STATUS_CHOICES = tuple(
+    (s, s.replace('_', ' ').title()) for s in OrderFSM.STATES
+)
+ORDER_VALID_STATUSES = list(OrderFSM.STATES)
 
 
 class Order(models.Model):
@@ -15,6 +23,8 @@ class Order(models.Model):
         (FULFILLMENT_DELIVERY, 'Delivery'),
         (FULFILLMENT_PICKUP, 'Pickup'),
     )
+    STATUS_CHOICES = ORDER_STATUS_CHOICES
+    VALID_STATUSES = ORDER_VALID_STATUSES
     CANCELLED_BY_CHOICES = (
         ('CUSTOMER', 'Customer'),
         ('VENDOR', 'Restaurant'),
@@ -43,6 +53,22 @@ class Order(models.Model):
         ('pool_cancelled', 'Pool cancelled'),
         ('other', 'Other'),
     )
+    CONFIRMATION_PENDING = 'PENDING'
+    CONFIRMATION_CONFIRMED = 'CONFIRMED'
+    CONFIRMATION_UNAVAILABLE = 'UNAVAILABLE'
+    CONFIRMATION_STATUS_CHOICES = (
+        (CONFIRMATION_PENDING, 'Awaiting restaurant confirmation'),
+        (CONFIRMATION_CONFIRMED, 'Confirmed by OrbitR ops'),
+        (CONFIRMATION_UNAVAILABLE, 'Restaurant unavailable'),
+    )
+    RESTAURANT_UNPAID = 'UNPAID'
+    RESTAURANT_PAID = 'PAID'
+    RESTAURANT_FLOAT = 'FLOAT'
+    RESTAURANT_PAYMENT_STATUS_CHOICES = (
+        (RESTAURANT_UNPAID, 'Restaurant not paid'),
+        (RESTAURANT_PAID, 'Paid by OrbitR'),
+        (RESTAURANT_FLOAT, 'Paid from driver float'),
+    )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders', db_index=True)
@@ -52,7 +78,7 @@ class Order(models.Model):
     # Batching
     batch = models.ForeignKey('DeliveryBatch', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     
-    status = models.CharField(max_length=50, default='PENDING_PAYMENT', db_index=True) 
+    status = models.CharField(max_length=50, default='PENDING_PAYMENT', db_index=True, choices=STATUS_CHOICES)
     is_paid = models.BooleanField(default=False, db_index=True)
     is_settled = models.BooleanField(default=False, db_index=True)
     
@@ -77,9 +103,48 @@ class Order(models.Model):
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
     
     notes = models.TextField(null=True, blank=True)
-    driver = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders', db_index=True)
+
+    driver      = models.ForeignKey('delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True, related_name='orders', db_index=True)
+
+    # Real money already sent to the restaurant at pickup, via
+    # PickupDisbursement. When non-zero the restaurant is settled and must NOT
+    # be paid again at delivery (see ReleasePaymentService).
+    pickup_paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     ready_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    # Concierge/platform-managed flow: the real restaurant must confirm the
+    # items and final bill before the order is dispatched.
+    confirmation_status = models.CharField(
+        max_length=20,
+        choices=CONFIRMATION_STATUS_CHOICES,
+        default=CONFIRMATION_CONFIRMED,
+        db_index=True,
+        help_text="PENDING only for platform-managed orders awaiting an ops call.",
+    )
+    confirmed_total = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True,
+        help_text="Final amount confirmed with the restaurant; falls back to total_amount.",
+    )
+    restaurant_payment_status = models.CharField(
+        max_length=20,
+        choices=RESTAURANT_PAYMENT_STATUS_CHOICES,
+        default=RESTAURANT_UNPAID,
+        db_index=True,
+    )
+    restaurant_paid_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0.00,
+    )
+    restaurant_payment_reference = models.CharField(
+        max_length=255, blank=True, default='',
+    )
+    restaurant_paid_at = models.DateTimeField(null=True, blank=True)
+    restaurant_paid_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='restaurant_payments_made',
+    )
     preparing_at = models.DateTimeField(null=True, blank=True)
     picked_up_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
@@ -131,6 +196,15 @@ class Order(models.Model):
             models.Index(fields=['restaurant', 'status'], name='order_vendor_status_idx'),
             models.Index(fields=['driver', 'created_at'], name='order_driver_created_idx'),
             models.Index(fields=['restaurant', 'cancellation_fault', 'cancelled_at'], name='order_cancel_fault_idx'),
+        ]
+        constraints = [
+            # The FSM is advisory Python — this makes the database refuse any
+            # status outside the lifecycle vocabulary (DDIA Ch.3: let storage
+            # enforce invariants, not call-site convention).
+            models.CheckConstraint(
+                check=models.Q(status__in=ORDER_VALID_STATUSES),
+                name='order_status_valid',
+            ),
         ]
 
     def __str__(self):
@@ -334,7 +408,7 @@ class DeliveryBatch(models.Model):
         ('SOFT_LOCK', 'Closing window — limited joins'),
         ('FINALIZING', 'Closed to new orders, waiting for sections'),
         ('PRE_ASSIGNING', 'Early driver ping — sections nearly ready'),
-        ('PENDING_DRIVER', 'Waiting for Restaurant to Assign Driver'),
+        ('PENDING_DRIVER', 'Waiting for Admin to Allocate Driver'),
         ('DISPATCHED', 'Driver Assigned'),
         ('DELIVERED', 'All orders delivered'),
         ('PARTIAL_BATCH', 'Some sections cancelled, remainder proceeding'),
@@ -344,6 +418,7 @@ class DeliveryBatch(models.Model):
 
     BATCH_TYPE_CHOICES = (
         ('SINGLE_RESTAURANT', 'Single Restaurant'),
+        ('MULTI_RESTAURANT', 'Multiple Restaurants'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

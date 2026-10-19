@@ -72,6 +72,16 @@ class BatchFSM:
         ('DISPATCHED',      'CANCEL'):               'CANCELLED',
         ('DISPATCHED',      'ALL_DELIVERED'):        'DELIVERED',
 
+        # A batch whose orders have all reached a terminal state is finished
+        # even if it never reached DISPATCHED (e.g. single-order assignment
+        # bypassed the batch, or every order was cancelled).
+        ('ACCUMULATING',    'ALL_DELIVERED'):        'DELIVERED',
+        ('SOFT_LOCK',       'ALL_DELIVERED'):        'DELIVERED',
+        ('FINALIZING',      'ALL_DELIVERED'):        'DELIVERED',
+        ('PRE_ASSIGNING',   'ALL_DELIVERED'):        'DELIVERED',
+        ('PENDING_DRIVER',  'ALL_DELIVERED'):        'DELIVERED',
+        ('PARTIAL_BATCH',   'ALL_DELIVERED'):        'DELIVERED',
+
         ('PARTIAL_BATCH',   'SECTION_READY'):        'PARTIAL_BATCH',
         ('PARTIAL_BATCH',   'ALL_SECTIONS_READY'):   'PENDING_DRIVER',
         ('PARTIAL_BATCH',   'CANCEL'):               'CANCELLED',

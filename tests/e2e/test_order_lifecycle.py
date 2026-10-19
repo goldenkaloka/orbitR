@@ -50,12 +50,15 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
 
 
         # 3. Setup Restaurant & Product — with geo_location for distance calculation
+        # dispatch_mode='restaurant' because this test drives the restaurant
+        # assign path below; the default is admin dispatch.
         self.restaurant = Restaurant.objects.create(
             owner=self.restaurant_owner,
             name="Mwanachuo Cafe",
             location="University Main Hall",
             geo_location=Point(39.2083, -6.7924),
-            max_delivery_radius_km=10.0
+            max_delivery_radius_km=10.0,
+            dispatch_mode=Restaurant.DISPATCH_RESTRANT,
         )
         from apps.restaurants.models import RestaurantSection
         self.section = RestaurantSection.objects.create(
@@ -109,7 +112,10 @@ class OrderLifecycleE2ETest(APITransactionTestCase):
         # Authenticate as customer
         self.client.force_authenticate(user=self.customer)
 
-    @patch('infrastructure.payment_gateways.factory.AirpayGateway')
+    # Mock mode is selected in the factory from settings, not from a class that
+    # exists under every config, so pin it and patch what the factory returns.
+    @override_settings(MOCK_PAYMENTS=True)
+    @patch('infrastructure.payment_gateways.factory.MockGateway')
     def test_full_order_to_disbursement_flow(self, mock_sdk_class):
 
         """

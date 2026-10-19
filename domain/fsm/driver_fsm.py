@@ -10,10 +10,10 @@ class DriverFSM:
     ]
 
     ALLOWED_TRANSITIONS = {
-        'ONLINE': ['AVAILABLE', 'DELIVERING', 'OFFLINE', 'ONLINE'],
-        'OFFLINE': ['AVAILABLE', 'OFFLINE'],
-        'AVAILABLE': ['OFFLINE', 'DELIVERING', 'AVAILABLE'],
-        'DELIVERING': ['AVAILABLE', 'DELIVERING']
+        'ONLINE': ['AVAILABLE', 'DELIVERING', 'OFFLINE'],
+        'OFFLINE': ['AVAILABLE'],
+        'AVAILABLE': ['OFFLINE', 'DELIVERING'],
+        'DELIVERING': ['AVAILABLE']
     }
 
     @staticmethod
@@ -25,3 +25,14 @@ class DriverFSM:
             raise InvalidStateTransitionError(f"Cannot transition driver from {current_state} to {next_state}")
 
         return next_state
+
+    @staticmethod
+    def ensure(current_state, next_state):
+        """
+        Idempotent variant of transition: already being in the target state is
+        a no-op (drivers double-tap the online/offline toggle), anything else
+        is validated strictly.
+        """
+        if current_state == next_state:
+            return next_state
+        return DriverFSM.transition(current_state, next_state)

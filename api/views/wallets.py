@@ -11,6 +11,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,18 @@ PROVIDERS = {
 class WalletViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = WalletSerializer
+
+    #: Cashout moves real money — tighter budget than the blanket `user` rate.
+    throttle_scope_map = {
+        'cashout': 'payments',
+    }
+
+    def get_throttles(self):
+        scope = self.throttle_scope_map.get(self.action)
+        if scope:
+            self.throttle_scope = scope
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_queryset(self):
         from apps.restaurants.models import SectionStaff

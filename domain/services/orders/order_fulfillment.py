@@ -5,6 +5,7 @@ from decimal import Decimal
 from apps.core.geo_utils import haversine_distance
 from apps.delivery.models import DeliveryAssignment
 from apps.orders.models import Order
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -16,8 +17,21 @@ from domain.services.permissions import check_restaurant_permission
 
 logger = logging.getLogger(__name__)
 
-PICKUP_GEOFENCE_RADIUS_METERS = 6000
-DELIVERY_GEOFENCE_RADIUS_METERS = 6000
+
+def _geofence(name, default):
+    return getattr(settings, name, default)
+
+
+def pickup_geofence_radius():
+    """
+    Pickup must happen at the assigned restaurant, so this is tight by design.
+    Widen it only for genuine on-site-access problems, not to bypass the check.
+    """
+    return _geofence('PICKUP_GEOFENCE_RADIUS_METERS', 300)
+
+
+def delivery_geofence_radius():
+    return _geofence('DELIVERY_GEOFENCE_RADIUS_METERS', 6000)
 
 
 class StartPreparingService:
@@ -29,6 +43,11 @@ class StartPreparingService:
                 raise ValueError("This order is not associated with a restaurant.")
             if not check_restaurant_permission(actor, order.restaurant):
                 raise PermissionError("Only the restaurant owner or staff can prepare orders.")
+
+            # Idempotent double-tap: already preparing is a no-op, not a
+            # self-transition that re-fires OrderPreparing.
+            if order.status == 'PREPARING':
+                return order
 
             new_state = OrderFSM.transition(order.status, 'PREPARING')
             order.status = new_state
@@ -52,6 +71,10 @@ class MarkReadyService:
             if not check_restaurant_permission(actor, order.restaurant):
                 raise PermissionError("Only the restaurant owner or staff can mark orders as ready.")
 
+            # Idempotent double-tap: already ready is a no-op.
+            if order.status == 'READY':
+                return order
+
             new_state = OrderFSM.transition(order.status, 'READY')
             order.status = new_state
             order.ready_at = timezone.now()
@@ -67,6 +90,8 @@ class MarkReadyService:
 class PickupOrderService:
     @staticmethod
     def execute(order_id, actor, bypass_geofence=False):
+        from apps.payments.models import PickupDisbursement
+
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
 
@@ -76,14 +101,49 @@ class PickupOrderService:
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 raise PermissionError("Only the assigned driver can pickup this order.")
 
+            # Idempotent double-tap: already picked up is a no-op (would
+            # otherwise regenerate the OTP and re-fire OrderPicked).
+            if order.status == 'PICKED':
+                return order
+
+            # The platform pays the restaurant before food leaves the counter.
+            # Company-owned restaurants are internal; platform-managed
+            # restaurants are prepaid by OrbitR ops; driver-float/vendor
+            # restaurants use the pickup disbursement.
+            from domain.services.orders.pickup_payment import (
+                restaurant_is_platform_owned,
+            )
+
+            if restaurant_is_platform_owned(order.restaurant):
+                pass
+            elif order.restaurant.settlement_mode == order.restaurant.SETTLEMENT_PLATFORM_PREPAID:
+                if order.restaurant_payment_status != order.RESTAURANT_PAID:
+                    raise ValueError(
+                        "OrbitR has not paid the restaurant yet. Wait for the "
+                        "ops payment confirmation before collecting."
+                    )
+            else:
+                paid = PickupDisbursement.objects.filter(
+                    order=order, status=PickupDisbursement.STATUS_SUCCESS,
+                ).exists()
+                if not paid:
+                    raise ValueError(
+                        "Pay the restaurant before collecting the order."
+                    )
+
             driver = actor.driver_profile
             if not bypass_geofence:
                 if not driver.location or not order.restaurant.geo_location:
                     raise ValueError("Location data missing for geofence check")
 
+                radius = pickup_geofence_radius()
                 dist = haversine_distance(driver.location, order.restaurant.geo_location)
-                if dist > PICKUP_GEOFENCE_RADIUS_METERS:
-                    raise ValueError(f"Too far from restaurant ({int(dist)}m away, {PICKUP_GEOFENCE_RADIUS_METERS}m limit)")
+                if dist > radius:
+                    raise ValueError(
+                        f"Too far from {order.restaurant.name} to pick up "
+                        f"({int(dist)}m away, {radius}m limit). "
+                        "Go to the restaurant counter to collect this order."
+                    )
 
             order.delivery_otp = ''.join([str(random.randint(0, 9)) for _ in range(4)])
 
@@ -94,9 +154,10 @@ class PickupOrderService:
 
             # Driver is already in DELIVERING state (set on batch accept / claim).
             # No driver state change needed here.
-            assignment = order.delivery_assignment
-            assignment.picked_at = timezone.now()
-            assignment.save()
+            assignment = getattr(order, 'delivery_assignment', None)
+            if assignment is not None:
+                assignment.picked_at = timezone.now()
+                assignment.save()
 
             transaction.on_commit(lambda: EventBus.publish(OrderPicked(
                 aggregate_id=order.id,
@@ -116,6 +177,12 @@ class DeliverOrderService:
             if not getattr(order, 'driver', None) or order.driver.user != actor:
                 raise PermissionError("Only the assigned driver can complete this delivery.")
 
+            # Idempotent double-tap: without this, a second tap re-credits the
+            # driver's earnings and re-fires OrderDelivered (DDIA Ch.7: the
+            # FSM used to swallow this via a self-transition).
+            if order.status == 'DELIVERED':
+                return order
+
             if not otp or otp != order.delivery_otp:
                 raise ValueError("Invalid delivery OTP.")
 
@@ -124,14 +191,22 @@ class DeliverOrderService:
                 if not driver.location or not order.delivery_location:
                     raise ValueError("Location data missing for geofence check")
 
+                radius = delivery_geofence_radius()
                 dist = haversine_distance(driver.location, order.delivery_location)
-                if dist > DELIVERY_GEOFENCE_RADIUS_METERS:
-                    raise ValueError(f"Too far from delivery location ({int(dist)}m away, {DELIVERY_GEOFENCE_RADIUS_METERS}m limit)")
+                if dist > radius:
+                    raise ValueError(f"Too far from delivery location ({int(dist)}m away, {radius}m limit)")
 
             new_state = OrderFSM.transition(order.status, 'DELIVERED')
             order.status = new_state
             order.delivered_at = timezone.now()
             order.save()
+
+            # Close the batch when its last active order is delivered, so the
+            # admin Delivery tab does not keep showing a finished run.
+            if order.batch_id:
+                from domain.services.batch_pipeline import BatchPipeline
+
+                BatchPipeline.complete_batch_if_finished(order.batch_id)
 
             # If the order is part of a batch or pool batch, calculate its share of the batch's driver payout.
             if order.batch_id and order.batch.driver_payout:
@@ -153,7 +228,7 @@ class DeliverOrderService:
                 driver=driver, status__in=['ASSIGNED', 'PICKED']
             ).exclude(id=order.id).count()
             if active_orders_count == 0:
-                driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+                driver.status = DriverFSM.ensure(driver.status, 'AVAILABLE')
 
             driver.total_earnings += order_driver_payout
             driver.today_earnings += order_driver_payout
@@ -162,9 +237,10 @@ class DeliverOrderService:
                 'status', 'total_earnings', 'today_earnings', 'current_active_orders'
             ])
 
-            assignment = order.delivery_assignment
-            assignment.delivered_at = timezone.now()
-            assignment.save()
+            assignment = getattr(order, 'delivery_assignment', None)
+            if assignment is not None:
+                assignment.delivered_at = timezone.now()
+                assignment.save()
 
             transaction.on_commit(lambda: EventBus.publish(OrderDelivered(
                 aggregate_id=order.id,

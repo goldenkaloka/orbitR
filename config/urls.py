@@ -46,3 +46,9 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+    # Performance profiler dashboard (staff-only, dev only).
+    try:
+        import silk
+        urlpatterns += [path('silk/', include('silk.urls', namespace='silk'))]
+    except ImportError:
+        pass

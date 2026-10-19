@@ -36,14 +36,26 @@ services:
   celery-worker:
     volumes:
       - logs_data:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 768M
 
   celery-worker-payments:
     volumes:
       - logs_data:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   celery-beat:
     volumes:
       - logs_data:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   nginx:
     image: nginx:1.27-alpine

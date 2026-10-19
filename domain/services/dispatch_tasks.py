@@ -41,17 +41,20 @@ def dispatch_order_task(self, order_id):
 )
 def dispatch_batch_task(batch_id: str):
     """
-    Notify restaurants that their batch needs a driver assigned.
-    Expects batch in PENDING_DRIVER status (all sections READY).
-    Sends the first alert immediately, then throttles reminders while the
-    batch remains in PENDING_DRIVER. The lifecycle poll runs frequently, so
-    this must be idempotent across workers.
+    Request an admin allocation for a batch sitting in PENDING_DRIVER.
+
+    Admin is the sole allocation authority, so this no longer notifies the
+    restaurant — it publishes DriverDispatchRequested, and dispatch_handlers
+    turns that into the admin SMS + push alert plus the realtime queue push.
+
+    The first alert fires immediately, then reminders are throttled to
+    BATCH_DRIVER_ALERT_REMINDER_MINUTES while the batch stays in
+    PENDING_DRIVER. The lifecycle poll runs frequently, so this must stay
+    idempotent across workers.
     """
     from apps.orders.models import DeliveryBatch
-    from apps.restaurants.models import Restaurant
-    from domain.services.batch_fsm import BatchFSM, BatchFSMError
-    from infrastructure.notifications.channels import default_channel
-    from infrastructure.notifications.messages import vendor_need_driver
+    from domain.events.bus import EventBus
+    from domain.events.types import DriverDispatchRequested
 
     lock_key = f'dispatch_batch_lock:{batch_id}'
     lock_ttl = 60
@@ -79,61 +82,47 @@ def dispatch_batch_task(batch_id: str):
                 )
                 return
 
+            is_reminder = batch.offer_sent_at is not None
             batch.offer_sent_at = timezone.now()
             batch.save(update_fields=['offer_sent_at', 'updated_at'])
 
-        logger.info(f"[dispatch_batch_task] Batch {batch_id} in PENDING_DRIVER. Orders: {batch.orders.count()}")
-
-        restaurant_ids = set(batch.orders.values_list('restaurant_id', flat=True))
-        owners = {
-            r.id: r.owner_id
-            for r in Restaurant.objects.filter(id__in=restaurant_ids)
-            .select_related('owner')
-            .only('id', 'owner_id')
-        }
-        for rid in restaurant_ids:
-            owner_id = owners.get(rid)
-            if not owner_id:
-                continue
-            order_count = batch.orders.filter(restaurant_id=rid).count()
-            if order_count == 0:
-                continue
-            title, body = vendor_need_driver(order_count)
-            default_channel.send_push(
-                user_id=str(owner_id),
-                title=title,
-                body=body,
-                data={
-                    "batch_id": batch_id,
-                    "restaurant_id": str(rid),
-                    "type": "batch_needs_driver",
-                },
+            orders = list(batch.orders.select_related('restaurant').all())
+            order_count = len(orders)
+            restaurant_ids = sorted({str(o.restaurant_id) for o in orders if o.restaurant_id})
+            restaurant_names = sorted({o.restaurant.name for o in orders if o.restaurant})
+            restaurant_name = (
+                restaurant_names[0] if len(restaurant_names) == 1
+                else f"{len(restaurant_names)} restoranti"
             )
 
-            # Also notify stall staff whose sections are in this batch
-            from apps.restaurants.models import SectionStaff
-            section_ids = batch.section_statuses.filter(
-                section__restaurant_id=rid
-            ).values_list('section_id', flat=True)
-            staff_users = list(
-                SectionStaff.objects.filter(section_id__in=section_ids)
-                .select_related('user')
+            waiting_since = batch.waiting_since or batch.created_at
+            waiting_minutes = max(
+                0, int((timezone.now() - waiting_since).total_seconds() // 60)
             )
-            for staff in staff_users:
-                default_channel.send_push(
-                    user_id=str(staff.user.id),
-                    title=title,
-                    body=body,
-                    data={
-                        "batch_id": batch_id,
-                        "restaurant_id": str(rid),
-                        "type": "batch_needs_driver",
-                    },
-                )
-    except BatchFSMError as exc:
-        logger.error(f"[dispatch_batch_task] FSM error for batch {batch_id}: {exc}")
+
+            from domain.services.dispatch_routing import resolve_batch_dispatch_mode
+            dispatch_mode = resolve_batch_dispatch_mode(batch)
+
+        logger.info(
+            f"[dispatch_batch_task] Batch {batch_id} awaiting allocation "
+            f"({dispatch_mode}): {order_count} orders, waiting {waiting_minutes} min"
+        )
+
+        EventBus.publish(DriverDispatchRequested(
+            aggregate_id=batch.id,
+            payload={
+                'order_count': order_count,
+                'restaurant_ids': restaurant_ids,
+                'restaurant_name': restaurant_name,
+                'waiting_minutes': waiting_minutes,
+                'is_reminder': is_reminder,
+                'dispatch_mode': dispatch_mode,
+            },
+        ))
+    except DeliveryBatch.DoesNotExist:
+        logger.warning(f"[dispatch_batch_task] Batch {batch_id} not found")
     except Exception as exc:
-        logger.error(f"[dispatch_batch_task] Error dispatching batch {batch_id}: {exc}", exc_info=True)
+        logger.error(f"[dispatch_batch_task] Error requesting allocation for batch {batch_id}: {exc}", exc_info=True)
     finally:
         cache.delete(lock_key)
 
@@ -153,6 +142,7 @@ def batch_lifecycle_poll_task():
     BatchPipeline.check_and_expire_pending_driver()
     BatchPipeline.check_section_timeouts()
     BatchPipeline.check_all_sections_ready()
+    BatchPipeline.close_finished_batches()
 
 
 @shared_task(name='domain.services.dispatch_tasks.pre_assign_drivers_for_batch')
@@ -442,6 +432,7 @@ def expire_stale_preparing_orders_task():
     with transaction.atomic():
         stale_confirmed = list(
             Order.objects.select_for_update(skip_locked=True)
+            .select_related('restaurant__owner')
             .filter(status='CONFIRMED', status_changed_at__lt=confirmed_cutoff)
         )
 
@@ -458,6 +449,9 @@ def expire_stale_preparing_orders_task():
 
     for order in stale_confirmed:
         try:
+            from apps.restaurants.models import Restaurant
+            if order.restaurant.source_type == Restaurant.SOURCE_PLATFORM_MANAGED:
+                continue
             vo_title, vo_body = vendor_order_overdue(str(order.id)[:8], confirmed_grace)
             NotificationService.send_push(
                 user_id=str(order.restaurant.owner.id),
@@ -626,6 +620,5 @@ def close_accumulating_batch_task(batch_id: str):
     """
     from domain.services.batch_pipeline import BatchPipeline
     BatchPipeline._close_accumulating_batch(batch_id)
-
 
 

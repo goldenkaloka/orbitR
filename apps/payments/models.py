@@ -4,8 +4,27 @@ from apps.orders.models import Order
 from apps.users.models import User
 from django.db import models
 
+# Payment lifecycle vocabulary. Module-level because nested `class Meta`
+# bodies cannot see class attributes.
+PAYMENT_STATUS_CHOICES = (
+    ('INITIATED', 'Initiated'),
+    ('INPROCESS', 'In process'),
+    ('COLLECTED', 'Collected'),
+    ('ON_HOLD', 'On hold'),
+    ('DISBURSED', 'Disbursed'),
+    ('PARTIALLY_REFUNDED', 'Partially refunded'),
+    ('REFUNDED', 'Refunded'),
+    ('FAILED', 'Failed'),
+)
+PAYMENT_VALID_STATUSES = [c[0] for c in PAYMENT_STATUS_CHOICES]
+
 
 class Payment(models.Model):
+    # Full lifecycle vocabulary enforced by PaymentFSM plus the legacy
+    # INPROCESS marker still referenced by the stuck-payment cleanup task.
+    STATUS_CHOICES = PAYMENT_STATUS_CHOICES
+    VALID_STATUSES = PAYMENT_VALID_STATUSES
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     
     # Polymorphic associations
@@ -20,7 +39,7 @@ class Payment(models.Model):
 
     
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    status = models.CharField(max_length=50, default='INITIATED', db_index=True)
+    status = models.CharField(max_length=50, default='INITIATED', db_index=True, choices=STATUS_CHOICES)
     provider_reference = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     rrn = models.CharField(max_length=255, null=True, blank=True)
     refund_id = models.CharField(max_length=255, null=True, blank=True)
@@ -30,6 +49,15 @@ class Payment(models.Model):
     class Meta:
         unique_together = [('payable_type', 'payable_id')]
         ordering = ['-created_at']
+        constraints = [
+            # The FSM is advisory Python — this makes the database refuse any
+            # status outside the lifecycle vocabulary (DDIA Ch.3: let storage
+            # enforce invariants, not call-site convention).
+            models.CheckConstraint(
+                check=models.Q(status__in=PAYMENT_VALID_STATUSES),
+                name='payment_status_valid',
+            ),
+        ]
 
 class Transaction(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -78,3 +106,72 @@ class WalletDebt(models.Model):
     status = models.CharField(max_length=20, default='OUTSTANDING')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+
+class PickupDisbursement(models.Model):
+    """
+    A real mobile-money payout to the restaurant at the moment of pickup.
+
+    The platform pays the restaurant directly when the driver arrives, so the
+    driver never carries cash for the food and the restaurant is settled before
+    delivery rather than after.
+
+    Unique per order on purpose. The gateways (ClickPesa in particular) append a
+    random suffix to every payout reference to avoid duplicate-reference errors,
+    which means a retry would happily create a *second real payout*. Idempotency
+    therefore has to come from this constraint, not from the reference string:
+    the row is claimed before the gateway is called, so a double-tap or a
+    concurrent request loses the insert and never reaches the gateway.
+    """
+
+    STATUS_PENDING = 'PENDING'
+    STATUS_SUCCESS = 'SUCCESS'
+    STATUS_FAILED = 'FAILED'
+    STATUS_REVERSED = 'REVERSED'
+    STATUS_CHOICES = (
+        (STATUS_PENDING, 'Pending'),
+        (STATUS_SUCCESS, 'Paid'),
+        (STATUS_FAILED, 'Failed'),
+        (STATUS_REVERSED, 'Reversed'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order = models.OneToOneField(
+        Order, on_delete=models.CASCADE, related_name='pickup_disbursement',
+    )
+    batch = models.ForeignKey(
+        'orders.DeliveryBatch', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pickup_disbursements',
+    )
+    driver = models.ForeignKey(
+        'delivery.Driver', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pickup_disbursements',
+    )
+    restaurant = models.ForeignKey(
+        'restaurants.Restaurant', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pickup_disbursements',
+    )
+
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    account_number = models.CharField(
+        max_length=32,
+        help_text="Restaurant Lipa Namba / phone the money was sent to",
+    )
+    network = models.CharField(
+        max_length=32, blank=True, default='',
+        help_text="Declared mobile-money network. Informational — the gateway "
+                  "routes by MSISDN prefix, not by this value.",
+    )
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING, db_index=True,
+    )
+    gateway_reference = models.CharField(max_length=255, blank=True, default='')
+    failure_reason = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    settled_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Pickup payment {self.order_id} — {self.amount} ({self.status})"

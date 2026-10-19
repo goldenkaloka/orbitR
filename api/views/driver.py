@@ -29,13 +29,21 @@ class DriverViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         if self.request.user.role == 'driver':
             return Driver.objects.filter(user=self.request.user)
-        return super().get_queryset()
+        # Non-self reads (admin dispatch lists): prefetch the relations
+        # DriverSerializer dereferences and annotate the two role flags so the
+        # nested UserSerializer does not run 4 existence queries per row.
+        from django.db.models import Exists, OuterRef
+        from apps.restaurants.models import Restaurant, SectionStaff
+        return super().get_queryset().select_related('user', 'home_zone').annotate(
+            owns_restaurant=Exists(Restaurant.objects.filter(owner_id=OuterRef('user_id'))),
+            has_section_staff=Exists(SectionStaff.objects.filter(user_id=OuterRef('user_id'))),
+        )
 
     @action(detail=False, methods=['POST'])
     def online(self, request):
         driver = request.user.driver_profile
         try:
-            driver.status = DriverFSM.transition(driver.status, 'AVAILABLE')
+            driver.status = DriverFSM.ensure(driver.status, 'AVAILABLE')
             driver.save()
             # Invalidate stats cache
             cache.delete(f"user_stats_{request.user.id}_{request.user.role}")
@@ -62,7 +70,7 @@ class DriverViewSet(viewsets.ModelViewSet):
     def offline(self, request):
         driver = request.user.driver_profile
         try:
-            driver.status = DriverFSM.transition(driver.status, 'OFFLINE')
+            driver.status = DriverFSM.ensure(driver.status, 'OFFLINE')
             driver.save()
             # Invalidate stats cache
             cache.delete(f"user_stats_{request.user.id}_{request.user.role}")

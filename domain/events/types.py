@@ -131,6 +131,38 @@ class DispatchFailed(DomainEvent):
     event_type = 'DispatchFailed'
 
 @dataclass
+class DriverDispatchRequested(DomainEvent):
+    """
+    A batch has reached PENDING_DRIVER and needs someone to allocate a driver.
+    Restaurant.dispatch_mode decides whether the admin queue or the restaurant
+    is the expected allocator.
+    """
+    aggregate_type = 'DeliveryBatch'
+    event_type = 'DriverDispatchRequested'
+
+    def __post_init__(self):
+        self.payload.setdefault('order_count', 0)
+        self.payload.setdefault('restaurant_ids', [])
+        self.payload.setdefault('waiting_minutes', 0)
+        self.payload.setdefault('is_reminder', False)
+        self.payload.setdefault('dispatch_mode', 'admin')
+
+@dataclass
+class RestaurantPaidAtPickup(DomainEvent):
+    """
+    The platform disbursed the restaurant's share to their mobile money at the
+    moment the driver collected the food. The restaurant is now settled and
+    must not be paid again when the order is delivered.
+    """
+    aggregate_type = 'Order'
+    event_type = 'RestaurantPaidAtPickup'
+
+    def __post_init__(self):
+        self.payload.setdefault('amount', 0)
+        self.payload.setdefault('restaurant_id', None)
+        self.payload.setdefault('batch_id', None)
+
+@dataclass
 class MarketplaceProductCreated(DomainEvent):
     aggregate_type = 'MarketplaceProduct'
     event_type = 'MarketplaceProductCreated'

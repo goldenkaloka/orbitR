@@ -21,16 +21,53 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 
 class MarketplaceCategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = MarketplaceCategory.objects.all()
     serializer_class = MarketplaceCategorySerializer
 
+    #: Categories are fetched by every storefront page and revalidated every
+    #: 60s from the single `web` container IP — the default `anon` bucket
+    #: (100/hour, keyed by that IP) would 429 the storefront into rendering
+    #: an empty catalogue. Share the catalogue budget with product reads.
+    def get_throttles(self):
+        self.throttle_scope = 'catalog'
+        return [ScopedRateThrottle()]
+
 
 class MarketplaceProductViewSet(viewsets.ModelViewSet):
     serializer_class = MarketplaceProductSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    #: Read actions are public so the marketplace storefront can browse without
+    #: a JWT. Everything that spends tokens, moves money or touches a seller's
+    #: own listings stays authenticated.
+    PUBLIC_ACTIONS = {'list', 'retrieve'}
+
+    def get_permissions(self):
+        if self.action in self.PUBLIC_ACTIONS:
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+
+    #: Catalogue reads are high-volume and anonymous (every visitor to the
+    #: storefront is `anon`), so they get their own budget instead of being
+    #: pinned to the strict anon rate used by auth and write endpoints.
+    #: Money-moving actions get a tighter budget than the blanket `user` rate.
+    throttle_scope_map = {
+        'list': 'catalog',
+        'retrieve': 'catalog',
+        'pay': 'payments',
+        'reactivate': 'payments',
+    }
+
+    def get_throttles(self):
+        scope = self.throttle_scope_map.get(self.action)
+        if scope:
+            # ScopedRateThrottle reads view.throttle_scope; it takes no kwargs.
+            self.throttle_scope = scope
+            return [ScopedRateThrottle()]
+        return super().get_throttles()
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -97,6 +134,28 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         if category_id:
             queryset = queryset.filter(category_id=category_id)
 
+        search = (self.request.query_params.get('q') or '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) | Q(description__icontains=search)
+            )
+
+        # Ordering must be deterministic — limit/offset pagination repeats or
+        # skips rows when the queryset has no stable order.
+        sort = (self.request.query_params.get('sort') or '').strip().lower()
+        has_coords = bool(lat and lng)
+
+        if sort == 'price_asc':
+            queryset = queryset.order_by('price')
+        elif sort == 'price_desc':
+            queryset = queryset.order_by('-price')
+        elif has_coords:
+            # `distance` is annotated above; 'nearest' and the default both
+            # fall back to proximity when coordinates are supplied.
+            queryset = queryset.order_by('distance')
+        else:
+            queryset = queryset.order_by('-created_at')
+
         if self.action == 'list':
             return queryset.filter(status='ACTIVE')
 
@@ -107,21 +166,31 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
             return queryset.filter(seller=self.request.user)
 
         if self.action == 'retrieve':
-            return queryset.filter(Q(status='ACTIVE') | Q(seller=self.request.user))
+            # Q(seller=request.user) with an AnonymousUser raises
+            # "Field 'id' expected a number but got AnonymousUser" — a 500 on
+            # every public product page. Branch before building the query.
+            if self.request.user.is_authenticated:
+                return queryset.filter(
+                    Q(status='ACTIVE') | Q(seller=self.request.user)
+                )
+            return queryset.filter(status='ACTIVE')
 
         return queryset
 
     @action(detail=False, methods=['GET'])
     def mine(self, request):
         queryset = self.get_queryset()
-        serializer = self.get_serializer(queryset, many=True)
-        return Response(serializer.data)
+        # Paginate — a power seller with thousands of listings would otherwise
+        # get one multi-megabyte response with no cursor.
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(page, many=True)
+        return self.get_paginated_response(serializer.data)
 
     def invalidate_list_cache(self):
-        try:
-            cache.incr('marketplace_list_cache_version')
-        except ValueError:
-            cache.set('marketplace_list_cache_version', 1)
+        # Delegate so the cross-service storefront purge fires on every path,
+        # not just the ones that go through the domain service.
+        from domain.services.marketplace_services import invalidate_product_list_cache
+        invalidate_product_list_cache()
 
     def list(self, request, *args, **kwargs):
         lat = request.query_params.get('lat')
@@ -130,6 +199,10 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         zone = request.query_params.get('zone', 'none')
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
+        # Both of these change the result set, so both belong in the cache key.
+        # Omitting them serves one search or sort order's rows for another's.
+        search = (request.query_params.get('q') or '').strip().lower()
+        sort = (request.query_params.get('sort') or '').strip().lower()
 
         try:
             version = cache.get('marketplace_list_cache_version') or 0
@@ -150,6 +223,8 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
                 "zone": zone,
                 "limit": limit or "default",
                 "offset": offset or "0",
+                "q": search,
+                "sort": sort,
             },
         )
         cached_data = cache.get(cache_key)
@@ -402,46 +477,48 @@ class PostingTokenBundleViewSet(viewsets.ViewSet):
 
         from domain.services.payment_services import InitiatePaymentService
 
-        with transaction.atomic():
-            # Create a purchase log record
-            purchase = PostingTokenBundlePurchase.objects.create(
-                user=request.user,
-                bundle=bundle,
-                amount=bundle.price,
-                tokens_granted=bundle.tokens_granted
-            )
+        # Create the purchase log first, then initiate payment OUTSIDE any
+        # transaction — InitiatePaymentService talks to the gateway and a
+        # stall there must not hold DB locks (purchase stays is_paid=False
+        # until the completion handler marks it).
+        purchase = PostingTokenBundlePurchase.objects.create(
+            user=request.user,
+            bundle=bundle,
+            amount=bundle.price,
+            tokens_granted=bundle.tokens_granted
+        )
 
-            # Initiate payment via ClickPesa
-            result = InitiatePaymentService.execute(
-                payable_type='posting_token_bundle',
-                payable_id=purchase.id,
-                phone=phone,
-                bank_code=bank_code,
-                actor=request.user
-            )
+        # Initiate payment via ClickPesa
+        result = InitiatePaymentService.execute(
+            payable_type='posting_token_bundle',
+            payable_id=purchase.id,
+            phone=phone,
+            bank_code=bank_code,
+            actor=request.user
+        )
 
-            payment = result['payment']
-            gateway_data = result.get('gateway_response', {})
+        payment = result['payment']
+        gateway_data = result.get('gateway_response', {})
 
-            push_sent = gateway_data.get('success', False)
+        push_sent = gateway_data.get('success', False)
 
-            base_response = {
-                "success": push_sent,
-                "purchase_id": str(purchase.id),
-                "payment_id": str(payment.id),
-                "status": payment.status,
-                "is_push": result.get('is_push', False),
-            }
+        base_response = {
+            "success": push_sent,
+            "purchase_id": str(purchase.id),
+            "payment_id": str(payment.id),
+            "status": payment.status,
+            "is_push": result.get('is_push', False),
+        }
 
-            if push_sent:
-                base_response["provider_reference"] = gateway_data.get('provider_reference')
-                base_response["message"] = gateway_data.get('message')
-                base_response["instant_success"] = gateway_data.get('instant_success')
-                if gateway_data.get('params'):
-                    base_response["params"] = gateway_data['params']
-                if gateway_data.get('endpoint'):
-                    base_response["endpoint"] = gateway_data['endpoint']
-            else:
-                base_response["error"] = gateway_data.get('error') or 'Payment initiation failed'
+        if push_sent:
+            base_response["provider_reference"] = gateway_data.get('provider_reference')
+            base_response["message"] = gateway_data.get('message')
+            base_response["instant_success"] = gateway_data.get('instant_success')
+            if gateway_data.get('params'):
+                base_response["params"] = gateway_data['params']
+            if gateway_data.get('endpoint'):
+                base_response["endpoint"] = gateway_data['endpoint']
+        else:
+            base_response["error"] = gateway_data.get('error') or 'Payment initiation failed'
 
-            return Response(base_response)
+        return Response(base_response)

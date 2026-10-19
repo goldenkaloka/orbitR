@@ -10,6 +10,7 @@ from infrastructure.notifications.messages import (
     order_picked,
     order_preparing,
     order_ready,
+    restaurant_paid_at_pickup,
     vendor_new_group_order,
     vendor_new_order,
 )
@@ -235,6 +236,37 @@ def on_dispatch_failed(event):
     )
 
 
+def on_restaurant_paid_at_pickup(event):
+    """The restaurant has been paid at the counter — tell them and the driver."""
+    from apps.orders.models import Order
+    from apps.events.utils import broadcast_order_status
+
+    try:
+        order = Order.objects.select_related('restaurant').get(id=event.aggregate_id)
+    except Order.DoesNotExist:
+        logger.warning(f"[PickupPay] Order {event.aggregate_id} not found after pickup payment")
+        return
+
+    restaurant = order.restaurant
+    if not restaurant:
+        return
+
+    amount = event.payload.get('amount')
+    title, body = restaurant_paid_at_pickup(str(order.id)[:8], amount)
+
+    try:
+        NotificationService.send_push(
+            user_id=str(restaurant.owner_id),
+            title=title,
+            body=body,
+            data={"order_id": str(order.id), "type": "pickup_payment_sent"},
+        )
+    except Exception as exc:
+        logger.error(f"[PickupPay] Restaurant notification failed: {exc}")
+
+    broadcast_order_status(str(order.id), order.status, message='Restaurant paid at pickup')
+
+
 def register_handlers():
     from domain.events.types import (
         DispatchFailed,
@@ -246,6 +278,7 @@ def register_handlers():
         OrderDelivered,
         OrderPicked,
         OrderPreparing,
+        RestaurantPaidAtPickup,
     )
     order_events = [
         OrderCreated, OrderConfirmed, OrderPreparing, FoodReady,
@@ -257,6 +290,7 @@ def register_handlers():
 
     EventBus.subscribe(OrderDelivered, on_order_delivered)
     EventBus.subscribe(DispatchFailed, on_dispatch_failed)
+    EventBus.subscribe(RestaurantPaidAtPickup, on_restaurant_paid_at_pickup)
 
     # New batching lifecycle handlers
     EventBus.subscribe(OrderConfirmed, on_order_confirmed)

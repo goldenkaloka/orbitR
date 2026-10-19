@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from apps.marketplace.models import MarketplaceProduct
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -10,6 +11,26 @@ from domain.events.types import (
     MarketplaceProductCreated,
     MarketplaceProductExpired,
 )
+
+
+def invalidate_product_list_cache():
+    """
+    Bump the cached product-list version and purge the storefront's copy.
+
+    Every path that mutates listing state must call this after commit — the
+    list view caches its response for 900s and the Next storefront holds its
+    own 60s window, so without a bump a seller's newly paid-for (or newly
+    expired) listing stays invisible for up to 15 minutes (DDIA Ch.9
+    read-your-writes). Local bump is synchronous; the cross-service purge is a
+    best-effort Celery task whose failure leaves the storefront on its TTL.
+    """
+    from apps.marketplace.tasks import purge_storefront_cache
+
+    try:
+        cache.incr('marketplace_list_cache_version')
+    except ValueError:
+        cache.set('marketplace_list_cache_version', 1)
+    purge_storefront_cache.delay(['products'])
 
 
 class MarketplaceService:
@@ -87,6 +108,7 @@ class MarketplaceService:
                         'method': 'posting_token'
                     }
                 )))
+                transaction.on_commit(invalidate_product_list_cache)
             else:
                 raise ValueError("You do not have enough posting tokens left. Please buy more.")
         
@@ -116,6 +138,7 @@ class MarketplaceService:
                 aggregate_id=product.id,
                 payload={'activated_by': str(actor.id), 'expiry_date': product.expiry_date.isoformat()}
             )))
+            transaction.on_commit(invalidate_product_list_cache)
         
         return product
 
@@ -139,6 +162,7 @@ class MarketplaceService:
                 aggregate_id=product.id,
                 payload={'action': 'reactivation', 'expiry_date': product.expiry_date.isoformat()}
             )))
+            transaction.on_commit(invalidate_product_list_cache)
         
         return product
 
@@ -161,4 +185,6 @@ class MarketplaceService:
                 payload={'seller_id': str(product.seller.id)}
             ))
             count += 1
+        if count:
+            invalidate_product_list_cache()
         return count

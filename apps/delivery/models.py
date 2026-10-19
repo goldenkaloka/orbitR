@@ -92,12 +92,35 @@ class Driver(models.Model):
         return f"Driver: {self.user.username}"
 
 class DeliveryAssignment(models.Model):
+    SOURCE_ADMIN = 'admin'
+    SOURCE_VENDOR = 'vendor'
+    SOURCE_DRIVER = 'driver'
+    SOURCE_SYSTEM = 'system'
+    SOURCE_CHOICES = (
+        (SOURCE_ADMIN, 'Admin'),
+        (SOURCE_VENDOR, 'Restaurant'),
+        (SOURCE_DRIVER, 'Driver (self-claim / delegation)'),
+        (SOURCE_SYSTEM, 'System'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     order = models.OneToOneField(Order, on_delete=models.CASCADE, related_name='delivery_assignment')
     driver = models.ForeignKey(Driver, on_delete=models.CASCADE, related_name='assignments')
     assigned_at = models.DateTimeField(auto_now_add=True)
     picked_at = models.DateTimeField(null=True, blank=True)
     delivered_at = models.DateTimeField(null=True, blank=True)
+
+    # Allocation audit trail — admin is the sole allocation authority, so it
+    # matters who decided each assignment. Derived from the actor's role inside
+    # the assignment services, never supplied by the caller.
+    assignment_source = models.CharField(
+        max_length=20, choices=SOURCE_CHOICES, default=SOURCE_ADMIN, db_index=True,
+    )
+    assigned_by = models.ForeignKey(
+        'users.User', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='driver_assignments_made',
+        help_text="Actor who allocated this driver (null for system allocation)",
+    )
 
 class DeliveryProof(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

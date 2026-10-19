@@ -8,7 +8,7 @@ from domain.events.types import (
     PaymentRefunded,
     PaymentReleaseRequested,
 )
-from domain.services.payment_services import ReleasePaymentService
+from domain.services.payment_services import ReleasePaymentService, record_failed_payout
 from infrastructure.notifications.messages import (
     driver_earning_credited,
     refund_processed,
@@ -26,6 +26,10 @@ def on_payment_release_requested(event: PaymentReleaseRequested):
         logger.info(f"Successfully released payment {event.aggregate_id}")
     except Exception as e:
         logger.error(f"Failed to release payment {event.aggregate_id}: {str(e)}")
+        from apps.payments.models import Payment
+        payment = Payment.objects.filter(id=event.aggregate_id).first()
+        if payment is not None:
+            record_failed_payout(payment, str(e))
 
 
 def on_payment_collected(event: PaymentCollected):

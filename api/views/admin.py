@@ -1,4 +1,5 @@
 from api.serializers.core import (
+    AdminRestaurantSerializer,
     DriverSerializer,
     OrderSerializer,
     RestaurantSerializer,
@@ -10,7 +11,6 @@ from apps.restaurants.models import Restaurant
 from apps.users.models import User
 from apps.wallets.models import Wallet
 from django.core.cache import cache
-from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q, Subquery, Sum
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
@@ -46,15 +46,15 @@ class AdminViewSet(viewsets.GenericViewSet):
         if cached_data:
             return Response(cached_data)
 
-        today = timezone.now().date()
+        today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
         total_users = User.objects.count()
         total_orders = Order.objects.count()
-        today_orders = Order.objects.filter(created_at__date=today).count()
+        today_orders = Order.objects.filter(created_at__gte=today_start).count()
         total_revenue = Order.objects.filter(
             status='DELIVERED'
         ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
         today_revenue = Order.objects.filter(
-            status='DELIVERED', created_at__date=today
+            status='DELIVERED', created_at__gte=today_start
         ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
         active_drivers = Driver.objects.filter(status='ONLINE').count()
         total_drivers = Driver.objects.count()
@@ -104,7 +104,9 @@ class AdminViewSet(viewsets.GenericViewSet):
             serializer = UserSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
             
-        return Response(UserSerializer(queryset, many=True).data)
+        # paginate_queryset only returns None if pagination is misconfigured;
+        # serialising the whole table here is unbounded, so hard-cap instead.
+        return Response(UserSerializer(queryset[:100], many=True).data)
 
     @action(detail=False, methods=['GET'])
     def drivers(self, request):
@@ -115,18 +117,188 @@ class AdminViewSet(viewsets.GenericViewSet):
             serializer = DriverSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
             
-        return Response(DriverSerializer(queryset, many=True).data)
+        return Response(DriverSerializer(queryset[:100], many=True).data)
 
     @action(detail=False, methods=['GET'])
     def restaurants(self, request):
-        """List all restaurants."""
-        queryset = Restaurant.objects.select_related('owner').all()
+        """List all restaurants (admin view, includes owner identity)."""
+        from apps.restaurants.utils import compute_busy_restaurant_ids
+        queryset = (
+            Restaurant.objects
+            .select_related('owner')
+            .prefetch_related('sections', 'sections__foods')
+            .annotate(
+                active_order_count=Count(
+                    'orders',
+                    filter=Q(orders__is_paid=True)
+                    & ~Q(orders__status__in=[
+                        'DELIVERED', 'CANCELLED', 'EXPIRED', 'REFUNDED',
+                    ]),
+                )
+            )
+            .all()
+            .order_by('-created_at')
+        )
         page = self.paginate_queryset(queryset)
+        targets = page if page is not None else list(queryset[:100])
+        busy_ids = set(compute_busy_restaurant_ids([r.id for r in targets]))
+        serializer = AdminRestaurantSerializer(
+            targets, many=True, context={'request': request, 'busy_ids': busy_ids}
+        )
         if page is not None:
-            serializer = RestaurantSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
             
-        return Response(RestaurantSerializer(queryset, many=True).data)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['POST'], url_path='create-restaurant')
+    def create_restaurant(self, request):
+        """
+        Create a restaurant owned by the acting admin.
+
+        Lets an admin stand up an ops-owned restaurant directly - no customer
+        needs to be promoted to vendor first. An explicit ?owner_id (admin or
+        vendor) may be supplied to hand ownership elsewhere at creation time.
+        Body: { name|restaurant_name, ?location, ?category, ?description,
+                ?latitude, ?longitude, ?dispatch_mode, ?source_type, ?owner_id },
+                plus optional multipart image/logo files.
+        """
+        from domain.services.admin_services import ManageRestaurantService
+
+        name = request.data.get('name') or request.data.get('restaurant_name')
+        if not name:
+            return Response(
+                {'error': 'name is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        owner = request.user
+        owner_id = request.data.get('owner_id')
+        if owner_id:
+            owner = User.objects.filter(id=owner_id).first()
+            if owner is None:
+                return Response(
+                    {'error': 'Owner user not found'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if owner.role not in ('admin', 'vendor'):
+                return Response(
+                    {'error': 'Owner must have role admin or vendor'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            restaurant = ManageRestaurantService.create_restaurant(
+                owner=owner,
+                name=name,
+                location=request.data.get('location', ''),
+                description=request.data.get('description', ''),
+                category=request.data.get('category', 'General'),
+                latitude=request.data.get('latitude'),
+                longitude=request.data.get('longitude'),
+                image=request.FILES.get('image'),
+                logo=request.FILES.get('logo'),
+                dispatch_mode=request.data.get('dispatch_mode'),
+                source_type=request.data.get('source_type'),
+                public_disclaimer=request.data.get('public_disclaimer', ''),
+                settlement_mode=request.data.get('settlement_mode'),
+                payout_phone=request.data.get('payout_phone', ''),
+                payout_network=request.data.get('payout_network', ''),
+                payout_account_name=request.data.get('payout_account_name', ''),
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        from api.views.core import invalidate_restaurant_cache
+        invalidate_restaurant_cache(restaurant)
+
+        return Response({
+            'message': f'{restaurant.name} created',
+            'restaurant': AdminRestaurantSerializer(restaurant).data,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['GET'], url_path='my-restaurants')
+    def my_restaurants(self, request):
+        """
+        Restaurants owned by the requesting admin.
+
+        Powers the admin "Restaurants" tab: an admin operates the restaurants
+        they own with the same order controls a vendor has. Ownership is a
+        plain Restaurant.owner FK, so an admin can own many.
+        """
+        from apps.restaurants.utils import compute_busy_restaurant_ids
+        queryset = (
+            Restaurant.objects
+            .select_related('owner')
+            .prefetch_related('sections', 'sections__foods')
+            .filter(owner=request.user)
+            .annotate(
+                active_order_count=Count(
+                    'orders',
+                    filter=Q(orders__is_paid=True)
+                    & ~Q(orders__status__in=[
+                        'DELIVERED', 'CANCELLED', 'EXPIRED', 'REFUNDED',
+                    ]),
+                )
+            )
+            .order_by('-active_order_count', '-created_at')
+        )
+        page = self.paginate_queryset(queryset)
+        targets = page if page is not None else list(queryset)
+        busy_ids = set(compute_busy_restaurant_ids([r.id for r in targets]))
+        serializer = AdminRestaurantSerializer(
+            targets, many=True, context={'request': request, 'busy_ids': busy_ids}
+        )
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
+    @action(
+        detail=False,
+        methods=['GET'],
+        url_path='restaurants/(?P<restaurant_id>[^/.]+)/orders',
+    )
+    def restaurant_orders(self, request, restaurant_id=None):
+        """
+        Incoming orders for a single restaurant, for the admin-run console.
+
+        Mirrors the vendor order feed but scoped explicitly to one restaurant
+        so the reused vendor order controls act on the right kitchen.
+        Optional ?status= and ?active_only=1 filters.
+        """
+        if not Restaurant.objects.filter(id=restaurant_id).exists():
+            return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        queryset = Order.objects.select_related(
+            'customer',
+            'restaurant',
+            'restaurant__owner',
+            'driver',
+            'driver__user',
+            'batch',
+            'payment',
+        ).prefetch_related(
+            'items',
+            'items__food',
+            'items__section',
+            'batch__orders',
+            'batch__section_statuses',
+            'pool__members',
+            'pool__members__user',
+            'reviews',
+        ).filter(restaurant_id=restaurant_id, is_paid=True).order_by('-created_at')
+
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        if request.query_params.get('active_only') in ('1', 'true', 'True'):
+            queryset = queryset.exclude(
+                status__in=['DELIVERED', 'CANCELLED', 'EXPIRED', 'REFUNDED']
+            )
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            return self.get_paginated_response(OrderSerializer(page, many=True).data)
+        return Response(OrderSerializer(queryset[:100], many=True).data)
 
     @action(detail=False, methods=['GET'])
     def orders(self, request):
@@ -148,6 +320,7 @@ class AdminViewSet(viewsets.GenericViewSet):
             'batch__section_statuses',
             'pool__members',
             'pool__members__user',
+            'reviews',
         ).all().order_by('-created_at')
         if status_filter:
             queryset = queryset.filter(status=status_filter)
@@ -156,13 +329,89 @@ class AdminViewSet(viewsets.GenericViewSet):
             serializer = OrderSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
             
-        return Response(OrderSerializer(queryset, many=True).data)
+        return Response(OrderSerializer(queryset[:100], many=True).data)
+
+    @action(detail=False, methods=['GET'], url_path='concierge-orders')
+    def concierge_orders(self, request):
+        """Orders waiting for an ops availability call, plus confirmed unpaid ones."""
+        queryset = Order.objects.select_related(
+            'customer', 'restaurant', 'restaurant__owner', 'driver', 'batch',
+        ).prefetch_related('items', 'items__food', 'items__section').filter(
+            Q(restaurant__source_type=Restaurant.SOURCE_PLATFORM_MANAGED)
+            | Q(restaurant__settlement_mode=Restaurant.SETTLEMENT_PLATFORM_PREPAID),
+            status__in=[
+                'AWAITING_CONFIRMATION', 'CONFIRMED', 'PREPARING', 'READY', 'ASSIGNED',
+            ],
+        ).exclude(
+            confirmation_status=Order.CONFIRMATION_UNAVAILABLE,
+        ).filter(
+            Q(confirmation_status=Order.CONFIRMATION_PENDING)
+            | Q(restaurant_payment_status=Order.RESTAURANT_UNPAID)
+        ).order_by('-created_at')
+        return Response(OrderSerializer(queryset[:100], many=True).data)
+
+    @action(detail=False, methods=['POST'], url_path='concierge-confirm')
+    def concierge_confirm(self, request):
+        from domain.services.orders.concierge import ConciergeOrderService
+
+        order_id = request.data.get('order_id')
+        if not order_id:
+            return Response({'error': 'order_id is required'}, status=400)
+        try:
+            order = ConciergeOrderService.confirm(
+                order_id,
+                request.user,
+                confirmed_total=request.data.get('confirmed_total'),
+                note=request.data.get('note', ''),
+            )
+        except (ValueError, PermissionError) as exc:
+            return Response({'error': str(exc)}, status=400)
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=False, methods=['POST'], url_path='concierge-unavailable')
+    def concierge_unavailable(self, request):
+        from domain.services.orders.concierge import ConciergeOrderService
+
+        order_id = request.data.get('order_id')
+        if not order_id:
+            return Response({'error': 'order_id is required'}, status=400)
+        try:
+            order = ConciergeOrderService.mark_unavailable(
+                order_id,
+                request.user,
+                reason=request.data.get('reason', 'Restaurant could not fulfil the order.'),
+            )
+        except (ValueError, PermissionError) as exc:
+            return Response({'error': str(exc)}, status=400)
+        return Response(OrderSerializer(order).data)
+
+    @action(detail=False, methods=['POST'], url_path='concierge-pay')
+    def concierge_pay(self, request):
+        from domain.services.orders.concierge import ConciergeOrderService
+
+        order_id = request.data.get('order_id')
+        if not order_id:
+            return Response({'error': 'order_id is required'}, status=400)
+        try:
+            ConciergeOrderService.pay_restaurant(
+                order_id,
+                request.user,
+                account_number=request.data.get('account_number'),
+                network=request.data.get('network'),
+            )
+        except (ValueError, PermissionError) as exc:
+            return Response({'error': str(exc)}, status=400)
+        order = Order.objects.get(id=order_id)
+        return Response(OrderSerializer(order).data)
 
     @action(detail=False, methods=['POST'], url_path='promote-vendor')
     def promote_vendor(self, request):
         """
         Promote a registered user to vendor role and create their restaurant.
-        Body: { user_id, restaurant_name, location, ?category, ?description }
+        Body: { user_id, restaurant_name, location, ?category, ?description,
+                ?dispatch_mode }
+        dispatch_mode decides who allocates drivers for this restaurant's
+        batches. Defaults to 'admin'.
         """
         user_id = request.data.get('user_id')
         restaurant_name = request.data.get('restaurant_name')
@@ -184,7 +433,8 @@ class AdminViewSet(viewsets.GenericViewSet):
                 latitude=request.data.get('latitude'),
                 longitude=request.data.get('longitude'),
                 image=request.FILES.get('image'),
-                logo=request.FILES.get('logo')
+                logo=request.FILES.get('logo'),
+                dispatch_mode=request.data.get('dispatch_mode'),
             )
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -308,7 +558,9 @@ class AdminViewSet(viewsets.GenericViewSet):
     def update_restaurant(self, request):
         """
         Update restaurant details.
-        Body: { restaurant_id, name, location, latitude, longitude, description, category }
+        Body: { restaurant_id, name, location, latitude, longitude, description,
+                category, source_type, is_verified_partner, public_disclaimer,
+                dispatch_mode }
         """
         restaurant_id = request.data.get('restaurant_id')
         if not restaurant_id:
@@ -322,6 +574,15 @@ class AdminViewSet(viewsets.GenericViewSet):
             'longitude': request.data.get('longitude'),
             'description': request.data.get('description'),
             'category': request.data.get('category'),
+            'source_type': request.data.get('source_type'),
+            'is_verified_partner': request.data.get('is_verified_partner'),
+            'public_disclaimer': request.data.get('public_disclaimer'),
+            'dispatch_mode': request.data.get('dispatch_mode'),
+            'settlement_mode': request.data.get('settlement_mode'),
+            'payout_phone': request.data.get('payout_phone'),
+            'payout_network': request.data.get('payout_network'),
+            'payout_account_name': request.data.get('payout_account_name'),
+            'owner_id': request.data.get('owner_id'),
             'image': request.FILES.get('image'),
             'logo': request.FILES.get('logo')
         }
@@ -336,6 +597,8 @@ class AdminViewSet(viewsets.GenericViewSet):
             })
         except Restaurant.DoesNotExist:
             return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['POST'], url_path='delete-restaurant', url_name='delete-restaurant')
     def delete_restaurant(self, request):
@@ -354,73 +617,263 @@ class AdminViewSet(viewsets.GenericViewSet):
         except Restaurant.DoesNotExist:
             return Response({'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    @action(detail=False, methods=['GET'])
-    def pending_manual_assignment(self, request):
-        """Get READY orders that need driver assignment."""
-        orders = Order.objects.filter(
-            status='READY', batch__isnull=True
-        ).select_related('restaurant', 'customer')
+    @action(detail=False, methods=['GET'], url_path='pending-batches')
+    def pending_batches(self, request):
+        """
+        Dispatch queue: batches whose food is ready and that still need a
+        driver allocated.
+
+        Includes both admin-dispatch and restaurant-dispatch batches: an admin
+        may allocate in either mode as an escalation, so both belong in the
+        queue. Each row carries dispatch_mode so the UI can show who is
+        expected to act.
+
+        This replaces the old pending_manual_assignment endpoint, which
+        filtered batch__isnull=True and therefore always returned nothing —
+        every delivered order is swept into a DeliveryBatch on confirmation.
+        """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.dispatch_routing import resolve_batch_dispatch_mode
+
+        batches = (
+            DeliveryBatch.objects
+            .filter(status__in=['PENDING_DRIVER', 'PRE_ASSIGNING'])
+            .select_related('restaurant')
+            .prefetch_related(
+                'orders__customer',
+                'orders__restaurant',
+                'batch_restaurants__restaurant',
+            )
+            .order_by('waiting_since', 'created_at')
+        )
+
+        now = timezone.now()
+        payload = []
+        for batch in batches:
+            orders = list(batch.orders.all())
+            waiting_since = batch.waiting_since or batch.created_at
+            waiting_minutes = max(0, int((now - waiting_since).total_seconds() // 60))
+            restaurant_names = sorted({o.restaurant.name for o in orders if o.restaurant})
+            dispatch_mode = resolve_batch_dispatch_mode(batch)
+
+            # Pooled batches carry their restaurants in pickup order so the
+            # admin can sanity-check the run before allocating a driver.
+            pickup_sequence = sorted(
+                list(batch.batch_restaurants.all()),
+                key=lambda br: br.pickup_sequence,
+            )
+
+            payload.append({
+                'id': str(batch.id),
+                'short_id': str(batch.id)[:8].upper(),
+                'status': batch.status,
+                'batch_type': batch.batch_type,
+                'restaurant_count': len(pickup_sequence) or 1,
+                'restaurants': [
+                    {
+                        'id': str(br.restaurant_id),
+                        'name': br.restaurant.name,
+                        'pickup_sequence': br.pickup_sequence,
+                    }
+                    for br in pickup_sequence
+                ],
+                'restaurant_id': str(batch.restaurant_id) if batch.restaurant_id else None,
+                'restaurant_name': (
+                    restaurant_names[0] if len(restaurant_names) == 1
+                    else f"{len(restaurant_names)} restoranti"
+                ),
+                'dispatch_mode': dispatch_mode,
+                'order_count': len(orders),
+                'is_inter_zone': batch.is_inter_zone,
+                'waiting_minutes': waiting_minutes,
+                'waiting_since': waiting_since,
+                'zone_ids': batch.zone_ids,
+                'total_payout': float(batch.driver_payout) if batch.driver_payout else None,
+                'orders': [
+                    {
+                        'id': str(o.id),
+                        'short_id': str(o.id)[:8].upper(),
+                        'status': o.status,
+                        'customer': o.customer.username,
+                        'delivery_address': o.delivery_address,
+                        'total_amount': float(o.total_amount),
+                    }
+                    for o in orders
+                ],
+            })
+
+        return Response({'count': len(payload), 'batches': payload})
+
+    @action(detail=False, methods=['GET'], url_path='batches/(?P<batch_id>[^/.]+)/eligible-drivers')
+    def eligible_drivers(self, request, batch_id=None):
+        """
+        Drivers an admin can allocate to this batch, best first.
+
+        Ranked by capacity headroom then rating so the top of the list is the
+        driver least likely to be overloaded.
+        """
+        from apps.delivery.models import DeliveryAssignment
+        from apps.orders.models import DeliveryBatch
+        from domain.services.permissions import restaurant_visible_drivers
+
+        try:
+            batch = DeliveryBatch.objects.get(id=batch_id)
+        except DeliveryBatch.DoesNotExist:
+            return Response({'error': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        # A pooled batch spans several restaurants, so the eligible set is the
+        # union of every restaurant's drivers. Restaurant-affiliated drivers are
+        # filtered out below because they can only serve their own kitchen —
+        # AssignBatchService rejects them for a multi-restaurant run.
+        restaurant_ids = set(batch.orders.values_list('restaurant_id', flat=True))
+        if batch.restaurant_id:
+            restaurant_ids.add(batch.restaurant_id)
+        restaurant_ids.discard(None)
+
+        if not restaurant_ids:
+            return Response({'error': 'Batch has no orders'}, status=status.HTTP_400_BAD_REQUEST)
+
+        restaurants = list(Restaurant.objects.filter(id__in=restaurant_ids))
+        if not restaurants:
+            return Response({'error': 'Batch has no restaurants'}, status=status.HTTP_400_BAD_REQUEST)
+
+        by_id = {}
+        for restaurant in restaurants:
+            for driver in restaurant_visible_drivers(restaurant):
+                by_id.setdefault(driver.id, driver)
+        candidates = list(by_id.values())
+
+        is_pooled = len(restaurants) > 1
+
+        # Drivers already holding an open assignment on this batch are excluded.
+        busy_ids = set(
+            DeliveryAssignment.objects
+            .filter(
+                driver__in=candidates,
+                delivered_at__isnull=True,
+                order__in=batch.orders.all(),
+            )
+            .values_list('driver_id', flat=True)
+        )
+
+        rows = []
+        for driver in candidates:
+            load = driver.current_active_orders
+            if driver.id in busy_ids:
+                load += 1
+            # Only platform drivers can cover every restaurant in a pooled run.
+            can_serve_all = (
+                driver.driver_type == 'platform'
+                or driver.home_restaurant_id in restaurant_ids
+            ) and (driver.driver_type == 'platform' or not is_pooled)
+            rows.append({
+                'id': str(driver.id),
+                'name': driver.user.username,
+                'driver_type': driver.driver_type,
+                'vehicle_type': driver.vehicle_type,
+                'status': driver.status,
+                'rating': float(driver.rating),
+                'priority': driver.priority,
+                'current_active_orders': load,
+                'max_active_orders': driver.max_active_orders,
+                'capacity_headroom': driver.max_active_orders - load,
+                'home_restaurant_id': (
+                    str(driver.home_restaurant_id) if driver.home_restaurant_id else None
+                ),
+                'can_serve': can_serve_all,
+            })
+
+        rows.sort(key=lambda r: (not r['can_serve'], -r['capacity_headroom'], -r['priority'], -r['rating']))
+
         return Response({
-            'count': orders.count(),
-            'orders': OrderSerializer(orders, many=True).data
+            'batch_id': str(batch.id),
+            'restaurant_ids': [str(r.id) for r in restaurants],
+            'restaurant_count': len(restaurants),
+            'is_multi_restaurant': is_pooled,
+            'count': len(rows),
+            'drivers': rows,
         })
 
     @action(detail=False, methods=['POST'], url_path='manual-assign-driver')
     def manual_assign_driver(self, request):
         """
-        Manually assign a driver to an order.
-        Body: { order_id, driver_id }
+        Allocate a driver to a batch (preferred) or a single order.
+
+        Delegates to AssignBatchService / AssignDriverService so the admin
+        path gets the same guarantees as every other allocation: FSM
+        transition, DeliveryAssignment audit row, DriverAssigned event,
+        Centrifugo broadcast, restaurant-eligibility and capacity checks.
+
+        Body: { batch_id | order_id, driver_id }
         """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.orders.order_assignment import (
+            AssignBatchService,
+            AssignDriverService,
+        )
+
+        batch_id = request.data.get('batch_id')
         order_id = request.data.get('order_id')
         driver_id = request.data.get('driver_id')
 
-        if not order_id or not driver_id:
-            return Response({'error': 'order_id and driver_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not driver_id or not (batch_id or order_id):
+            return Response(
+                {'error': 'driver_id and one of batch_id or order_id are required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if batch_id:
+            unpaid_prepaid = Order.objects.filter(
+                batch_id=batch_id,
+                restaurant__settlement_mode=Restaurant.SETTLEMENT_PLATFORM_PREPAID,
+            ).exclude(restaurant_payment_status=Order.RESTAURANT_PAID)
+            if unpaid_prepaid.exists():
+                return Response(
+                    {'error': 'Pay the restaurant before assigning a driver for this batch.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            try:
+                AssignBatchService.execute(str(batch_id), str(driver_id), request.user)
+            except DeliveryBatch.DoesNotExist:
+                return Response({'error': 'Batch not found'}, status=status.HTTP_404_NOT_FOUND)
+            except ValueError as e:
+                return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            except PermissionError as e:
+                return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+            except Driver.DoesNotExist:
+                return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
+
+            orders = DeliveryBatch.objects.get(id=batch_id).orders.all()
+            return Response({
+                'message': 'Driver allocated to batch',
+                'batch_id': str(batch_id),
+                'orders': OrderSerializer(orders, many=True).data,
+            })
+
+        target = Order.objects.filter(id=order_id).first()
+        if (
+            target
+            and target.restaurant
+            and target.restaurant.settlement_mode == Restaurant.SETTLEMENT_PLATFORM_PREPAID
+            and target.restaurant_payment_status != Order.RESTAURANT_PAID
+        ):
+            return Response(
+                {'error': 'Pay the restaurant before assigning a driver to this order.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
-            order = Order.objects.get(id=order_id)
+            order = AssignDriverService.execute(str(order_id), str(driver_id), request.user)
         except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
-
-        try:
-            driver = Driver.objects.get(id=driver_id)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
         except Driver.DoesNotExist:
             return Response({'error': 'Driver not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        from domain.fsm.driver_fsm import DriverFSM
-
-        if order.status != 'READY':
-            return Response({
-                'error': f'Cannot assign driver to order in status {order.status}. Only READY orders can be manually assigned.'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        if driver.status not in ['OFFLINE', 'AVAILABLE']:
-            return Response({
-                'error': f'Driver is in {driver.status} status. Driver must be OFFLINE or AVAILABLE.'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        with transaction.atomic():
-            from django.db.models import F
-            from domain.fsm.driver_fsm import DriverFSM
-
-            order.driver = driver
-            order.status = 'ASSIGNED'
-            order.save()
-
-            # Driver goes directly to DELIVERING (ASSIGNED state removed from DriverFSM)
-            if driver.status in ('OFFLINE', 'AVAILABLE'):
-                new_status = DriverFSM.transition('AVAILABLE', 'DELIVERING')
-            else:
-                new_status = driver.status  # already DELIVERING
-
-            Driver.objects.filter(id=driver.id).update(
-                status=new_status,
-                current_active_orders=F('current_active_orders') + 1
-            )
-            driver.refresh_from_db()
-
         return Response({
-            'message': f'Driver {driver.user.username} assigned to order {order_id}',
+            'message': 'Driver allocated to order',
             'order': OrderSerializer(order).data,
-            'driver': DriverSerializer(driver).data
         })

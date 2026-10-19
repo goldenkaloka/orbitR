@@ -11,7 +11,12 @@ from domain.fsm.driver_fsm import DriverFSM
 from domain.fsm.order_fsm import OrderFSM
 from domain.services.batch_fsm import BatchFSM
 from domain.services.driver_service import release_driver
+from domain.services.dispatch_routing import (
+    resolve_batch_dispatch_mode,
+    resolve_order_dispatch_mode,
+)
 from domain.services.permissions import (
+    assert_can_allocate_drivers,
     can_driver_delegate,
     can_serve_restaurant,
     check_restaurant_permission,
@@ -31,12 +36,22 @@ class AssignDriverService:
     def execute(order_id, driver_id, actor):
         with transaction.atomic():
             order = Order.objects.select_for_update().get(id=order_id)
+
+            assignment_source = assert_can_allocate_drivers(
+                actor, resolve_order_dispatch_mode(order)
+            )
+
             if order.driver and order.driver_id != driver_id:
                 raise ValueError("Order already assigned to someone else.")
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
             if not can_serve_restaurant(driver, order.restaurant_id):
                 raise PermissionError("Driver cannot serve this restaurant.")
+
+            # Idempotent re-claim by the same driver: no-op instead of a
+            # self-transition that would re-fire DriverAssigned.
+            if order.status == 'ASSIGNED' and order.driver_id == driver.id:
+                return order
 
             order.status = OrderFSM.transition(order.status, 'ASSIGNED')
             order.driver = driver
@@ -49,7 +64,14 @@ class AssignDriverService:
             driver.current_active_orders += 1
             driver.save(update_fields=['status', 'current_active_orders'])
 
-            DeliveryAssignment.objects.update_or_create(order=order, defaults={'driver': driver})
+            DeliveryAssignment.objects.update_or_create(
+                order=order,
+                defaults={
+                    'driver': driver,
+                    'assignment_source': assignment_source,
+                    'assigned_by': actor,
+                },
+            )
 
             transaction.on_commit(lambda: EventBus.publish(DriverAssigned(
                 aggregate_id=order.id,
@@ -70,6 +92,10 @@ class AssignBatchService:
     def execute(batch_id, driver_id, actor):
         with transaction.atomic():
             batch = DeliveryBatch.objects.select_for_update().get(id=batch_id)
+
+            assignment_source = assert_can_allocate_drivers(
+                actor, resolve_batch_dispatch_mode(batch)
+            )
 
             # Auto-advance FINALIZING → PENDING_DRIVER if all sections ready
             if batch.status == 'FINALIZING':
@@ -107,13 +133,26 @@ class AssignBatchService:
 
             driver = Driver.objects.select_for_update().get(id=driver_id)
 
-            # Verify driver can serve this restaurant
-            first_order = batch.orders.first()
-            if first_order and not can_serve_restaurant(driver, first_order.restaurant_id):
-                raise PermissionError("Driver cannot serve this restaurant.")
-
             orders = list(batch.orders.all())
             new_order_count = len(orders)
+
+            # A pooled batch spans several restaurants, so the driver must be
+            # able to serve every one of them — checking only the first order's
+            # restaurant would let a restaurant's own driver take a run that
+            # includes competitors.
+            restaurant_ids = {
+                o.restaurant_id for o in orders if o.restaurant_id
+            }
+            if batch.restaurant_id:
+                restaurant_ids.add(batch.restaurant_id)
+            unservable = [
+                rid for rid in restaurant_ids
+                if not can_serve_restaurant(driver, rid)
+            ]
+            if unservable:
+                raise PermissionError(
+                    "Driver cannot serve every restaurant in this batch."
+                )
 
             # --- Capacity: warn but don't block manual assignment ---
             current_load = driver.assignments.filter(delivered_at__isnull=True).count()
@@ -149,14 +188,18 @@ class AssignBatchService:
             for order in orders:
                 if is_reassign:
                     order.status = 'ASSIGNED'
-                else:
+                elif order.status != 'ASSIGNED':
                     order.status = OrderFSM.transition(order.status, 'ASSIGNED')
                 order.driver = driver
                 order.save(update_fields=['status', 'driver'])
 
                 DeliveryAssignment.objects.update_or_create(
                     order=order,
-                    defaults={'driver': driver}
+                    defaults={
+                        'driver': driver,
+                        'assignment_source': assignment_source,
+                        'assigned_by': actor,
+                    }
                 )
 
                 transaction.on_commit(lambda o=order: EventBus.publish(DriverAssigned(

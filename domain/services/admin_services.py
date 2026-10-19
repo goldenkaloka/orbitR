@@ -1,7 +1,9 @@
 from decimal import Decimal
 
+import logging
+
 from apps.delivery.models import Driver
-from apps.orders.models import Order
+from apps.orders.models import DeliveryBatch, Order
 from apps.restaurants.models import Restaurant
 from apps.users.models import User
 from django.db import transaction
@@ -17,10 +19,24 @@ from domain.events.types import (
 from domain.fsm.order_fsm import InvalidStateTransitionError, OrderFSM
 from domain.fsm.payment_fsm import PaymentFSM
 
+logger = logging.getLogger(__name__)
+
+
+def _renotify_batches(batch_ids):
+    """Re-run dispatch alerting for batches whose owner of allocation changed."""
+    from domain.services.dispatch_tasks import dispatch_batch_task
+
+    for batch_id in batch_ids:
+        try:
+            dispatch_batch_task.delay(batch_id)
+        except Exception as exc:
+            # Never fail the admin's edit because a Celery broker hiccuped.
+            logger.error(f"Failed to re-notify batch {batch_id}: {exc}")
+
 
 class PromoteUserService:
     @staticmethod
-    def to_vendor(user_id: str, restaurant_name: str, location: str, description: str = '', category: str = 'General', latitude=None, longitude=None, image=None, logo=None):
+    def to_vendor(user_id: str, restaurant_name: str, location: str, description: str = '', category: str = 'General', latitude=None, longitude=None, image=None, logo=None, dispatch_mode=None):
         with transaction.atomic():
             user = User.objects.select_for_update().get(id=user_id)
             if user.role != 'customer':
@@ -30,13 +46,23 @@ class PromoteUserService:
             user.save(update_fields=['role'])
 
             from django.contrib.gis.geos import Point
-            
+
             geo_location = None
             if latitude is not None and longitude is not None:
                 try:
                     geo_location = Point(float(longitude), float(latitude))
                 except (ValueError, TypeError):
                     pass
+
+            valid_dispatch_modes = {choice[0] for choice in Restaurant.DISPATCH_MODE_CHOICES}
+            if dispatch_mode is not None:
+                if dispatch_mode not in valid_dispatch_modes:
+                    raise ValueError(
+                        "Invalid dispatch_mode. Expected one of: "
+                        f"{', '.join(sorted(valid_dispatch_modes))}"
+                    )
+            else:
+                dispatch_mode = Restaurant.DISPATCH_ADMIN
 
             restaurant = Restaurant.objects.create(
                 owner=user,
@@ -46,7 +72,8 @@ class PromoteUserService:
                 category=category,
                 geo_location=geo_location,
                 image=image,
-                logo=logo
+                logo=logo,
+                dispatch_mode=dispatch_mode,
             )
 
 
@@ -295,7 +322,82 @@ class ManageRestaurantService:
         'category',
         'image',
         'logo',
+        'source_type',
+        'is_verified_partner',
+        'public_disclaimer',
+        'dispatch_mode',
+        'settlement_mode',
+        'payout_phone',
+        'payout_network',
+        'payout_account_name',
     }
+
+    @staticmethod
+    def create_restaurant(owner, name, location='', description='', category='General',
+                          latitude=None, longitude=None, image=None, logo=None,
+                          dispatch_mode=None, source_type=None, public_disclaimer='',
+                          settlement_mode=None, payout_phone='', payout_network='',
+                          payout_account_name=''):
+        """Create a restaurant owned by `owner` (normally the acting admin).
+
+        Unlike PromoteUserService.to_vendor this needs no customer to convert:
+        an admin can stand up an ops-owned restaurant directly and then run it
+        from the admin "Restaurants" tab.
+        """
+        from django.contrib.gis.geos import Point
+
+        if not name or not str(name).strip():
+            raise ValueError("Restaurant name is required")
+
+        valid_dispatch_modes = {choice[0] for choice in Restaurant.DISPATCH_MODE_CHOICES}
+        if dispatch_mode is not None:
+            if dispatch_mode not in valid_dispatch_modes:
+                raise ValueError(
+                    "Invalid dispatch_mode. Expected one of: "
+                    f"{', '.join(sorted(valid_dispatch_modes))}"
+                )
+        else:
+            dispatch_mode = Restaurant.DISPATCH_ADMIN
+
+        if source_type is not None:
+            valid_source_types = {choice[0] for choice in Restaurant.SOURCE_TYPE_CHOICES}
+            if source_type not in valid_source_types:
+                raise ValueError("Invalid restaurant source_type")
+        else:
+            source_type = Restaurant.SOURCE_PARTNER
+
+        geo_location = None
+        if latitude is not None and longitude is not None:
+            try:
+                geo_location = Point(float(longitude), float(latitude))
+            except (ValueError, TypeError):
+                pass
+
+        if settlement_mode is None:
+            settlement_mode = (
+                Restaurant.SETTLEMENT_PLATFORM_PREPAID
+                if source_type == Restaurant.SOURCE_PLATFORM_MANAGED
+                else Restaurant.SETTLEMENT_VENDOR_PAYOUT
+            )
+
+        with transaction.atomic():
+            return Restaurant.objects.create(
+                owner=owner,
+                name=name,
+                location=location or '',
+                description=description or '',
+                category=category or 'General',
+                geo_location=geo_location,
+                image=image,
+                logo=logo,
+                dispatch_mode=dispatch_mode,
+                source_type=source_type,
+                public_disclaimer=public_disclaimer or '',
+                settlement_mode=settlement_mode,
+                payout_phone=payout_phone or '',
+                payout_network=payout_network or '',
+                payout_account_name=payout_account_name or '',
+            )
 
     @staticmethod
     def toggle_status(restaurant_id: str):
@@ -310,10 +412,25 @@ class ManageRestaurantService:
         with transaction.atomic():
             from django.contrib.gis.geos import Point
             restaurant = Restaurant.objects.select_for_update().get(id=restaurant_id)
-            
+
             lat = kwargs.pop('latitude', None)
             lng = kwargs.pop('longitude', None)
-            
+            owner_id = kwargs.pop('owner_id', None)
+
+            if owner_id is not None:
+                # Ownership reassignment: an admin can take ownership of a
+                # restaurant (or hand it to another admin/vendor) so the admin
+                # app can operate it as an "ops-owned" property. owner_id is
+                # NOT NULL in the schema, so an empty value is treated as "no
+                # change" rather than clearing the owner.
+                if owner_id not in ('', 'null', 'None'):
+                    owner = User.objects.filter(id=owner_id).first()
+                    if owner is None:
+                        raise ValueError("Owner user not found")
+                    if owner.role not in ('admin', 'vendor'):
+                        raise ValueError("Owner must have role admin or vendor")
+                    restaurant.owner = owner
+
             if lat is not None and lng is not None:
                 try:
                     restaurant.geo_location = Point(float(lng), float(lat))
@@ -325,10 +442,56 @@ class ManageRestaurantService:
                  restaurant.geo_location = Point(float(lng), restaurant.geo_location.y)
                  
 
+            previous_dispatch_mode = restaurant.dispatch_mode
+
             for key, value in kwargs.items():
                 if key in ManageRestaurantService.ALLOWED_UPDATE_FIELDS and value is not None:
+                    if key == 'source_type':
+                        valid_source_types = {choice[0] for choice in Restaurant.SOURCE_TYPE_CHOICES}
+                        if value not in valid_source_types:
+                            raise ValueError("Invalid restaurant source_type")
+                    if key == 'dispatch_mode':
+                        valid_dispatch_modes = {choice[0] for choice in Restaurant.DISPATCH_MODE_CHOICES}
+                        if value not in valid_dispatch_modes:
+                            raise ValueError(
+                                "Invalid dispatch_mode. Expected one of: "
+                                f"{', '.join(sorted(valid_dispatch_modes))}"
+                            )
+                    if key == 'settlement_mode':
+                        valid_modes = {choice[0] for choice in Restaurant.SETTLEMENT_CHOICES}
+                        if value not in valid_modes:
+                            raise ValueError(
+                                "Invalid settlement_mode. Expected one of: "
+                                f"{', '.join(sorted(valid_modes))}"
+                            )
+                    if key == 'is_verified_partner':
+                        value = str(value).lower() in ('true', '1', 'yes', 'on')
                     setattr(restaurant, key, value)
             restaurant.save()
+
+            # Handing dispatch authority to the restaurant must also hand over
+            # the batches already waiting — otherwise orders already alerted to
+            # admins sit unassigned with nobody re-notified, and batched orders
+            # are exempt from the unassigned-expiry task. Clearing offer_sent_at
+            # resets the alert throttle so the new audience is told immediately.
+            if restaurant.dispatch_mode != previous_dispatch_mode:
+                affected = list(
+                    DeliveryBatch.objects
+                    .filter(
+                        status__in=['PENDING_DRIVER', 'PRE_ASSIGNING'],
+                        orders__restaurant_id=restaurant.id,
+                    )
+                    .values_list('id', flat=True)
+                    .distinct()
+                )
+                if affected:
+                    DeliveryBatch.objects.filter(id__in=affected).update(
+                        offer_sent_at=None
+                    )
+                    transaction.on_commit(
+                        lambda ids=[str(b) for b in affected]: _renotify_batches(ids)
+                    )
+
             return restaurant
 
 

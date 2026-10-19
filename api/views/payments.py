@@ -11,6 +11,7 @@ from infrastructure.payment_gateways.airpay_utils import AirpayTransformer
 from rest_framework import permissions, status, viewsets
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,12 @@ class InitiatePaymentView(APIView):
     Unified entry point for all payments (Order, Pool Share, Marketplace Listing).
     """
     permission_classes = [permissions.IsAuthenticated]
+
+    #: Money-moving writes get a tighter budget than the blanket `user` rate
+    #: so a compromised or buggy client cannot hammer the payment gateway.
+    def get_throttles(self):
+        self.throttle_scope = 'payments'
+        return [ScopedRateThrottle()]
 
     def post(self, request, *args, **kwargs):
         payable_type = request.data.get('payable_type')
@@ -79,6 +86,10 @@ class AirpayWebhookView(APIView):
     """
     permission_classes = [AllowAny]
     authentication_classes = []
+    # Gateway callbacks are authenticated by IP allowlist + signature, not by
+    # DRF throttling — the default anon bucket is keyed by the gateway IP and
+    # would 429 legitimate callbacks after 100/hour (DDIA Ch.1 backpressure).
+    throttle_classes = []
 
     def _get_client_ip(self, request):
         """Extract client IP. Trust proxy headers only when explicitly enabled."""
@@ -204,6 +215,9 @@ class ClickpesaWebhookView(APIView):
     """
     permission_classes = [AllowAny]
     authentication_classes = []
+    # Authenticated by checksum signature, not by DRF throttling — the anon
+    # bucket is keyed by the gateway IP and would 429 legitimate callbacks.
+    throttle_classes = []
 
     def _verify_checksum(self, request):
         try:
@@ -277,22 +291,38 @@ class ClickpesaWebhookView(APIView):
             lookup_ref = order_ref[:16] if order_ref else ''
 
             from apps.payments.models import Payment
+
+            def payment_by_id_prefix(prefix, **extra_filters):
+                """Resolve id.hex[:16] as a UUID range (prefix+000.. to prefix+fff..)
+                so Postgres answers with a PK index range scan — the old Python
+                loops materialised every INITIATED payment (and every payment
+                from the last hour) just to compare hex prefixes in memory
+                (DDIA Ch.1: bounded work per webhook)."""
+                if not prefix or len(prefix) > 32 or '-' in prefix:
+                    return None
+                try:
+                    from uuid import UUID
+                    low = UUID(prefix + '0' * (32 - len(prefix)))
+                    high = UUID(prefix + 'f' * (32 - len(prefix)))
+                except ValueError:
+                    return None
+                return (
+                    Payment.objects
+                    .filter(id__gte=low, id__lte=high, **extra_filters)
+                    .order_by('-created_at')
+                    .first()
+                )
+
             payment = Payment.objects.filter(provider_reference=transaction_id).first()
 
             if not payment:
-                for candidate in Payment.objects.filter(status='INITIATED'):
-                    if candidate.id.hex[:16] == lookup_ref:
-                        payment = candidate
-                        break
+                payment = payment_by_id_prefix(lookup_ref, status='INITIATED')
 
             if not payment:
                 from django.utils import timezone
                 from datetime import timedelta
                 time_threshold = timezone.now() - timedelta(hours=1)
-                for candidate in Payment.objects.filter(created_at__gte=time_threshold):
-                    if candidate.id.hex[:16] == lookup_ref:
-                        payment = candidate
-                        break
+                payment = payment_by_id_prefix(lookup_ref, created_at__gte=time_threshold)
 
             if not payment:
                 logger.error(f"ClickPesa Webhook: Could not resolve payment for reference {order_ref}")

@@ -171,3 +171,7 @@ restaurant-images/
 model_fields.txt
 model_fields_utf8.txt
 debug_mnos.py
+
+# Throwaway gateway diagnostics (never commit — they held live credentials)
+test_airpay*.py
+decrypt_log.py

@@ -61,7 +61,7 @@ class OrderPrepSmsService:
     @staticmethod
     def notify_single_order(order_id):
         from apps.orders.models import Order
-        from apps.restaurants.models import SectionStaff
+        from apps.restaurants.models import Restaurant, SectionStaff
 
         order = (
             Order.objects.select_related('restaurant__owner', 'customer')
@@ -98,6 +98,30 @@ class OrderPrepSmsService:
         ])
 
         owner_phone = _clean_phone(order.restaurant.owner.phone)
+        is_admin_owned_or_managed = (
+            order.restaurant.source_type == Restaurant.SOURCE_PLATFORM_MANAGED
+            or order.restaurant.settlement_mode == Restaurant.SETTLEMENT_PLATFORM_PREPAID
+            or order.restaurant.owner.role == 'admin'
+        )
+        if is_admin_owned_or_managed:
+            recipients = {}
+            msg = "\n".join([
+                f"OrbitR OPS: Oda mpya #{short} ({order.restaurant.name})",
+                f"Mteja: {customer_name} ({customer_phone or '---'})",
+                f"Jumla ya chakula: TSh {_money(order.items_subtotal)}",
+                f"Aina: {delivery_note}",
+                "Bidhaa:",
+                *(item_lines or ["- Hakuna bidhaa"]),
+                "Tafadhali thibitisha au nunua bidhaa dukani.",
+            ])
+            if owner_phone:
+                recipients[owner_phone] = msg
+            payout_phone = _clean_phone(getattr(order.restaurant, 'payout_phone', None))
+            if payout_phone and payout_phone != owner_phone:
+                recipients[payout_phone] = msg
+            if recipients:
+                _send_once(recipients)
+            return
 
         section_ids = {item.section_id for item in items if item.section_id}
         staff_rows = list(
@@ -133,7 +157,7 @@ class OrderPrepSmsService:
     @staticmethod
     def notify_pool_orders(pool_id):
         from apps.orders.models import Order
-        from apps.restaurants.models import SectionStaff
+        from apps.restaurants.models import Restaurant, SectionStaff
 
         orders = list(
             Order.objects.filter(pool_id=pool_id)
@@ -176,6 +200,30 @@ class OrderPrepSmsService:
         owner_lines.append("Tafadhali kila stall ianze kuandaa sasa.")
 
         owner_phone = _clean_phone(restaurant.owner.phone)
+        is_admin_owned_or_managed = (
+            restaurant.source_type == Restaurant.SOURCE_PLATFORM_MANAGED
+            or restaurant.settlement_mode == Restaurant.SETTLEMENT_PLATFORM_PREPAID
+            or restaurant.owner.role == 'admin'
+        )
+        if is_admin_owned_or_managed:
+            recipients = {}
+            msg = "\n".join([
+                f"OrbitR OPS: Oda ya pamoja #{invite} ({restaurant.name})",
+                f"Wateja: {len(orders)}",
+                f"Jumla ya chakula: TSh {_money(food_total)}",
+                f"Wakati: {first_order_time}",
+                "Bidhaa:",
+                *owner_lines[6:-1],
+                "Tafadhali thibitisha au nunua bidhaa dukani.",
+            ])
+            if owner_phone:
+                recipients[owner_phone] = msg
+            payout_phone = _clean_phone(getattr(restaurant, 'payout_phone', None))
+            if payout_phone and payout_phone != owner_phone:
+                recipients[payout_phone] = msg
+            if recipients:
+                _send_once(recipients)
+            return
 
         messages = {}
         staff_rows = (

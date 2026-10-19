@@ -90,6 +90,10 @@ def ws_subscribe_check(request):
         allowed = role == "driver" or role == "admin"
         return JsonResponse({"result": {"allowed": allowed}}, status=200)
 
+    if namespace == "admins":
+        allowed = role == "admin" or user_obj.is_superuser
+        return JsonResponse({"result": {"allowed": allowed}}, status=200)
+
     if namespace == "demands":
         from apps.marketplace.models import BuyerDemand
         try:

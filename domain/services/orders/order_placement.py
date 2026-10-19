@@ -107,6 +107,14 @@ class PlaceOrderService:
                 total_amount=total_amount,
                 delivery_otp=otp,
                 h3_index=delivery_h3,
+                confirmation_status=(
+                    Order.CONFIRMATION_PENDING
+                    if (
+                        restaurant.source_type == 'PLATFORM_MANAGED'
+                        or restaurant.settlement_mode == 'PLATFORM_PREPAID'
+                    )
+                    else Order.CONFIRMATION_CONFIRMED
+                ),
                 **validated_data
             )
             
@@ -130,18 +138,9 @@ class PlaceOrderService:
                 aggregate_id=order.id,
                 payload={'customer_id': str(order.customer.id)}
             )))
-            if not is_pickup:
-                transaction.on_commit(lambda oid=str(order.id): _prewarm_order_route(oid))
         
         return order
 
-
-def _prewarm_order_route(order_id):
-    try:
-        from apps.orders.tasks import prewarm_order_route_geometry
-        prewarm_order_route_geometry.delay(order_id)
-    except Exception as exc:
-        logger.warning(f"Failed to queue route prewarm for order {order_id}: {exc}")
 
 class ConfirmOrderService:
     @staticmethod

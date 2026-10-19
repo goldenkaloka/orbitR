@@ -19,7 +19,7 @@ class NotificationChannel(ABC):
         ...
 
     @abstractmethod
-    def notify_admins(self, title: str, body: str, data: dict | None = None) -> None:
+    def notify_admins(self, title: str, body: str, data: dict | None = None, sms: bool = False) -> None:
         ...
 
 
@@ -34,9 +34,9 @@ class PushNotificationChannel(NotificationChannel):
         from infrastructure.notifications.service import NotificationService
         NotificationService.send_sms(phone, message)
 
-    def notify_admins(self, title: str, body: str, data: dict | None = None) -> None:
+    def notify_admins(self, title: str, body: str, data: dict | None = None, sms: bool = False) -> None:
         from infrastructure.notifications.service import NotificationService
-        NotificationService.notify_admins(title=title, body=body, data=data or {})
+        NotificationService.notify_admins(title=title, body=body, data=data or {}, sms=sms)
 
 
 class LogOnlyChannel(NotificationChannel):
@@ -50,7 +50,7 @@ class LogOnlyChannel(NotificationChannel):
         import logging
         logging.getLogger(__name__).info(f"[LogOnly] sms to {phone}: {message}")
 
-    def notify_admins(self, title: str, body: str, data: dict | None = None) -> None:
+    def notify_admins(self, title: str, body: str, data: dict | None = None, sms: bool = False) -> None:
         import logging
         logging.getLogger(__name__).info(f"[LogOnly] admin alert: {title} — {body}")
 

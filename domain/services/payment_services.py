@@ -73,9 +73,53 @@ def _can_pay_target(actor, target):
     return target.get('user') == actor
 
 
+def record_failed_payout(payment, reason):
+    """
+    Queue a failed ledger release for retry (DDIA Ch.11: dead-letter queue).
+
+    ``retry_failed_payouts`` re-runs ReleasePaymentService for every queued
+    row and deletes it on success. Without this, a single exception in the
+    release path silently forfeits the restaurant/driver payout forever.
+    """
+    from apps.payments.models import FailedPayout
+
+    to_user = None
+    if payment.payable_type == 'order':
+        order = Order.objects.filter(id=payment.payable_id).select_related(
+            'restaurant__owner', 'driver__user'
+        ).first()
+        if order:
+            if order.restaurant and order.restaurant.owner:
+                to_user = order.restaurant.owner
+            elif order.driver and order.driver.user:
+                to_user = order.driver.user
+    if to_user is None:
+        to_user = get_platform_user()
+
+    try:
+        existing = FailedPayout.objects.filter(payment=payment).first()
+        if existing:
+            existing.reason = reason
+            existing.save(update_fields=['reason'])
+        else:
+            FailedPayout.objects.create(
+                payment=payment,
+                to_wallet=to_user,
+                amount=payment.amount,
+                transaction_type='release_retry',
+                reason=reason,
+            )
+        logger.warning(f"Queued failed payout for payment {payment.id}: {reason}")
+    except Exception:
+        logger.exception(f"Could not record FailedPayout for payment {payment.id}")
+
+
 class InitiatePaymentService:
     @staticmethod
     def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None):
+        # Phase 1: resolve target and persist the Payment row. Short
+        # transaction, no network I/O — a gateway stall must never hold a
+        # Postgres row lock (DDIA Ch.1 "I/O in a transaction").
         with transaction.atomic():
             # Normalize payable_id to canonical UUID format (with hyphens)
             # to prevent duplicate payments due to inconsistent formatting
@@ -89,7 +133,7 @@ class InitiatePaymentService:
             if actor is not None and not _can_pay_target(actor, target):
                 raise ValueError("You are not allowed to initiate this payment.")
             customer_phone = phone or target['phone']
-            
+
             # 2. Create or get Payment record with locking
             payment, created = Payment.objects.select_for_update().get_or_create(
                 payable_type=payable_type,
@@ -113,19 +157,34 @@ class InitiatePaymentService:
             if payment.status in ['COLLECTED', 'DISBURSED']:
                 raise ValueError("This has already been paid.")
 
-            # 4. Initiate with Gateway
-            gateway = get_payment_gateway(phone=customer_phone)
-            response = gateway.collect(
-                amount=target['amount'],
-                phone=customer_phone,
-                order_reference=str(payment.id), # Use Payment ID as gateway reference
-                bank_code=bank_code
-            )
+            payment_id = payment.id
 
+        # 4. Initiate with Gateway — deliberately outside any transaction so
+        # the 15-30s mobile-money response time holds neither a row lock nor
+        # a checked-out connection.
+        gateway = get_payment_gateway(phone=customer_phone)
+        response = gateway.collect(
+            amount=target['amount'],
+            phone=customer_phone,
+            order_reference=str(payment_id),  # Use Payment ID as gateway reference
+            bank_code=bank_code
+        )
+
+        # 5. Record the outcome in a fresh short transaction. Re-lock so a
+        # concurrent webhook that already completed this payment is not
+        # clobbered.
+        with transaction.atomic():
+            payment = Payment.objects.select_for_update().get(id=payment_id)
+            if payment.status in ['COLLECTED', 'DISBURSED']:
+                return {
+                    'payment': payment,
+                    'gateway_response': response,
+                    'is_push': response.get('success') and not response.get('instant_success')
+                }
             if response.get('success'):
                 payment.provider_reference = response.get('provider_reference') or response.get('transactionId')
-                payment.save()
-                
+                payment.save(update_fields=['provider_reference'])
+
                 transaction.on_commit(lambda: EventBus.publish(PaymentInitiated(
                     aggregate_id=payment.id,
                     payload={
@@ -136,20 +195,21 @@ class InitiatePaymentService:
                     }
                 )))
 
-            # --- AUTO-COMPLETE FOR MOCK ---
-            if response.get('instant_success'):
-                CompletePaymentService.execute(
-                    payment_id=payment.id,
-                    provider_reference=payment.provider_reference,
-                    success=True
-                )
-                payment.refresh_from_db()
-            
-            return {
-                'payment': payment,
-                'gateway_response': response,
-                'is_push': response.get('success') and not response.get('instant_success')
-            }
+        # --- AUTO-COMPLETE FOR MOCK --- runs outside the phase-5 transaction
+        # because CompletePaymentService opens its own.
+        if response.get('instant_success'):
+            CompletePaymentService.execute(
+                payment_id=payment.id,
+                provider_reference=payment.provider_reference,
+                success=True
+            )
+            payment.refresh_from_db()
+
+        return {
+            'payment': payment,
+            'gateway_response': response,
+            'is_push': response.get('success') and not response.get('instant_success')
+        }
 
 PLATFORM_USER_PHONE = '+255000000000'
 
@@ -188,6 +248,58 @@ def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
         wallet.pending_balance -= total_amount.quantize(Decimal('0.01'))
         wallet.balance += platform_cut.quantize(Decimal('0.01'))
         wallet.save(update_fields=['pending_balance', 'balance', 'updated_at'])
+
+
+def debit_escrow_external(amount: Decimal, description: str = ''):
+    """
+    Take money out of escrow to pay someone outside the platform.
+
+    Used by the pickup flow, where the platform sends a restaurant's share to
+    their mobile money at the counter. Unlike _release_escrow nothing is
+    retained as platform balance — the money leaves for good, so only
+    pending_balance moves.
+
+    Must be called with the order already locked so escrow and the disbursement
+    record settle together.
+    """
+    amount = Decimal(amount).quantize(Decimal('0.01'))
+    if amount <= 0:
+        raise ValueError("Escrow debit amount must be greater than zero.")
+
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        if wallet.pending_balance < amount:
+            raise ValueError(
+                f"Insufficient escrow balance ({wallet.pending_balance}) "
+                f"for payout of {amount}."
+            )
+        wallet.pending_balance -= amount
+        wallet.save(update_fields=['pending_balance', 'updated_at'])
+        logger.info(
+            f"[escrow] Debited {amount} to external payee. {description}".strip()
+        )
+        return wallet.pending_balance
+
+
+def restore_escrow_external(amount: Decimal, description: str = ''):
+    """
+    Put money back into escrow after an external payout failed.
+
+    The inverse of debit_escrow_external — used so a failed restaurant payment
+    can be retried rather than stranding the amount.
+    """
+    amount = Decimal(amount).quantize(Decimal('0.01'))
+    if amount <= 0:
+        raise ValueError("Escrow restore amount must be greater than zero.")
+
+    with transaction.atomic():
+        wallet = _get_platform_wallet()
+        wallet.pending_balance += amount
+        wallet.save(update_fields=['pending_balance', 'updated_at'])
+        logger.info(
+            f"[escrow] Restored {amount} to escrow. {description}".strip()
+        )
+        return wallet.pending_balance
 
 
 def _record_platform_revenue(amount: Decimal, description: str):
@@ -334,9 +446,11 @@ class CompletePaymentService:
         from domain.fsm.order_fsm import OrderFSM
         from domain.services.orders.order_placement import ConfirmOrderService
 
-        order = Order.objects.select_for_update().get(id=payment.payable_id)
+        order = Order.objects.select_for_update().select_related('restaurant').get(id=payment.payable_id)
         order.is_paid = True
-        order.status = OrderFSM.transition(order.status, 'CREATED')
+        # Idempotent: a replayed webhook/event must not require a self-loop.
+        if order.status not in ('CREATED', 'AWAITING_CONFIRMATION'):
+            order.status = OrderFSM.transition(order.status, 'CREATED')
         order.save(update_fields=['is_paid', 'status'])
 
         _create_double_entry(
@@ -349,6 +463,30 @@ class CompletePaymentService:
 
         # Escrow hold: record money expected from the gateway
         _hold_escrow(payment.amount)
+
+        # Platform-managed/concierge listings are operated by real third-party
+        # restaurants. Ops must call and confirm availability before the order
+        # is dispatched, so do not auto-confirm these.
+        if (
+            order.restaurant
+            and (
+                order.restaurant.source_type == 'PLATFORM_MANAGED'
+                or order.restaurant.settlement_mode == 'PLATFORM_PREPAID'
+            )
+            and order.confirmation_status != 'CONFIRMED'
+        ):
+            if order.status == 'CREATED':
+                order.status = OrderFSM.transition(
+                    order.status, 'AWAITING_CONFIRMATION',
+                )
+            order.confirmation_status = 'PENDING'
+            order.save(update_fields=['status', 'confirmation_status', 'is_paid'])
+            try:
+                from domain.services.order_sms_notifications import OrderPrepSmsService
+                OrderPrepSmsService.notify_single_order(str(order.id))
+            except Exception as se:
+                logger.warning(f"Could not dispatch SMS for concierge order {order.id}: {se}")
+            return
 
         # Confirm synchronously so the order is reflected immediately,
         # not waiting on Celery event dispatch
@@ -530,7 +668,23 @@ class ReleasePaymentService:
             if net_collected_amount < 0:
                 raise ValueError("Refunded amount exceeds collected payment amount.")
 
-            platform_cut = (net_collected_amount - restaurant_payout - driver_payout).quantize(Decimal('0.01'))
+            # The restaurant was already paid real money at the counter when the
+            # driver collected the food. That amount has already left escrow, so
+            # suppress the restaurant credit here and only release what is left.
+            # Without this the restaurant is paid twice for one order.
+            pickup_paid = Decimal(str(getattr(order, 'pickup_paid_amount', 0) or 0))
+            if pickup_paid > 0:
+                logger.info(
+                    f"[ReleasePayment] Order {order.id} was paid {pickup_paid} to the "
+                    f"restaurant at pickup — skipping delivery-time restaurant payout."
+                )
+                restaurant_payout = Decimal('0')
+
+            escrow_release_amount = (net_collected_amount - pickup_paid).quantize(
+                Decimal('0.01')
+            )
+
+            platform_cut = (escrow_release_amount - restaurant_payout - driver_payout).quantize(Decimal('0.01'))
             if platform_cut < 0:
                 # Driver minimum guarantee can exceed what a single order's slice of the
                 # delivery/service fee covers.  The platform absorbs the shortfall rather
@@ -545,8 +699,9 @@ class ReleasePaymentService:
             payment.status = PaymentFSM.transition(payment.status, 'DISBURSED')
             payment.save()
 
-            # Release escrow
-            _release_escrow(net_collected_amount, platform_cut)
+            # Release whatever escrow the pickup flow did not already spend.
+            if escrow_release_amount > 0:
+                _release_escrow(escrow_release_amount, platform_cut)
 
             # Credit wallets (ledger only — no real money moves)
             has_section_items = order.items.filter(section__isnull=False).exists() if order else False

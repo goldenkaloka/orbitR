@@ -94,14 +94,8 @@ class FoodSerializer(serializers.ModelSerializer):
         if section:
             request = self.context.get('request')
             if request and request.user:
-                from apps.restaurants.models import Restaurant, SectionStaff
-                try:
-                    restaurant = Restaurant.objects.get(owner=request.user)
-                except Restaurant.DoesNotExist:
-                    staff_sec = SectionStaff.objects.filter(user=request.user).select_related('section__restaurant').first()
-                    restaurant = staff_sec.section.restaurant if staff_sec else None
-
-                if restaurant and section.restaurant != restaurant:
+                from domain.services.permissions import check_restaurant_permission
+                if not check_restaurant_permission(request.user, section.restaurant):
                     raise serializers.ValidationError({"section": "The selected section does not belong to your restaurant."})
         elif self.instance is None:
             request = self.context.get('request')
@@ -150,6 +144,8 @@ class BatchSectionStatusSerializer(serializers.ModelSerializer):
 class RestaurantListSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     logo_url = serializers.SerializerMethodField()
+    is_platform_managed = serializers.SerializerMethodField()
+    public_disclaimer = serializers.SerializerMethodField()
     foods = serializers.SerializerMethodField()
     sections = RestaurantSectionSerializer(many=True, read_only=True)
     is_busy = serializers.SerializerMethodField()
@@ -159,15 +155,20 @@ class RestaurantListSerializer(serializers.ModelSerializer):
     score = serializers.FloatField(read_only=True, default=None)
     distance_km = serializers.SerializerMethodField()
     review_count = serializers.IntegerField(read_only=True, default=0)
+    delivery_fee = serializers.SerializerMethodField()
+    service_fee = serializers.SerializerMethodField()
 
     class Meta:
         model = Restaurant
         fields = [
             'id', 'name', 'description', 'image', 'image_url', 'logo', 'logo_url',
+            'source_type', 'is_verified_partner', 'is_platform_managed', 'public_disclaimer',
+            'dispatch_mode',
             'location', 'geo_location', 'latitude', 'longitude', 
             'category', 'price_range', 'rating', 
             'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time',
             'score', 'distance_km', 'review_count',
+            'delivery_fee', 'service_fee',
         ]
 
     def get_latitude(self, obj):
@@ -185,6 +186,16 @@ class RestaurantListSerializer(serializers.ModelSerializer):
                 return None
         return None
 
+    def get_is_platform_managed(self, obj):
+        return getattr(obj, 'source_type', Restaurant.SOURCE_PARTNER) == Restaurant.SOURCE_PLATFORM_MANAGED
+
+    def get_public_disclaimer(self, obj):
+        custom = getattr(obj, 'public_disclaimer', '') or ''
+        if custom:
+            return custom
+        if self.get_is_platform_managed(obj):
+            return 'Platform-managed listing: OrbitR buys from this restaurant after you order. Availability and prices may be confirmed before fulfillment.'
+        return ''
 
     def get_image_url(self, obj):
         image = getattr(obj, 'image', None) if not isinstance(obj, dict) else obj.get('image')
@@ -248,12 +259,79 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         from apps.restaurants.utils import compute_busy_restaurant_ids
         return str(obj.id) in compute_busy_restaurant_ids([obj.id])
 
+    def _precomputed_fee(self, obj):
+        """Delivery/service fee for the caller's location, computed once per instance."""
+        cache = getattr(self, '_precomputed_fees', None)
+        if cache is None:
+            cache = {}
+            self._precomputed_fees = cache
+        key = str(obj.id)
+        if key in cache:
+            return cache[key]
+
+        user_location = self.context.get('user_location')
+        result = None
+        if user_location is not None:
+            try:
+                from domain.services.pricing_service import PricingService
+                fee, service_fee, _ = PricingService.calculate_delivery_fee(
+                    obj, user_location, skip_log=True,
+                )
+                result = (fee, service_fee)
+            except Exception:
+                result = None
+        cache[key] = result
+        return result
+
+    def get_delivery_fee(self, obj):
+        result = self._precomputed_fee(obj)
+        return float(result[0]) if result else None
+
+    def get_service_fee(self, obj):
+        result = self._precomputed_fee(obj)
+        return float(result[1]) if result else None
+
 
 class RestaurantSerializer(RestaurantListSerializer):
     sections = RestaurantSectionSerializer(many=True, read_only=True)
 
     class Meta(RestaurantListSerializer.Meta):
         fields = RestaurantListSerializer.Meta.fields + ['sections']
+
+
+class AdminRestaurantSerializer(RestaurantSerializer):
+    """Restaurant payload for the admin app, including owner identity.
+
+    The public Restaurant(Serializer|ListSerializer) intentionally omits the
+    owner so a customer browsing restaurants never sees the owner's phone.
+    Admin responses are authenticated and gated by IsAdmin, so ownership is
+    safe (and necessary) to expose here — the admin "Restaurants" console
+    lists the restaurants an admin owns and needs to render who owns them.
+    """
+    owner_id = serializers.SerializerMethodField()
+    owner_username = serializers.SerializerMethodField()
+    owner_phone = serializers.SerializerMethodField()
+    active_order_count = serializers.SerializerMethodField()
+
+    class Meta(RestaurantSerializer.Meta):
+        fields = RestaurantSerializer.Meta.fields + [
+            'owner_id', 'owner_username', 'owner_phone', 'active_order_count',
+            'settlement_mode', 'payout_phone', 'payout_network', 'payout_account_name',
+        ]
+
+    def get_owner_id(self, obj):
+        return str(obj.owner_id) if obj.owner_id else None
+
+    def get_owner_username(self, obj):
+        return obj.owner.username if obj.owner_id and obj.owner else None
+
+    def get_owner_phone(self, obj):
+        return obj.owner.phone if obj.owner_id and obj.owner else None
+
+    def get_active_order_count(self, obj):
+        # Populated by the my-restaurants queryset annotation. Falls back to 0
+        # for other admin responses that don't annotate it.
+        return getattr(obj, 'active_order_count', 0) or 0
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
     section_name = serializers.CharField(source='section.name', read_only=True)
@@ -280,10 +358,13 @@ class OrderSerializer(serializers.ModelSerializer):
     # never needs a second HTTP round-trip to Mapbox Directions on page open.
     route_geometry = serializers.SerializerMethodField()
     payment_status = serializers.ReadOnlyField(source='payment.status')
+    # False for admin-owned restaurants: their share is settled internally, so
+    # the driver must not be asked for a pay-at-counter action.
+    pickup_payment_required = serializers.SerializerMethodField()
 
-    rider_name = serializers.ReadOnlyField(source='driver.user.username')
-    rider_phone = serializers.ReadOnlyField(source='driver.user.phone')
-    rider_id = serializers.ReadOnlyField(source='driver.user_id')
+    driver_name = serializers.ReadOnlyField(source='driver.user.username')
+    driver_phone = serializers.ReadOnlyField(source='driver.user.phone')
+    driver_id = serializers.ReadOnlyField(source='driver.user_id')
     customer_name = serializers.ReadOnlyField(source='customer.username')
     customer_phone = serializers.ReadOnlyField(source='customer.phone')
     restaurant_phone = serializers.ReadOnlyField(source='restaurant.owner.phone')
@@ -295,6 +376,8 @@ class OrderSerializer(serializers.ModelSerializer):
     pool_id = serializers.SerializerMethodField()
     group_breakdown = serializers.SerializerMethodField()
     is_reviewed = serializers.SerializerMethodField()
+    settlement_mode = serializers.SerializerMethodField()
+    restaurant_payout_phone = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -304,8 +387,12 @@ class OrderSerializer(serializers.ModelSerializer):
             'restaurant', 'restaurant_name', 'restaurant_latitude', 'restaurant_longitude',
             'restaurant_phone', 'customer_name', 'customer_phone',
             'items', 'fulfillment_type', 'delivery_address', 'delivery_location', 'delivery_latitude', 'delivery_longitude',
-            'notes', 'rider_name', 'rider_phone', 'rider_id', 'created_at', 'delivery_otp', 'group_breakdown',
+            'notes', 'driver_name', 'driver_phone', 'driver_id', 'created_at', 'delivery_otp', 'group_breakdown',
             'batch', 'route_sequence', 'is_pool_order', 'pool_id', 'route_geometry', 'payment_status',
+            'pickup_payment_required', 'confirmation_status', 'confirmed_total',
+            'restaurant_payment_status', 'restaurant_paid_amount',
+            'restaurant_payment_reference', 'restaurant_paid_at',
+            'settlement_mode', 'restaurant_payout_phone',
             'cancelled_at', 'cancelled_by', 'cancellation_fault', 'cancellation_category',
             'cancellation_reason', 'affects_restaurant_reputation', 'is_reviewed',
         ]
@@ -318,6 +405,8 @@ class OrderSerializer(serializers.ModelSerializer):
 
 
     def get_is_reviewed(self, obj):
+        if hasattr(obj, '_prefetched_objects_cache') and 'reviews' in obj._prefetched_objects_cache:
+            return any(r.review_type == 'restaurant' for r in obj.reviews.all())
         return obj.reviews.filter(review_type='restaurant').exists()
 
     def get_restaurant_latitude(self, obj):
@@ -334,38 +423,30 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_route_geometry(self, obj):
         """
-        Returns a pre-fetched [[lng, lat], ...] polyline for the static
-        restaurant → delivery route, cached in Redis for 2 hours.
-
-        The client uses this to draw the route instantly on map load with
-        zero extra HTTP calls. Falls back to None gracefully — the client
-        will fetch from Mapbox Directions API as a fallback.
+        Deprecated: Route geometry is calculated and cached directly on the client side
+        via Clean Architecture (GetOrderRouteUseCase) to eliminate backend serialization
+        and latency bottlenecks.
         """
-        from apps.core.cache_keys import stable_cache_key
-        from django.core.cache import cache
-
-        if getattr(obj, 'fulfillment_type', 'DELIVERY') == 'PICKUP':
-            return None
-
-        res = obj.restaurant
-        if not res or not res.geo_location or not obj.delivery_location:
-            return None
-
-        res_lng = round(res.geo_location.x, 6)
-        res_lat = round(res.geo_location.y, 6)
-        dest_lng = round(obj.delivery_location.x, 6)
-        dest_lat = round(obj.delivery_location.y, 6)
-
-        cache_key = stable_cache_key('route_geom', {
-            'from': [res_lng, res_lat],
-            'to': [dest_lng, dest_lat],
-        })
-
-        return cache.get(cache_key)
+        return None
 
             # Cache for 2 hours — restaurant/delivery coords don't change per order
     def get_restaurant_name(self, obj):
         return obj.restaurant.name if obj.restaurant else "Marketplace Order"
+
+    def get_settlement_mode(self, obj):
+        return obj.restaurant.settlement_mode if obj.restaurant_id else None
+
+    def get_restaurant_payout_phone(self, obj):
+        return obj.restaurant.payout_phone if obj.restaurant_id else ''
+
+    def get_pickup_payment_required(self, obj):
+        restaurant = obj.restaurant if obj.restaurant_id else None
+        if restaurant is None:
+            return True
+        return restaurant.settlement_mode in (
+            restaurant.SETTLEMENT_DRIVER_FLOAT,
+            restaurant.SETTLEMENT_VENDOR_PAYOUT,
+        )
 
     def get_pool_id(self, obj):
         return str(obj.pool_id) if obj.pool_id else None
@@ -521,6 +602,19 @@ class DriverSerializer(serializers.ModelSerializer):
 
     def get_longitude(self, obj):
         return obj.location.x if obj.location else None
+
+    def to_representation(self, instance):
+        # Seed the nested user with values the driver row already knows so
+        # UserSerializer does not fire its existence queries per row
+        # (DDIA Ch.1 — N+1: 4 queries/row -> 0 on list endpoints).
+        user = instance.user
+        user.has_driver_profile = True
+        user.driver_profile_id = str(instance.id)
+        for attr in ('owns_restaurant', 'has_section_staff'):
+            value = getattr(instance, attr, None)
+            if value is not None and not hasattr(user, attr):
+                setattr(user, attr, value)
+        return super().to_representation(instance)
 
     def get_is_platform(self, obj):
         return obj.driver_type == 'platform'

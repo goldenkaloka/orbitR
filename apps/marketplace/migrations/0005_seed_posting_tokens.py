@@ -58,7 +58,7 @@ def rollback_posting_tokens(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('marketplace', '0003_alter_marketplaceproduct_listing_type'),
+        ('marketplace', '0004_postingtokenbundleoption_postingtokenconfig_and_more'),
     ]
 
     operations = [

@@ -4,6 +4,8 @@ All push notification titles and bodies are defined here so they can be
 updated in one place without hunting through multiple service files.
 """
 
+from decimal import Decimal
+
 # ── Customer — Order lifecycle ────────────────────────────────────────────────
 
 def order_drafted(short_id: str) -> tuple[str, str]:
@@ -30,10 +32,10 @@ def order_ready(short_id: str) -> tuple[str, str]:
         f"Oda #{short_id} iko tayari kuchukuliwa. Tunasubiri dereva."
     )
 
-def driver_assigned(short_id: str, rider_name: str = "Dereva") -> tuple[str, str]:
+def driver_assigned(short_id: str, driver_name: str = "Dereva") -> tuple[str, str]:
     return (
         "Dereva Amepewa Oda 🛵",
-        f"{rider_name} anakuja kuchukua oda #{short_id}. Atafika hivi karibuni."
+        f"{driver_name} anakuja kuchukua oda #{short_id}. Atafika hivi karibuni."
     )
 
 def order_picked(short_id: str) -> tuple[str, str]:
@@ -141,6 +143,14 @@ def vendor_need_driver(order_count: int) -> tuple[str, str]:
         "Tutajaribu tena kila dakika 5."
     )
 
+def restaurant_paid_at_pickup(short_id: str, amount) -> tuple[str, str]:
+    formatted = f"{Decimal(str(amount)):,.0f}" if amount is not None else ""
+    return (
+        "Malipo Yamefikishwa 💵",
+        f"Malipo ya oda #{short_id} yamekamilikwa"
+        + (f" ({formatted} TSh)." if formatted else ".")
+    )
+
 # ── Driver — Offer & earnings ─────────────────────────────────────────────────
 
 def driver_new_offer(order_count: int, payout: str) -> tuple[str, str]:
@@ -218,6 +228,35 @@ def admin_new_dispute(order_short: str, customer_name: str) -> tuple[str, str]:
         "Malalamiko Mapya",
         f"Oda #{order_short} imepewa malalamiko na {customer_name}."
     )
+
+def admin_batch_stalled(
+    batch_short: str,
+    restaurant_count: int,
+    timeout_minutes: int,
+) -> tuple[str, str]:
+    stops = (
+        "sehemu moja" if restaurant_count == 1
+        else f"sehemu {restaurant_count}"
+    )
+    return (
+        "Kikundi Kimesimama ⚠️",
+        f"Kikundi {batch_short} kimesimama kwa {timeout_minutes} dakika — "
+        f"{stops} hazija kuwa tayari. Hatua ya mkono inahitajika."
+    )
+
+def admin_batch_needs_driver(
+    order_count: int,
+    restaurant_name: str,
+    waiting_minutes: int,
+    is_reminder: bool = False,
+) -> tuple[str, str]:
+    title = "Kikundi Kinahitaji Dereva" if not is_reminder else "Kumbukumbo: Kikundi Bado Kinahitaji Dereva"
+    body = (
+        f"{order_count} oda zinazosubiri kutoka {restaurant_name} "
+        f"(zimewaiti {waiting_minutes} dakika). "
+        "Tafuta dereva sasa kwenye dashibodi."
+    )
+    return (title, body)
 
 # ── Driver — Single-order offer ─────────────────────────────────────────────
 # Used in apps/events/utils.py broadcast_order_status for OFFERED status

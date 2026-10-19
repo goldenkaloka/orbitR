@@ -18,41 +18,141 @@ from rest_framework.response import Response
 logger = logging.getLogger(__name__)
 
 
-class BatchViewSet(viewsets.ViewSet):
+class BatchViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
         user = self.request.user
+        if getattr(user, 'serialized_role', None) == 'admin':
+            return DeliveryBatch.objects.all()
         if user.serialized_role == 'driver':
             return DeliveryBatch.objects.filter(driver__user=user)
         elif user.serialized_role in ('vendor', 'vendor_staff'):
             from apps.restaurants.models import Restaurant, SectionStaff
             owned_rids = Restaurant.objects.filter(owner=user).values_list('id', flat=True)
-            staff_rids = SectionStaff.objects.filter(user=user).values_list('section__restaurant_id', flat=True)
+            staff_rids = SectionStaff.objects.filter(user=self.request.user).values_list('section__restaurant_id', flat=True)
             all_rids = set(owned_rids) | set(staff_rids)
-            return DeliveryBatch.objects.filter(orders__restaurant_id__in=all_rids).distinct()
+
+            # A pooled batch can hold orders from several restaurants. Keep the
+            # batch visible — the vendor still needs to prepare and track their
+            # own orders — but never leak the other restaurants' orders. That
+            # filtering happens in _visible_orders().
+            return DeliveryBatch.objects.filter(
+                orders__restaurant_id__in=all_rids
+            ).distinct()
         return DeliveryBatch.objects.none()
-    
+
+    def _visible_orders(self, batches, user):
+        """
+        Orders from the requesting vendor's own restaurants only.
+
+        A pooled batch belongs to several restaurants; a vendor must never
+        receive anybody else's orders, so the batch stays visible while its
+        foreign orders are filtered out here.
+
+        The relation set mirrors OrderViewSet.get_queryset (core.py): without
+        it every row triggers its own payment/driver/restaurant/items queries
+        (DDIA Ch.1 — serializer N+1).
+        """
+        from apps.restaurants.models import Restaurant, SectionStaff
+        if getattr(user, 'serialized_role', None) == 'admin':
+            return (
+                Order.objects
+                .filter(batch__in=batches)
+                .select_related(
+                    'customer',
+                    'restaurant',
+                    'restaurant__owner',
+                    'driver',
+                    'driver__user',
+                    'batch',
+                    'payment',
+                )
+                .prefetch_related(
+                    'items', 'items__food', 'items__section',
+                    'pool__members', 'pool__members__user',
+                )
+                .distinct()
+                .order_by('-created_at')
+            )
+        owned_rids = Restaurant.objects.filter(owner=user).values_list('id', flat=True)
+        staff_rids = SectionStaff.objects.filter(user=user).values_list('section__restaurant_id', flat=True)
+        all_rids = list(set(owned_rids) | set(staff_rids))
+        return (
+            Order.objects
+            .filter(batch__in=batches, restaurant_id__in=all_rids)
+            .select_related(
+                'customer',
+                'restaurant',
+                'restaurant__owner',
+                'driver',
+                'driver__user',
+                'batch',
+                'payment',
+            )
+            .prefetch_related(
+                'items', 'items__food', 'items__section',
+                'pool__members', 'pool__members__user',
+            )
+            .distinct()
+            .order_by('-created_at')
+        )
+
     def list(self, request):
-        queryset = self.get_queryset()
-        from apps.orders.models import Order
-        orders = Order.objects.filter(batch__in=queryset).distinct()
-        return Response(OrderSerializer(orders, many=True).data)
+        # GenericViewSet.paginate_queryset caps limit at max_limit=100 — the
+        # old code returned every order a vendor ever had in one response.
+        queryset = self._visible_orders(self.get_queryset(), request.user)
+        page = self.paginate_queryset(queryset)
+        serializer = OrderSerializer(page if page is not None else queryset, many=True)
+        if page is None:
+            return Response(serializer.data)
+        return self.get_paginated_response(serializer.data)
     
     def retrieve(self, request, pk=None):
         queryset = self.get_queryset()
         try:
             batch = queryset.get(id=pk)
-            orders = batch.orders.all()
-            return Response(OrderSerializer(orders, many=True).data)
         except DeliveryBatch.DoesNotExist:
             return Response({'error': 'Batch not found or access denied'}, status=404)
+        orders = self._visible_orders([batch], request.user)
+        return Response(OrderSerializer(orders, many=True).data)
     
     @action(detail=True, methods=['post'], url_path='assign-driver')
     def assign_driver(self, request, pk=None):
-        """Restaurant owner or stall manager assigns a driver to a batch."""
-        if request.user.serialized_role not in ('vendor', 'vendor_staff'):
-            return Response({'error': 'Only vendors or stall managers can assign drivers'}, status=403)
+        """
+        Allocate a driver to a batch.
+
+        Authority follows Restaurant.dispatch_mode: in restaurant mode the
+        vendor allocates, in admin mode an admin does. Admins may allocate in
+        either mode — that is the escalation path when a restaurant goes
+        quiet. The authoritative check also runs inside AssignBatchService;
+        this gate only avoids the round trip.
+        """
+        if request.user.serialized_role not in ('admin', 'vendor', 'vendor_staff'):
+            return Response({'error': 'Not authorised to allocate drivers'}, status=403)
+
+        from domain.services.dispatch_routing import resolve_batch_dispatch_mode
+
+        try:
+            batch = DeliveryBatch.objects.get(id=pk)
+        except DeliveryBatch.DoesNotExist:
+            return Response({'error': 'Batch not found'}, status=404)
+
+        dispatch_mode = resolve_batch_dispatch_mode(batch)
+        batch_is_pooled = batch.batch_type == 'MULTI_RESTAURANT'
+
+        if request.user.serialized_role != 'admin' and dispatch_mode != 'restaurant':
+            return Response({
+                'error': 'Driver allocation for this restaurant is handled by admin dispatch.'
+            }, status=403)
+
+        # Pooled batches carry orders from several restaurants. Only OrbitR may
+        # allocate them — a vendor would be allocating a run that includes a
+        # competitor's orders.
+        if request.user.serialized_role != 'admin' and batch_is_pooled:
+            return Response({
+                'error': 'Multi-restaurant batches are allocated by OrbitR dispatch.'
+            }, status=403)
 
         driver_id = request.data.get('driver_id')
         if not driver_id:
@@ -60,7 +160,9 @@ class BatchViewSet(viewsets.ViewSet):
 
         try:
             batch = AssignBatchService.execute(str(pk), str(driver_id), request.user)
-            orders = batch.orders.all()
+            orders = batch.orders.select_related(
+                'customer', 'restaurant', 'restaurant__owner', 'driver__user', 'payment',
+            ).prefetch_related('items', 'items__food', 'items__section')
             return Response(OrderSerializer(orders, many=True).data)
         except DeliveryBatch.DoesNotExist:
             return Response({'error': 'Batch not found'}, status=404)
@@ -82,7 +184,7 @@ class BatchViewSet(viewsets.ViewSet):
         if not can_driver_delegate(request.user, batch):
             return Response({'error': 'Only the assigned driver with delegation permissions can delegate'}, status=403)
 
-        first_order = batch.orders.first()
+        first_order = batch.orders.select_related('restaurant', 'restaurant__owner').first()
         if not first_order:
             return Response({'error': 'Batch has no orders'}, status=400)
 
@@ -130,7 +232,7 @@ class BatchViewSet(viewsets.ViewSet):
         # ── Notify the restaurant owner about the delegation ──
         new_driver = batch.driver
         new_driver_name = new_driver.user.username if new_driver else 'Unknown'
-        first_order = batch.orders.first()
+        first_order = batch.orders.select_related('restaurant', 'restaurant__owner').first()
         restaurant_owner_id = str(first_order.restaurant.owner.id) if first_order else None
 
         if restaurant_owner_id:
@@ -168,7 +270,9 @@ class BatchViewSet(viewsets.ViewSet):
 
         logger.info(f"Batch {batch.id} delegated from {old_driver_name} to {new_driver_name}")
 
-        orders = batch.orders.all()
+        orders = batch.orders.select_related(
+            'customer', 'restaurant', 'restaurant__owner', 'driver__user', 'payment',
+        ).prefetch_related('items', 'items__food', 'items__section')
         return Response({
             'message': f'Batch delegated to {new_driver_name}',
             'orders': OrderSerializer(orders, many=True).data,

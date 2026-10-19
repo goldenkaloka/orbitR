@@ -71,6 +71,15 @@ def broadcast_order_status(order_id, status, message="Status updated"):
         logger.warning(f"broadcast_order_status failed for order {order_id}: {e}")
 
 
+def broadcast_to_admins(payload):
+    """Push an event to every connected admin dashboard on the admins:ops channel."""
+    try:
+        clean_payload = json.loads(json.dumps(payload, cls=DjangoJSONEncoder))
+        centrifugo_publish.delay('admins:ops', clean_payload)
+    except Exception as e:
+        logger.warning(f"broadcast_to_admins failed: {e}")
+
+
 def broadcast_pool_status(pool_id, status, message="Pool updated"):
     from api.serializers.core import OrderPoolSerializer
     from apps.orders.models import OrderPool

@@ -14,6 +14,7 @@ def register_all_handlers():
     from . import (
         auth_handlers,
         dispute_handlers,
+        dispatch_handlers,
         order_handlers,
         payment_handlers,
         pool_handlers,
@@ -24,5 +25,6 @@ def register_all_handlers():
     pool_handlers.register_handlers()
     dispute_handlers.register_handlers()
     auth_handlers.register_handlers()
+    dispatch_handlers.register_handlers()
 
-    logger.info(f"All event handlers registered (%d modules)", 5)
+    logger.info("All event handlers registered (%d modules)", 6)

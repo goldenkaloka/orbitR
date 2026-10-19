@@ -3,20 +3,26 @@ from apps.restaurants.models import Restaurant, RestaurantSection, SectionStaff
 from django.db import transaction
 from domain.events.bus import EventBus
 from domain.events.types import FoodCreated, FoodDeleted
+from domain.services.permissions import check_restaurant_permission
 
 
 class MenuService:
     @staticmethod
     def create_food(owner_user, name, price, description='', category='MAIN', is_available=True, image=None, section=None):
         with transaction.atomic():
-            try:
-                restaurant = Restaurant.objects.get(owner=owner_user)
-            except Restaurant.DoesNotExist:
-                staff_section = SectionStaff.objects.filter(user=owner_user).select_related('section__restaurant').first()
-                if staff_section:
-                    restaurant = staff_section.section.restaurant
-                else:
-                    raise ValueError("You must own or work at a restaurant to create foods")
+            restaurant = None
+            if section is not None:
+                restaurant = section.restaurant
+                if not check_restaurant_permission(owner_user, restaurant):
+                    raise ValueError("You do not have permission to create foods for this restaurant")
+            else:
+                restaurant = Restaurant.objects.filter(owner=owner_user).order_by('created_at').first()
+                if restaurant is None:
+                    staff_section = SectionStaff.objects.filter(user=owner_user).select_related('section__restaurant').first()
+                    if staff_section:
+                        restaurant = staff_section.section.restaurant
+                    else:
+                        raise ValueError("You must own or work at a restaurant to create foods")
 
             food_kwargs = dict(
                 name=name,
@@ -62,15 +68,11 @@ class MenuService:
     def delete_food(owner_user, food_id):
         with transaction.atomic():
             try:
-                food = Food.objects.get(id=food_id, section__restaurant__owner=owner_user)
+                food = Food.objects.select_related('section__restaurant').get(id=food_id)
             except Food.DoesNotExist:
-                staff_sec = SectionStaff.objects.filter(user=owner_user).values_list('section_id', flat=True)
-                if not staff_sec:
-                    raise ValueError("You do not have permission to delete this food item")
-                try:
-                    food = Food.objects.get(id=food_id, section_id__in=list(staff_sec))
-                except Food.DoesNotExist:
-                    raise ValueError("Food not found or you do not have permission to delete it")
+                raise ValueError("Food not found or you do not have permission to delete it")
+            if not check_restaurant_permission(owner_user, food.section.restaurant):
+                raise ValueError("You do not have permission to delete this food item")
 
             food_name = food.name
             restaurant_id = food.section.restaurant.id

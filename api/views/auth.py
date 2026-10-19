@@ -33,6 +33,20 @@ def normalize_phone(phone):
     return None # Invalid format
 
 
+def find_user_by_phone(phone):
+    """Find a user regardless of whether the stored phone uses 0…, +255… or 255….
+
+    Accounts created by the admin/seed scripts are sometimes stored in E.164
+    form while the OTP flow normalises to the local 0… form. A direct
+    ``User.objects.get(phone=phone)`` therefore rejected valid logins.
+    """
+    if not phone:
+        return None
+    core = phone[1:] if phone.startswith('0') else phone
+    variants = {phone, f'+255{core}', f'255{core}', core}
+    return User.objects.filter(phone__in=variants).first()
+
+
 def _client_ip(request):
     forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
     if forwarded:
@@ -145,9 +159,8 @@ class VerifyOTPView(APIView):
                 return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
                 
             # OTP is valid — now check if user exists (LOGIN only, no auto-creation)
-            try:
-                user = User.objects.get(phone=phone)
-            except User.DoesNotExist:
+            user = find_user_by_phone(phone)
+            if user is None:
                 # Delete OTP so it can't be reused
                 otp_record.delete()
                 return Response(
@@ -224,7 +237,7 @@ class RegisterView(APIView):
                 return Response({'error': 'Invalid OTP'}, status=status.HTTP_400_BAD_REQUEST)
 
             # OTP is valid — check that user does NOT already exist
-            if User.objects.filter(phone=phone).exists():
+            if find_user_by_phone(phone) is not None:
                 otp_record.delete()
                 return Response(
                     {'error': 'An account with this phone number already exists. Please login instead.'},
