@@ -1316,8 +1316,29 @@ class OrderViewSet(viewsets.ModelViewSet):
         """
         from domain.services.orders.pickup_payment import restaurant_net_share
 
+        # Scope to the order's own participants (customer / assigned driver /
+        # restaurant owner or section staff / admin) so a raw Order.objects.get()
+        # can't leak the restaurant payout details to any authenticated user.
+        # Deliberately does NOT reuse get_queryset() here because that applies the
+        # is_paid gate, which would hide the sheet from the assigned driver on a
+        # not-yet-marked-paid order.
+        user = request.user
+        order_qs = Order.objects.select_related(
+            'restaurant', 'restaurant__owner', 'driver__user', 'customer',
+        ).filter(id=pk)
+        role = user.serialized_role
+        if user.role == 'driver':
+            order_qs = order_qs.filter(driver__user=user)
+        elif role == 'customer':
+            order_qs = order_qs.filter(customer=user)
+        elif role in ('vendor', 'vendor_staff'):
+            order_qs = order_qs.filter(
+                Q(restaurant__owner=user) | Q(items__section__staff__user=user)
+            ).distinct()
+        elif user.role != 'admin':
+            order_qs = order_qs.none()
         try:
-            order = Order.objects.select_related('restaurant').get(id=pk)
+            order = order_qs.get()
         except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=404)
 

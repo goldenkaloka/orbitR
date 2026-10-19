@@ -24,7 +24,7 @@ ZONES_DATA = [
     },
     {
         "name": "ARU & Changanyikeni",
-        "description": "Ardhi University campus, Changanyikeni student residential areas, and Ndani ya Chuo.",
+        "description": "Ardhi University area, Changanyikeni residential streets, and Ndani ya Chuo.",
         "points": [
             (-6.7642888, 39.2146876),  # Main Campus
             (-6.7655, 39.2142),  # Ardhi University Main Entrance

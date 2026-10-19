@@ -332,7 +332,22 @@ class ClickpesaWebhookView(APIView):
                 payment.provider_reference = transaction_id
                 payment.save()
 
-            success = transaction_status == 'SUCCESS'
+            success = transaction_status in ('SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'PAID')
+            terminal_failure = transaction_status in (
+                'FAILED', 'FAILURE', 'CANCELLED', 'CANCELED',
+                'REJECTED', 'DECLINED', 'EXPIRED', 'TIMEOUT',
+            )
+
+            # PENDING / PROCESSING / INPROCESS etc. are not final. Do not pass
+            # them through as a failure (that would mark a still-in-flight
+            # collection FAILED); acknowledge and let the cleanup poller or a
+            # later callback decide.
+            if not success and not terminal_failure:
+                logger.info(
+                    f"ClickPesa webhook: non-terminal status '{transaction_status}' "
+                    f"for payment {payment.id}; awaiting final callback"
+                )
+                return Response({"status": "pending"}, status=200)
 
             CompletePaymentService.execute(
                 payment_id=payment.id,

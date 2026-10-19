@@ -1,3 +1,5 @@
+import logging
+
 from api.serializers.marketplace import (
     MarketplaceCategorySerializer,
     MarketplaceProductListSerializer,
@@ -22,6 +24,9 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
+
+
+logger = logging.getLogger(__name__)
 
 
 class MarketplaceCategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -286,9 +291,12 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
         product = serializer.instance
 
-        # Auto-initiate payment if payment fields are present
+        # Auto-initiate payment if payment fields are present.
+        # Skip it when the product is already ACTIVE (a posting token was
+        # deducted in perform_create) — otherwise the seller would be charged
+        # the listing fee on top of the token they just spent.
         payment_phone = request.data.get('payment_phone')
-        if payment_phone:
+        if payment_phone and product.status != 'ACTIVE':
             from domain.services.payment_services import InitiatePaymentService
             try:
                 result = InitiatePaymentService.execute(
@@ -489,13 +497,21 @@ class PostingTokenBundleViewSet(viewsets.ViewSet):
         )
 
         # Initiate payment via ClickPesa
-        result = InitiatePaymentService.execute(
-            payable_type='posting_token_bundle',
-            payable_id=purchase.id,
-            phone=phone,
-            bank_code=bank_code,
-            actor=request.user
-        )
+        try:
+            result = InitiatePaymentService.execute(
+                payable_type='posting_token_bundle',
+                payable_id=purchase.id,
+                phone=phone,
+                bank_code=bank_code,
+                actor=request.user
+            )
+        except Exception:
+            logger.exception("Posting token bundle payment initiation failed")
+            return Response({
+                'success': False,
+                'error': 'Payment initiation failed. Please try again.',
+                'purchase_id': str(purchase.id),
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         payment = result['payment']
         gateway_data = result.get('gateway_response', {})

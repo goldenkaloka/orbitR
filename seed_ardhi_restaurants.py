@@ -101,7 +101,7 @@ RESTAURANTS = [
         "lat": -6.76390,
         "lng": 39.21600,
         "location": "University Road, Observation Hill, Makongo - next to the Ardhi University main gate",
-        "description": "Fresh, affordable student plates cooked to order: pilau, wali maharage and grilled kuku, right by the Ardhi University main gate.",
+        "description": "Fresh, affordable plates cooked to order: pilau, wali maharage and grilled kuku, right by the Ardhi University main gate.",
         "sections": [
             ("Main Kitchen", "Wali & Pilau"),
             ("Drinks & Juice", "Juice"),
@@ -197,7 +197,7 @@ RESTAURANTS = [
         "lat": -6.75820,
         "lng": 39.22080,
         "location": "Makongo Juu, Bagamoyo Road corner - 1km from Ardhi University",
-        "description": "Quick bites for the campus crowd: chipsi mayai, burgers and grilled meat on the go.",
+        "description": "Quick bites on the go: chipsi mayai, burgers and grilled meat.",
         "sections": [
             ("Main Kitchen", "Fast Food"),
             ("Drinks", "Sodas"),

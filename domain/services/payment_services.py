@@ -53,12 +53,14 @@ class PaymentTargetResolver:
         else:
             raise ValueError(f"Unknown payable_type: {payable_type}")
 
-        # Apply 0.8% customer-side gateway fee surcharge (C = T / (1 - 0.008))
-        # Rounded to nearest whole TSh
-        surcharged_amount = (Decimal(str(base_amount)) / Decimal('0.992')).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
+        # Charge exactly the resolved amount. The gateway's processing fee is
+        # absorbed by the platform rather than silently marked up — the
+        # customer receipt, the pay button and the actual collection must all
+        # agree on one number.
+        amount = Decimal(str(base_amount)).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
 
         return {
-            'amount': surcharged_amount,
+            'amount': amount,
             'phone': phone,
             'user': user,
             'description': desc
@@ -141,11 +143,13 @@ class InitiatePaymentService:
                 defaults={'amount': target['amount'], 'status': 'INITIATED'}
             )
 
+            reset_from_failed = False
             if not created and payment.status not in ['COLLECTED', 'DISBURSED']:
                 if payment.amount != target['amount']:
                     payment.amount = target['amount']
                 if payment.status == 'FAILED':
                     payment.status = 'INITIATED'
+                    reset_from_failed = True
 
             # Sync legacy fields for backward compatibility
             if not payment.order and payable_type == 'order': payment.order_id = payable_id
@@ -158,6 +162,32 @@ class InitiatePaymentService:
                 raise ValueError("This has already been paid.")
 
             payment_id = payment.id
+
+            # An INITIATED payment that already carries a gateway reference is a
+            # push the customer has not answered yet. Reuse it rather than
+            # firing a second real collect() (which would double-charge with a
+            # fresh provider reference). A retry after FAILED is allowed.
+            in_flight = (
+                not created
+                and not reset_from_failed
+                and payment.status == 'INITIATED'
+                and bool(payment.provider_reference)
+            )
+
+        # Reuse the in-flight push — no second network collection.
+        if in_flight:
+            logger.info(
+                f"Reusing in-flight INITIATED payment {payment_id}; skipping duplicate collect"
+            )
+            return {
+                'payment': payment,
+                'gateway_response': {
+                    'success': True,
+                    'is_push': True,
+                    'provider_reference': payment.provider_reference,
+                },
+                'is_push': True,
+            }
 
         # 4. Initiate with Gateway — deliberately outside any transaction so
         # the 15-30s mobile-money response time holds neither a row lock nor
@@ -398,7 +428,14 @@ class CompletePaymentService:
                 if not payment:
                     raise ValueError(f"No payment found for Ref: {provider_reference} or ID: {payment_id}")
                 
-                if payment.status in ['COLLECTED', 'DISBURSED', 'FAILED']:
+                # Only genuinely-finished states are terminal. FAILED is NOT
+                # terminal: a late success callback (USSD push timed out but
+                # the customer then approved it) must still be able to
+                # collect the payment instead of being silently discarded.
+                if payment.status in [
+                    'COLLECTED', 'ON_HOLD', 'DISBURSED',
+                    'PARTIALLY_REFUNDED', 'REFUNDED',
+                ]:
                     logger.warning(
                         f"Payment {payment.id} already {payment.status} (likely webhook retry). "
                         f"Ignoring duplicate. provider_ref={provider_reference}"
@@ -427,8 +464,9 @@ class CompletePaymentService:
                         payload={'payable_type': payment.payable_type, 'payable_id': str(payment.payable_id)}
                     )))
                 else:
-                    payment.status = PaymentFSM.transition(payment.status, 'FAILED')
-                    payment.save()
+                    if payment.status != 'FAILED':
+                        payment.status = PaymentFSM.transition(payment.status, 'FAILED')
+                        payment.save()
                     
                     # Fix Issue 9: Publish event on failure
                     transaction.on_commit(lambda: EventBus.publish(PaymentFailed(
@@ -843,6 +881,7 @@ class RefundPaymentService:
                     )
 
             gateway = get_payment_gateway()
+            refunded_any = False
             
             for payment in payments:
                 already_refunded = _refunded_principal_total(payment)
@@ -869,6 +908,7 @@ class RefundPaymentService:
 
                 response = gateway.refund(transaction_id=payment.provider_reference, amount=refund_amount)
                 if response and response.get('success'):
+                    refunded_any = True
                     next_status = 'PARTIALLY_REFUNDED' if is_partial_refund else 'REFUNDED'
                     payment.status = PaymentFSM.transition(payment.status, next_status)
                     payment.refund_id = response.get('refund_id')
@@ -920,7 +960,7 @@ class RefundPaymentService:
                         ))
                     transaction.on_commit(publish_refund)
             
-            return True
+            return refunded_any
 
     @staticmethod
     def _clawback_section_wallets(payment, order):

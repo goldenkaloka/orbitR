@@ -18,7 +18,7 @@ class PaymentFSM:
         'ON_HOLD': ['COLLECTED', 'DISBURSED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'FAILED'],
         'DISBURSED': ['PARTIALLY_REFUNDED', 'REFUNDED'],
         'PARTIALLY_REFUNDED': ['DISBURSED', 'PARTIALLY_REFUNDED', 'REFUNDED'],
-        'FAILED': ['INITIATED'],  # Retry transitions back to initiated
+        'FAILED': ['INITIATED', 'COLLECTED'],  # Retry or recover a late success
     }
 
     @staticmethod

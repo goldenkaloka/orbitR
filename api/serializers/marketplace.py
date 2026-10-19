@@ -60,7 +60,7 @@ class MarketplaceProductListSerializer(serializers.ModelSerializer):
 
     def get_zone_name(self, obj):
         if obj.h3_index:
-            return f"Campus Zone {obj.h3_index[:5].upper()}"
+            return f"Zone {obj.h3_index[:5].upper()}"
         return "Nearby"
 
     def to_internal_value(self, data):
@@ -118,7 +118,7 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
             return obj.annotated_zone_name
         if not obj.h3_index:
             return "Nearby"
-        return f"Campus Zone {obj.h3_index[:5].upper()}"
+        return f"Zone {obj.h3_index[:5].upper()}"
 
     def to_internal_value(self, data):
         point = parse_coordinate_dict(data, 'location')
