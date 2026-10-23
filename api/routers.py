@@ -1,4 +1,5 @@
 from api.views.admin import AdminViewSet
+from api.views.addresses import UserAddressViewSet
 from api.views.auth import (
     MeView,
     RegisterView,
@@ -38,6 +39,7 @@ from rest_framework.routers import DefaultRouter
 
 router = DefaultRouter()
 router.register(r'users', UserViewSet, basename='user')
+router.register(r'addresses', UserAddressViewSet, basename='user-address')
 router.register(r'restaurants', RestaurantViewSet, basename='restaurant')
 router.register(r'products', FoodViewSet, basename='product')
 router.register(r'orders', OrderViewSet, basename='order')

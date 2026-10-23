@@ -300,3 +300,11 @@ def haversine_distance(p1, p2) -> float:
     
     return R * c
 
+
+
+def h3_to_latlng(h3_index):
+    """Centre point of an H3 cell as (lat, lng). Raises ValueError if invalid."""
+    if not _is_valid_cell(h3_index):
+        raise ValueError(f'Invalid H3 cell: {h3_index!r}')
+    lat, lng = h3.cell_to_latlng(h3_index)
+    return float(lat), float(lng)

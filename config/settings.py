@@ -35,6 +35,20 @@ DEBUG = config('DEBUG', default=False, cast=bool)
 MOCK_PAYMENTS = config('MOCK_PAYMENTS', default=False, cast=bool)
 DISPATCH_DEBUG = config('DISPATCH_DEBUG', default=DEBUG, cast=bool)
 
+# ── App Store / Google Play reviewer login ───────────────────────────────────
+# Lets a single reviewer phone sign in with a fixed OTP instead of waiting for
+# an SMS. Scoped to ONE phone and ONE code, and auto-provisions a customer
+# account so reviewers can log in on a clean install.
+# Disable after store approval with REVIEW_LOGIN_ENABLED=0.
+REVIEW_LOGIN_ENABLED = config('REVIEW_LOGIN_ENABLED', default=True, cast=bool)
+REVIEW_LOGIN_PHONE = config('REVIEW_LOGIN_PHONE', default='0635622485')
+REVIEW_LOGIN_OTP = config('REVIEW_LOGIN_OTP', default='121212')
+REVIEW_LOGIN_USERNAME = config('REVIEW_LOGIN_USERNAME', default='App Reviewer')
+
+# Seconds a phone must wait between OTP requests. Guards against double-taps
+# and SMS spam beyond the coarser per-phone/IP rate limits.
+OTP_RESEND_COOLDOWN = config('OTP_RESEND_COOLDOWN', default=60, cast=int)
+
 BATCH_DRIVER_ALERT_REMINDER_MINUTES = config('BATCH_DRIVER_ALERT_REMINDER_MINUTES', default=10, cast=int)
 
 # Pickup is enforced at the assigned restaurant, so this radius is tight.

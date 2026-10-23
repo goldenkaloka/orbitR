@@ -68,7 +68,7 @@ class PoolOrderService:
     @staticmethod
     def create_pool(initiator, restaurant_id, delivery_address, delivery_location):
         if OrderPool.objects.filter(initiator=initiator, status='OPEN').exists():
-            raise ValueError("You already have an open group order.")
+            raise ValueError("You already have an open bucket.")
 
         restaurant = Restaurant.objects.get(id=restaurant_id)
 
@@ -117,7 +117,7 @@ class PoolOrderService:
                 break
             except IntegrityError as e:
                 if 'unique_open_pool_per_user' in str(e).lower() or 'initiator' in str(e).lower():
-                    raise ValueError("You already have an active group order pool.")
+                    raise ValueError("You already have an active bucket.")
                 if i == max_retries - 1:
                     raise ValueError("Failed to generate a unique invite code.")
                 continue
@@ -136,7 +136,7 @@ class PoolOrderService:
                 raise ValueError("This pool has expired.")
 
             if PoolMember.objects.filter(user=user, pool__status='OPEN').exclude(pool=pool).exists():
-                raise ValueError("You are already participating in another active group order.")
+                raise ValueError("You are already participating in another active bucket.")
 
             if pool.members.count() >= PoolOrderService.MAX_POOL_MEMBERS:
                 raise ValueError(f"Pool is full (max {PoolOrderService.MAX_POOL_MEMBERS}).")

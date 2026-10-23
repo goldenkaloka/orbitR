@@ -1,6 +1,7 @@
 import uuid
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
+from django.contrib.gis.db import models as gis_models
 from django.db import models
 
 
@@ -82,3 +83,77 @@ class OTPCode(models.Model):
 
         from django.utils import timezone
         return timezone.now() < self.created_at + datetime.timedelta(minutes=5)
+
+
+class UserAddress(models.Model):
+    """A customer's saved delivery address.
+
+    ``place_name`` is deliberately free text: street addressing in Tanzania is
+    unreliable, so the words customers actually use ("Kwa Mangi", "nyuma ya
+    shule") are the most useful part of the record.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name='addresses', db_index=True
+    )
+    label = models.CharField(max_length=40)
+    place_name = models.CharField(max_length=120)
+    address_line = models.CharField(max_length=255, blank=True, default='')
+    landmark = models.CharField(max_length=160, blank=True, default='')
+
+    delivery_location = gis_models.PointField(geography=True)
+    h3_index = models.CharField(max_length=20, blank=True, default='', db_index=True)
+    zone = models.ForeignKey(
+        'geo.OperationalZone',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='saved_addresses',
+    )
+
+    is_default = models.BooleanField(default=False)
+    use_count = models.PositiveIntegerField(default=0)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-is_default', '-last_used_at', '-created_at']
+        indexes = [
+            models.Index(
+                fields=['user', 'is_default'],
+                name='users_addr_user_default_idx',
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.label}: {self.place_name}"
+
+    def save(self, *args, **kwargs):
+        if self.delivery_location:
+            from apps.core.geo_utils import latlng_to_h3
+
+            self.h3_index = latlng_to_h3(
+                self.delivery_location.y, self.delivery_location.x
+            )
+
+        super().save(*args, **kwargs)
+
+        if self.h3_index and self.zone_id is None:
+            from apps.core.geo_utils import get_zone_from_h3
+
+            zone = get_zone_from_h3(self.h3_index)
+            if zone is None and self.delivery_location:
+                try:
+                    from domain.services.geo_services import GeoDomainService
+
+                    zone = GeoDomainService.find_zone_for_point(
+                        self.delivery_location.x, self.delivery_location.y
+                    )
+                except Exception:
+                    zone = None
+            if zone is not None:
+                UserAddress.objects.filter(pk=self.pk).update(zone=zone)
+                self.zone = zone
+

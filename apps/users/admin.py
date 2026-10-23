@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from unfold.admin import ModelAdmin
 from unfold.decorators import display
 
-from .models import User
+from .models import User, UserAddress
 
 
 @admin.register(User)
@@ -61,3 +61,12 @@ class UserAdmin(BaseUserAdmin, ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related()
+
+@admin.register(UserAddress)
+class UserAddressAdmin(ModelAdmin):
+    list_display = ('label', 'place_name', 'user', 'zone', 'is_default', 'use_count', 'created_at')
+    list_filter = ('is_default', 'zone')
+    search_fields = ('label', 'place_name', 'address_line', 'landmark', 'user__phone')
+    readonly_fields = ('h3_index', 'use_count', 'last_used_at', 'created_at', 'updated_at')
+    ordering = ('-created_at',)
+    list_per_page = 25

@@ -9,6 +9,12 @@ from api.serializers.geo import (
 )
 from apps.core.geo_utils import ZONE_RESOLUTION, get_neighbors, latlng_to_h3
 from apps.geo.models import OperationalZone, ZoneH3Index
+from apps.geo.place_aliases import (
+    alias_coordinates,
+    aliases_near_cells,
+    cell_and_neighbours,
+    search_aliases,
+)
 from django.core.cache import cache
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -18,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Read once at import time — avoids repeated os.environ lookups per request.
 # Server restart is required to pick up a new token value, which is acceptable.
-_MAPBOX_TOKEN: str = os.environ.get('MAPBOX_TOKEN', '')
+_MAPBOX_TOKEN: str = (
+    os.environ.get('MAPBOX_TOKEN')
+    or os.environ.get('MAPBOX_ACCESS_TOKEN', '')
+)
 
 
 def _mapbox_token_or_503(response_factory):
@@ -64,6 +73,36 @@ def _parse_geocoding_feature(feature: dict) -> dict:
         'feature_type': (feature.get('place_type') or [''])[0],
         'source': 'geocoding',
     }
+
+
+def _alias_result(alias):
+    coordinates = alias_coordinates(alias)
+    if not coordinates:
+        return None
+    return {
+        'id': f'alias:{alias.id}',
+        'name': alias.display_text,
+        'address': (
+            f'Community place · {alias.zone.name}'
+            if alias.zone_id else 'Community-named place'
+        ),
+        'lat': coordinates[0],
+        'lng': coordinates[1],
+        'feature_type': 'alias',
+        'source': 'crowd',
+    }
+
+
+def _nearest_alias_result(lat, lng):
+    """Best approved crowd name for the cell containing (lat, lng)."""
+    try:
+        cell = latlng_to_h3(lat, lng)
+    except (ValueError, TypeError):
+        return None
+    aliases = aliases_near_cells(cell_and_neighbours(cell), limit=1)
+    if not aliases:
+        return None
+    return _alias_result(aliases[0])
 
 
 class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
@@ -199,6 +238,17 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 'source': 'local',
             })
 
+        # ── Crowd-sourced place names ─────────────────────────────────────
+        for alias in search_aliases(query, limit=5):
+            alias_key = alias.display_text.lower()
+            if alias_key in zone_names:
+                continue
+            payload = _alias_result(alias)
+            if not payload:
+                continue
+            zone_names.add(alias_key)
+            results.append(payload)
+
         # ── Mapbox Search Box (additional suggestions) ────────────────────
         err = _mapbox_token_or_503(Response)
         mapbox_down = False
@@ -274,8 +324,14 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         if cached is not None:
             return Response(cached)
 
+        # Names customers actually use beat a Mapbox POI, and still work when
+        # the Mapbox quota is exhausted.
+        alias_fallback = _nearest_alias_result(lat_rounded, lng_rounded)
+
         err = _mapbox_token_or_503(Response)
         if err:
+            if alias_fallback:
+                return Response([alias_fallback])
             return err
 
         results = []
@@ -322,5 +378,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
 
         # An outage would otherwise pin an empty address on this coordinate
         # for a full hour — short TTL for misses, full TTL for real results.
+        if alias_fallback:
+            results = [alias_fallback, *results]
         cache.set(cache_key, results, 3600 if results else 30)
         return Response(results)

@@ -182,6 +182,14 @@ def on_order_delivered(event):
         return
 
     try:
+        from apps.geo.place_aliases import record_order_place_alias
+        record_order_place_alias(order)
+    except Exception as e:
+        logger.warning(
+            f"[OrderHandler] Place alias learning failed for order {order.id}: {e}"
+        )
+
+    try:
         if order.pool:
             member_ids = order.pool.members.values_list('id', flat=True)
             member_payments = Payment.objects.filter(payable_type='pool_member', payable_id__in=member_ids)

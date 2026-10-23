@@ -33,15 +33,22 @@ class ClickpesaGateway(PaymentGateway):
         if token:
             return token
 
+        # Back off after a failure: an invalid/rotated API key would otherwise
+        # be retried on every order and trip ClickPesa's token rate limit.
+        failure_key = f"{cache_key}_failed"
+        if cache.get(failure_key):
+            return ""
+
         try:
             url = f"{self.base_url}/third-parties/generate-token"
             headers = {
                 "api-key": self.api_key,
                 "client-id": self.client_id,
-                "Content-Type": "application/json"
             }
             logger.info("Requesting new ClickPesa JWT access token")
-            response = requests.post(url, headers=headers, json={}, timeout=15)
+            # ClickPesa expects a bodyless POST here; sending a JSON body makes
+            # the gateway reject the request as "Unauthorized API-Key".
+            response = requests.post(url, headers=headers, timeout=15)
             if response.status_code == 200:
                 data = response.json()
                 token = data.get('token')
@@ -53,6 +60,8 @@ class ClickpesaGateway(PaymentGateway):
             logger.error(f"Failed to generate ClickPesa token. HTTP {response.status_code}: {response.text}")
         except Exception as e:
             logger.error(f"ClickPesa token generation exception: {str(e)}")
+
+        cache.set(failure_key, 1, 180)
         return ""
 
     def _generate_checksum(self, payload: dict) -> str:

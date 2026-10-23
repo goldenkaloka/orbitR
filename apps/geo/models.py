@@ -91,3 +91,87 @@ class ZoneH3Index(models.Model):
         unique_together = ('zone', 'h3_index')
         verbose_name = "Zone H3 Index"
         verbose_name_plural = "Zone H3 Indexes"
+
+
+class PlaceAlias(models.Model):
+    """A crowd-sourced name for a ~0.1 km2 H3 cell.
+
+    Street addressing is unreliable in Tanzania, so the words customers use
+    ("Kwa Mangi", "nyuma ya shule") are the most useful description of a place.
+    Aliases are only shown publicly once enough distinct users agree on them,
+    and moderation can reject any of them.
+    """
+
+    STATUS_CHOICES = (
+        ('pending', 'pending'),
+        ('approved', 'approved'),
+        ('rejected', 'rejected'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    h3_index = models.CharField(max_length=20, db_index=True)
+    text_normalized = models.CharField(max_length=80, db_index=True)
+    display_text = models.CharField(max_length=120)
+    zone = models.ForeignKey(
+        OperationalZone,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='place_aliases',
+    )
+    sample_count = models.PositiveIntegerField(default=0)
+    distinct_users = models.PositiveIntegerField(default=0)
+    confidence = models.FloatField(default=0)
+    status = models.CharField(
+        max_length=12, choices=STATUS_CHOICES, default='pending', db_index=True
+    )
+    first_seen = models.DateTimeField(auto_now_add=True)
+    last_seen = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-distinct_users', '-confidence', '-last_seen']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['h3_index', 'text_normalized'],
+                name='uniq_place_alias_cell_text',
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=['text_normalized', 'status'],
+                name='geo_alias_text_status_idx',
+            )
+        ]
+        verbose_name_plural = 'Place aliases'
+
+    def __str__(self):
+        return f"{self.display_text} ({self.h3_index})"
+
+    @property
+    def is_public(self):
+        return self.status == 'approved'
+
+
+class PlaceAliasContributor(models.Model):
+    """Deduplicates contributions so one user cannot promote a name alone."""
+
+    alias = models.ForeignKey(
+        PlaceAlias, on_delete=models.CASCADE, related_name='contributors'
+    )
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.CASCADE,
+        related_name='place_alias_contributions',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['alias', 'user'],
+                name='uniq_place_alias_contributor',
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.alias.display_text} <- {self.user_id}"
