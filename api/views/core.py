@@ -15,9 +15,10 @@ from api.serializers.core import (
 )
 from api.serializers.marketplace import MarketplaceProductSerializer
 from apps.core.cache_keys import stable_cache_key
-from apps.core.geo_utils import get_neighbors
+from apps.core.geo_utils import ZONE_RESOLUTION, get_neighbors, latlng_to_h3
 from apps.core.models import Notification
 from apps.delivery.models import Driver
+from apps.geo.models import OperationalZone
 from apps.marketplace.models import MarketplaceProduct
 from apps.orders.models import DeliveryBatch, Dispute, Order
 from apps.products.models import Food
@@ -47,6 +48,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 
@@ -370,6 +372,27 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                         output_field=FloatField(),
                     )
                 )
+
+                # Keep only restaurants that can serve this customer: either the
+                # customer sits inside the restaurant's delivery radius, or both
+                # are in the same operational zone. Without this the homepage
+                # ranks across every zone in the country and surfaces listings
+                # that cannot deliver here. The H3 lookup keeps the zone test on
+                # an index instead of a polygon scan per restaurant.
+                cell = latlng_to_h3(float(lat), float(lng), ZONE_RESOLUTION)
+                zone = (
+                    OperationalZone.objects.filter(
+                        is_active=True,
+                        h3_indexes__h3_index=cell,
+                    )
+                    .only('boundary')
+                    .first()
+                )
+                reachable = Q(distance__lte=F('max_delivery_radius_km') * 1000.0)
+                if zone is not None:
+                    # coveredby has a geography implementation; ST_Within does not.
+                    reachable |= Q(geo_location__coveredby=zone.boundary)
+                queryset = queryset.filter(reachable, geo_location__isnull=False)
 
             queryset = queryset.annotate(
                 review_count=Count(
@@ -1613,8 +1636,18 @@ class UniversalSearchView(APIView):
     """
     Search across multiple models (Restaurants, Foods).
     Uses Postgres TrigramSimilarity for fuzzy matching.
+
+    Public: the catalogue is browsable by guests, so search must be too. Reads
+    of the same tables are already public through RestaurantViewSet.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
+
+    #: Search fires once per debounced keystroke, so the default `anon` bucket
+    #: (100/hour) would 429 a guest mid-typing. Share the catalogue budget used
+    #: by the other anonymous catalogue reads.
+    def get_throttles(self):
+        self.throttle_scope = 'catalog'
+        return [ScopedRateThrottle()]
 
     def get(self, request):
         query = request.query_params.get('q', '')

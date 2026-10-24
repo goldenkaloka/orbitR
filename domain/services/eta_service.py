@@ -16,6 +16,37 @@ MAX_TRAVEL_MINUTES = 90
 
 class ETAService:
     @staticmethod
+    def listing_eta_label(prep_minutes, distance_meters=None):
+        """ETA band shown on a restaurant card.
+
+        Listings have no order yet, so prep and travel are both estimates against
+        a straight-line distance. A range is returned rather than a point value
+        because the upper bound absorbs queue and traffic variance.
+        """
+        try:
+            prep = max(5, int(prep_minutes))
+        except (TypeError, ValueError):
+            prep = PREP_BASE_MINUTES
+
+        if distance_meters is None:
+            low, high = prep, prep + 10
+        else:
+            try:
+                road_km = (float(distance_meters) / 1000.0) * ROAD_DISTANCE_FACTOR
+            except (TypeError, ValueError):
+                road_km = 0.0
+            travel = max(
+                TRAVEL_BASE_MINUTES,
+                (road_km / AVERAGE_CITY_SPEED_KMH) * 60,
+            ) + DROPOFF_BUFFER_MINUTES
+            total = prep + travel
+            low = (int(total) // 5) * 5
+            high = (int(total * 1.3) // 5) * 5 + 5
+
+        low = max(5, low)
+        return f"{low}-{max(high, low + 5)} min"
+
+    @staticmethod
     def calculate(order):
         if not order or not order.is_paid:
             return {

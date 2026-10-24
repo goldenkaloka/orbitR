@@ -9,6 +9,7 @@ from apps.restaurants.models import Restaurant, RestaurantSection
 from apps.users.models import User
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
+from domain.services.eta_service import ETAService
 from rest_framework import serializers
 
 
@@ -154,6 +155,7 @@ class RestaurantListSerializer(serializers.ModelSerializer):
     longitude = serializers.SerializerMethodField()
     score = serializers.FloatField(read_only=True, default=None)
     distance_km = serializers.SerializerMethodField()
+    wait_time = serializers.SerializerMethodField()
     review_count = serializers.IntegerField(read_only=True, default=0)
     delivery_fee = serializers.SerializerMethodField()
     service_fee = serializers.SerializerMethodField()
@@ -167,9 +169,15 @@ class RestaurantListSerializer(serializers.ModelSerializer):
             'location', 'geo_location', 'latitude', 'longitude', 
             'category', 'price_range', 'rating', 
             'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time',
-            'score', 'distance_km', 'review_count',
+            'score', 'distance_km', 'wait_time', 'review_count',
             'delivery_fee', 'service_fee',
         ]
+
+    def get_wait_time(self, obj):
+        prep = getattr(obj, 'actual_prep_minutes', None)
+        if prep is None:
+            prep = getattr(obj, 'average_prep_time', None)
+        return ETAService.listing_eta_label(prep, getattr(obj, 'distance', None))
 
     def get_latitude(self, obj):
         return obj.geo_location.y if obj.geo_location else None
