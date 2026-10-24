@@ -192,8 +192,8 @@ class MarketplaceProductViewSet(viewsets.ModelViewSet):
         return self.get_paginated_response(serializer.data)
 
     def invalidate_list_cache(self):
-        # Delegate so the cross-service storefront purge fires on every path,
-        # not just the ones that go through the domain service.
+        # Delegate so every mutation path bumps the list cache, not just the
+        # ones that go through the domain service.
         from domain.services.marketplace_services import invalidate_product_list_cache
         invalidate_product_list_cache()
 

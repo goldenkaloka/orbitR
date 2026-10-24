@@ -60,8 +60,17 @@ class AdminViewSet(viewsets.GenericViewSet):
         total_drivers = Driver.objects.count()
         total_restaurants = Restaurant.objects.count()
 
-        # Total funds currently in the system wallets
-        platform_balance = Wallet.objects.aggregate(Sum('balance'))['balance__sum'] or 0
+        # Wallet balances are what the platform OWES users, not what it owns.
+        # Keep `platform_balance` for existing dashboards but expose the two
+        # distinct numbers so nobody reads liabilities as equity again.
+        from domain.services.payment_services import get_platform_user
+        platform_user = get_platform_user()
+        wallet_liabilities = Wallet.objects.exclude(user=platform_user).aggregate(
+            Sum('balance')
+        )['balance__sum'] or 0
+        platform_equity = Wallet.objects.filter(user=platform_user).aggregate(
+            Sum('balance')
+        )['balance__sum'] or 0
 
         data = {
             'total_users': total_users,
@@ -69,7 +78,9 @@ class AdminViewSet(viewsets.GenericViewSet):
             'today_orders': today_orders,
             'total_revenue': float(total_revenue),
             'today_revenue': float(today_revenue),
-            'platform_balance': float(platform_balance),
+            'platform_balance': float(wallet_liabilities),
+            'wallet_liabilities': float(wallet_liabilities),
+            'platform_equity': float(platform_equity),
             'active_drivers': active_drivers,
             'total_drivers': total_drivers,
             'total_restaurants': total_restaurants,
@@ -876,4 +887,117 @@ class AdminViewSet(viewsets.GenericViewSet):
         return Response({
             'message': 'Driver allocated to order',
             'order': OrderSerializer(order).data,
+        })
+
+    @action(detail=False, methods=['POST'], url_path='wallet-adjust')
+    def wallet_adjust(self, request):
+        """Credit or debit a wallet with an auditable reason.
+
+        This is the compliant way to issue goodwill credits, correct a
+        mistaken payout, or manually settle a debt — every movement is a
+        ledger row with the acting admin's reason attached.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from domain.services.wallet_services import InsufficientFunds, WalletDomainService
+        direction = str(request.data.get('direction') or '').upper()
+        amount_raw = request.data.get('amount')
+        reason = str(request.data.get('reason') or '').strip()
+        wallet_id = request.data.get('wallet_id')
+        user_id = request.data.get('user_id')
+        reference = request.data.get('reference')
+        idempotency_key = (
+            request.headers.get('Idempotency-Key')
+            or request.data.get('idempotency_key')
+        )
+
+        if direction not in ('CREDIT', 'DEBIT'):
+            return Response({'error': 'direction must be CREDIT or DEBIT'}, status=400)
+        if not reason:
+            return Response({'error': 'reason is required'}, status=400)
+        try:
+            amount = Decimal(str(amount_raw))
+        except (InvalidOperation, TypeError, ValueError):
+            return Response({'error': 'invalid amount'}, status=400)
+        if amount <= 0:
+            return Response({'error': 'amount must be greater than zero'}, status=400)
+
+        if wallet_id:
+            wallet = Wallet.objects.filter(id=wallet_id).first()
+        elif user_id:
+            wallet, _ = Wallet.objects.get_or_create(user_id=user_id)
+        else:
+            return Response({'error': 'wallet_id or user_id is required'}, status=400)
+        if wallet is None:
+            return Response({'error': 'Wallet not found'}, status=404)
+
+        admin_reference = f"admin:{reference}" if reference else None
+        try:
+            wallet, txn, created = WalletDomainService.post_transaction(
+                wallet=wallet,
+                amount=amount,
+                tx_type=direction,
+                transaction_type='ADJUSTMENT',
+                description=f"Admin adjustment: {reason}",
+                reference=admin_reference,
+                idempotency_key=str(idempotency_key)[:128] if idempotency_key else None,
+            )
+        except InsufficientFunds as exc:
+            return Response({'error': str(exc)}, status=400)
+        except ValueError as exc:
+            return Response({'error': str(exc)}, status=400)
+
+        return Response({
+            'wallet_id': str(wallet.id),
+            'balance': f"{wallet.balance:.2f}",
+            'transaction_id': str(txn.id),
+            'duplicate': not created,
+            'direction': direction,
+            'amount': f"{txn.amount:.2f}",
+        })
+
+    @action(detail=False, methods=['GET'], url_path='wallet-payouts')
+    def wallet_payouts(self, request):
+        from apps.wallets.models import WalletPayout
+
+        status_filter = request.query_params.get('status')
+        qs = WalletPayout.objects.select_related('actor').order_by('-created_at')
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+        return Response([
+            {
+                'id': str(p.id),
+                'user_id': str(p.actor_id) if p.actor_id else None,
+                'user_phone': p.actor.phone if p.actor else None,
+                'status': p.status,
+                'amount': float(p.amount),
+                'fee': float(p.fee),
+                'net_amount': float(p.net_amount),
+                'provider': p.provider,
+                'destination_phone': p.destination_phone,
+                'reference': p.reference,
+                'provider_reference': p.provider_reference,
+                'failure_reason': p.failure_reason,
+                'created_at': p.created_at,
+                'completed_at': p.completed_at,
+            }
+            for p in qs[:200]
+        ])
+
+    @action(detail=False, methods=['POST'], url_path='reconcile-payout')
+    def reconcile_payout(self, request):
+        from apps.wallets.models import WalletPayout
+        from domain.services.wallet_payout_services import reconcile_payout
+
+        payout_id = request.data.get('payout_id')
+        if not payout_id:
+            return Response({'error': 'payout_id is required'}, status=400)
+        if not WalletPayout.objects.filter(id=payout_id).exists():
+            return Response({'error': 'Payout not found'}, status=404)
+        payout = reconcile_payout(payout_id)
+        return Response({
+            'id': str(payout.id),
+            'status': payout.status,
+            'provider_reference': payout.provider_reference,
+            'failure_reason': payout.failure_reason,
         })

@@ -229,16 +229,6 @@ TRUST_PROXY_HEADERS = config('TRUST_PROXY_HEADERS', default=False, cast=bool)
 AIRPAY_ALLOW_UNSIGNED_WEBHOOKS = config('AIRPAY_ALLOW_UNSIGNED_WEBHOOKS', default=False, cast=bool)
 LOCAL_PICKUP_MAX_DISTANCE_KM = config('LOCAL_PICKUP_MAX_DISTANCE_KM', default=0.5, cast=float)
 
-# ---------------------------------------------------------------------------
-# Storefront cache purge (DDIA Ch.9 cache coherence)
-# ---------------------------------------------------------------------------
-# The Next storefront caches product/category reads for 60s in its Data Cache
-# and revalidates routes on the same window. When a listing mutates, the API
-# POSTs to <SITE_URL>/api/revalidate with these tags so the storefront reflects
-# the write immediately instead of waiting out the TTL. Both values must match
-# the storefront's REVALIDATE_SECRET; if unset, purges are skipped (TTL-only).
-STOREFRONT_REVALIDATE_URL = config('STOREFRONT_REVALIDATE_URL', default='')
-STOREFRONT_REVALIDATE_SECRET = config('STOREFRONT_REVALIDATE_SECRET', default='')
 DRIVER_RESTAURANT_MAX_DISTANCE_KM = config('DRIVER_RESTAURANT_MAX_DISTANCE_KM', default=5.0, cast=float)
 DRIVER_RESTAURANT_ZONE_RADIUS = config('DRIVER_RESTAURANT_ZONE_RADIUS', default=0, cast=int)
 
@@ -786,6 +776,10 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-expired-payments': {
         'task': 'apps.payments.tasks.cleanup_expired_payments',
         'schedule': crontab(minute='*/2'),
+    },
+    'reconcile-wallet-payouts-every-10-mins': {
+        'task': 'apps.wallets.tasks.reconcile_wallet_payouts',
+        'schedule': crontab(minute='*/10'),
     },
     'recover-stuck-pools-hourly': {
         'task': 'domain.services.dispatch_tasks.recover_stuck_pools_task',

@@ -62,7 +62,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-      minio:
+      rustfs:
         condition: service_healthy
     ports:
       - "80:80"
@@ -91,7 +91,6 @@ services:
 
 volumes:
   postgres_data:
-  minio_data:
   certbot-etc:
   certbot-var:
   certbot-webroot:

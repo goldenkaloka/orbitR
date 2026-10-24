@@ -2,22 +2,27 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from api.serializers.wallets import TransactionSerializer, WalletSerializer
-from apps.wallets.models import Wallet, WalletTransaction
-from django.db import transaction as db_transaction
+from apps.wallets.models import Wallet, WalletPayout, WalletTransaction
 from django.utils import timezone
+from domain.services.wallet_payout_services import (
+    CASHOUT_ROLES,
+    INSTANT_FEE_PERCENT,
+    MAXIMUM_CASHOUT,
+    MINIMUM_CASHOUT,
+    CashoutError,
+    CashoutService,
+    cashout_wallets,
+    wallet_summary,
+)
+from domain.services.wallet_services import InsufficientFunds
 from domain.utils import is_valid_tz_phone
-from infrastructure.payment_gateways.factory import get_payment_gateway
-from rest_framework import status, viewsets
+from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
 logger = logging.getLogger(__name__)
-
-# Fee constants
-INSTANT_FEE_PERCENT = Decimal('0.005')  # 0.5%
-MINIMUM_CASHOUT = Decimal('1000')  # TSh 1000 minimum
 
 PROVIDERS = {
     'M_PESA': 'M-Pesa',
@@ -26,6 +31,15 @@ PROVIDERS = {
     'HALOPESA': 'Halopesa',
     'MOBILE_MONEY': 'Mobile Money',
 }
+
+
+def _provider_name(key):
+    return PROVIDERS.get(str(key or 'M_PESA').upper().replace(' ', '_'), 'Mobile Money')
+
+
+def _fee_percent():
+    return float((INSTANT_FEE_PERCENT * 100).normalize())
+
 
 class WalletViewSet(viewsets.GenericViewSet):
     permission_classes = [IsAuthenticated]
@@ -44,118 +58,105 @@ class WalletViewSet(viewsets.GenericViewSet):
         return super().get_throttles()
 
     def get_queryset(self):
-        from apps.restaurants.models import SectionStaff
-        staff_link = SectionStaff.objects.filter(user=self.request.user).select_related('section').first()
-        if staff_link:
-            return Wallet.objects.filter(section=staff_link.section).prefetch_related('transactions')
-        return Wallet.objects.filter(user=self.request.user).prefetch_related('transactions')
+        return Wallet.objects.filter(
+            id__in=[w.id for w in cashout_wallets(self.request.user)]
+        ).prefetch_related('transactions')
 
     @action(detail=False, methods=['GET'])
     def me(self, request):
-        from apps.restaurants.models import SectionStaff
-        staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
-        if staff_link:
-            wallet, _ = Wallet.objects.get_or_create(section=staff_link.section)
-            wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
-            serializer = self.get_serializer(wallet)
-            return Response(serializer.data)
+        wallets, balance, pending = wallet_summary(request.user)
+        primary = wallets[0]
 
-        # User wallet (covers customers, drivers, vendors with no dedicated staff section)
-        wallet, _ = Wallet.objects.get_or_create(user=request.user)
-        wallet = Wallet.objects.prefetch_related('transactions').get(id=wallet.id)
+        txs = (
+            WalletTransaction.objects
+            .filter(wallet__in=wallets)
+            .select_related('wallet', 'wallet__section')
+            .order_by('-created_at')[:20]
+        )
+        role = getattr(request.user, 'serialized_role', getattr(request.user, 'role', 'customer'))
+        can_cashout = role in CASHOUT_ROLES
 
-        # For vendors: aggregate all section wallets into the balance shown.
-        # This ensures the wallet sheet shows the same total as the stats card.
-        extra_balance = Decimal('0')
-        extra_pending = Decimal('0')
-        from apps.restaurants.models import Restaurant
-        restaurant = Restaurant.objects.filter(owner=request.user).first()
-        if restaurant:
-            from django.db.models import Sum
-            section_balances = Wallet.objects.filter(
-                section__restaurant=restaurant
-            ).aggregate(b=Sum('balance'), p=Sum('pending_balance'))
-            extra_balance = Decimal(str(section_balances['b'] or 0))
-            extra_pending = Decimal(str(section_balances['p'] or 0))
+        return Response({
+            'id': str(primary.id),
+            'balance': f"{balance:.2f}",
+            'pending_balance': f"{pending:.2f}",
+            'payout_available': f"{balance:.2f}" if can_cashout else '0.00',
+            'can_cashout': can_cashout,
+            'topup_enabled': False,
+            'fee_percent': _fee_percent(),
+            'minimum_cashout': float(MINIMUM_CASHOUT),
+            'maximum_cashout': float(MAXIMUM_CASHOUT),
+            'updated_at': max((w.updated_at for w in wallets), default=timezone.now()),
+            'recent_transactions': TransactionSerializer(txs, many=True).data,
+        })
 
-        data = self.get_serializer(wallet).data
-        if extra_balance or extra_pending:
-            data['balance'] = str(Decimal(str(data['balance'])) + extra_balance)
-            data['pending_balance'] = str(Decimal(str(data['pending_balance'])) + extra_pending)
-        return Response(data)
+    @action(detail=False, methods=['GET'])
+    def transactions(self, request):
+        """Merged, paginated history across every wallet the user owns."""
+        wallets, _, _ = wallet_summary(request.user)
+        try:
+            limit = min(int(request.query_params.get('limit', 50)), 200)
+            offset = max(int(request.query_params.get('offset', 0)), 0)
+        except (TypeError, ValueError):
+            limit, offset = 50, 0
+
+        qs = (
+            WalletTransaction.objects
+            .filter(wallet__in=wallets)
+            .select_related('wallet', 'wallet__section')
+            .order_by('-created_at')
+        )
+        return Response({
+            'count': qs.count(),
+            'results': TransactionSerializer(qs[offset:offset + limit], many=True).data,
+        })
 
     @action(detail=False, methods=['POST'])
     def calculate_fees(self, request):
-        """Calculate fees for a given cashout amount"""
+        """Calculate fees for a given cashout amount."""
         try:
             amount_str = request.data.get('amount')
             if amount_str is None:
                 return Response({"error": "Amount is required", "code": "MISSING_AMOUNT"}, status=400)
-            
-            amount = Decimal(str(amount_str))
+
+            amount = Decimal(str(amount_str)).quantize(Decimal('1'))
         except (InvalidOperation, TypeError, ValueError):
             return Response({"error": "Invalid amount format", "code": "INVALID_AMOUNT"}, status=400)
-        
+
         if amount <= 0:
             return Response({"error": "Amount must be greater than zero", "code": "AMOUNT_TOO_LOW"}, status=400)
-        
-        if amount > Decimal('10000000'):  # TSh 10 million max
-            return Response({"error": "Amount exceeds maximum allowed", "code": "AMOUNT_TOO_HIGH"}, status=400)
-        
-        provider_key = request.data.get('provider', 'M_PESA').upper().replace(' ', '_')
-        provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
 
-        instant_fee = amount * INSTANT_FEE_PERCENT
+        if amount > MAXIMUM_CASHOUT:
+            return Response({"error": "Amount exceeds maximum allowed", "code": "AMOUNT_TOO_HIGH"}, status=400)
+
+        provider_key = request.data.get('provider', 'M_PESA')
+        provider_name = _provider_name(provider_key)
+        _, available, _ = wallet_summary(request.user)
+
+        instant_fee = (amount * INSTANT_FEE_PERCENT).quantize(Decimal('1'))
         total_fees = instant_fee
         net_amount = amount - total_fees
-
-        logger.info(f"Fee calculation for user {request.user.id}: amount={amount}, provider={provider_name}, fees={total_fees}")
 
         return Response({
             "cashout_amount": float(amount),
             "instant_fee": float(instant_fee),
             "total_fees": float(total_fees),
             "net_amount": float(net_amount),
+            # The client must display the fee it is actually charged. The old
+            # UI hard-coded 1% while the server took 0.5%, and read a
+            # `provider_fee` key that never existed.
+            "fee_percent": _fee_percent(),
+            "provider_fee": 0.0,
+            "provider_name": provider_name,
+            "available_balance": float(available),
+            "minimum_cashout": float(MINIMUM_CASHOUT),
         })
 
     @action(detail=False, methods=['POST'])
     def cashout(self, request):
         logger.info(f"Cashout requested by user {request.user.id}")
 
-        from apps.restaurants.models import SectionStaff
-        staff_link = SectionStaff.objects.filter(user=request.user).select_related('section').first()
-        if staff_link:
-            wallet, _ = Wallet.objects.get_or_create(section=staff_link.section)
-        else:
-            wallet, _ = Wallet.objects.get_or_create(user=request.user)
-
-        amount_str = request.data.get('amount')
-        if amount_str is not None:
-            try:
-                amount = Decimal(str(amount_str))
-            except (InvalidOperation, TypeError, ValueError):
-                return Response({"error": "Invalid amount format", "code": "INVALID_AMOUNT"}, status=400)
-            if amount <= 0:
-                return Response({"error": "Amount must be greater than zero", "code": "AMOUNT_TOO_LOW"}, status=400)
-            if amount > wallet.balance:
-                return Response({"error": "Amount exceeds wallet balance", "code": "INSUFFICIENT_BALANCE"}, status=400)
-        else:
-            amount = wallet.balance
-
-        if wallet.balance < MINIMUM_CASHOUT:
-            logger.warning(f"Cashout failed for user {request.user.id}: balance {wallet.balance} below minimum {MINIMUM_CASHOUT}")
-            return Response({
-                "error": f"Minimum cashout amount is TSh {int(MINIMUM_CASHOUT)}",
-                "code": "INSUFFICIENT_BALANCE",
-                "current_balance": float(wallet.balance),
-                "minimum_required": float(MINIMUM_CASHOUT),
-            }, status=400)
-
-        provider_key = request.data.get('provider', 'M_PESA').upper().replace(' ', '_')
-        provider_name = PROVIDERS.get(provider_key, 'Mobile Money')
         phone = request.data.get('phone', '')
-
-        # Server-side phone validation
         if not phone:
             return Response({"error": "Phone number is required", "code": "MISSING_PHONE"}, status=400)
         if not is_valid_tz_phone(phone):
@@ -164,145 +165,112 @@ class WalletViewSet(viewsets.GenericViewSet):
                 "code": "INVALID_PHONE",
             }, status=400)
 
-        instant_fee = (amount * INSTANT_FEE_PERCENT).quantize(Decimal('0.01'))
-        total_fees = instant_fee
-        net_amount = amount - total_fees
+        provider_key = request.data.get('provider', 'M_PESA')
+        provider_name = _provider_name(provider_key)
 
-        if net_amount <= 0:
-            logger.warning(f"Cashout failed for user {request.user.id}: fees exceed amount")
-            return Response({
-                "error": "Balance too low to cover fees",
-                "code": "FEES_EXCEED_AMOUNT",
-            }, status=400)
-
-        # Debit wallet first, then call gateway — inside atomic block.
-        # If the gateway call fails, the database rollback reverses the debit.
-        gateway = get_payment_gateway(phone=phone)
-        reference = f"cashout_{request.user.id}_{timezone.now().strftime('%Y%m%d%H%M%S')}"
-        provider_reference = ''
-
-        try:
-            with db_transaction.atomic():
-                wallet = Wallet.objects.select_for_update().get(id=wallet.id)
-
-                if wallet.balance < amount:
-                    logger.error(
-                        f"Cashout race detected for user {request.user.id}: "
-                        f"wallet balance {wallet.balance} < requested {amount}"
-                    )
-                    return Response({"error": "Insufficient balance", "code": "INSUFFICIENT_BALANCE"}, status=409)
-                if wallet.balance < MINIMUM_CASHOUT:
-                    return Response({
-                        "error": f"Minimum cashout amount is TSh {int(MINIMUM_CASHOUT)}",
-                        "code": "INSUFFICIENT_BALANCE",
-                    }, status=409)
-
-                wallet.balance -= amount
-                wallet.save()
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=net_amount,
-                    tx_type='DEBIT',
-                    description=f"Cashout to {provider_name}",
-                    created_at=timezone.now(),
-                )
-
-                WalletTransaction.objects.create(
-                    wallet=wallet,
-                    amount=total_fees,
-                    tx_type='DEBIT',
-                    description=f"Cashout processing fees ({provider_name})",
-                    created_at=timezone.now(),
-                )
-
-                from domain.services.payment_services import _get_platform_wallet
-                platform_wallet = _get_platform_wallet()
-                platform_wallet.balance += total_fees
-                platform_wallet.save()
-                WalletTransaction.objects.create(
-                    wallet=platform_wallet,
-                    amount=total_fees,
-                    tx_type='CREDIT',
-                    description=f"Cashout processing fee from wallet {wallet.id}",
-                    created_at=timezone.now(),
-                )
-
+        amount = request.data.get('amount')
+        if amount is not None:
             try:
-                disbursement = gateway.disburse(
-                    amount=net_amount,
-                    account_info=phone,
-                    reference=reference,
-                    narration=f"Wallet cashout to {provider_name}",
-                )
-            except Exception as exc:
-                disbursement = {'success': False, 'error': str(exc)}
+                amount = Decimal(str(amount))
+            except (InvalidOperation, TypeError, ValueError):
+                return Response({"error": "Invalid amount format", "code": "INVALID_AMOUNT"}, status=400)
 
-            if not disbursement.get('success'):
-                error_msg = disbursement.get('error', 'Disbursement failed')
-                logger.error(f"Cashout disbursement failed for user {request.user.id}: {error_msg}")
-                with db_transaction.atomic():
-                    wallet = Wallet.objects.select_for_update().get(id=wallet.id)
-                    wallet.balance += amount
-                    wallet.save()
-                    WalletTransaction.objects.create(
-                        wallet=wallet,
-                        amount=amount,
-                        tx_type='CREDIT',
-                        description=f"Cashout reversal after failed disbursement to {provider_name}",
-                        created_at=timezone.now(),
-                    )
-                    from domain.services.payment_services import _get_platform_wallet
-                    platform_wallet = _get_platform_wallet()
-                    platform_wallet.balance -= total_fees
-                    platform_wallet.save()
-                    WalletTransaction.objects.create(
-                        wallet=platform_wallet,
-                        amount=total_fees,
-                        tx_type='DEBIT',
-                        description=f"Cashout fee reversal for wallet {wallet.id}",
-                        created_at=timezone.now(),
-                    )
-                raise ValueError(f"Disbursement failed: {error_msg}")
-
-            provider_reference = disbursement.get('provider_reference', '')
-        except ValueError as e:
-            return Response({
-                "error": f"Cashout failed: {e}",
-                "code": "DISBURSEMENT_FAILED",
-            }, status=400)
-
-        logger.info(
-            f"Cashout successful for user {request.user.id}: "
-            f"amount={amount}, net={net_amount}, provider={provider_name}, "
-            f"phone={phone}, ref={provider_reference}"
+        idempotency_key = (
+            request.headers.get('Idempotency-Key')
+            or request.data.get('idempotency_key')
+            or None
         )
 
-        return Response({
-            "message": "Cashout successful",
-            "cashout_amount": float(amount),
-            "instant_fee": float(instant_fee),
-            "provider_name": provider_name,
-            "total_fees": float(total_fees),
-            "net_amount": float(net_amount),
-            "provider_reference": provider_reference,
-        })
+        try:
+            payout = CashoutService.execute(
+                user=request.user,
+                amount=amount,
+                phone=phone,
+                provider=provider_name,
+                idempotency_key=str(idempotency_key)[:128] if idempotency_key else None,
+            )
+        except CashoutError as exc:
+            payload = {"error": exc.message, "code": exc.code}
+            payload.update(exc.extra)
+            return Response(payload, status=exc.status_code)
+        except InsufficientFunds as exc:
+            return Response(
+                {"error": str(exc), "code": "INSUFFICIENT_BALANCE"},
+                status=400,
+            )
+        except Exception:
+            logger.exception(f"Cashout failed for user {request.user.id}")
+            return Response(
+                {"error": "Cashout failed. Please try again.", "code": "CASHOUT_FAILED"},
+                status=500,
+            )
+
+        body = {
+            "payout_id": str(payout.id),
+            "status": payout.status,
+            "cashout_amount": float(payout.amount),
+            "instant_fee": float(payout.fee),
+            "total_fees": float(payout.fee),
+            "net_amount": float(payout.net_amount),
+            "fee_percent": _fee_percent(),
+            "provider_name": payout.provider,
+            "provider_reference": payout.provider_reference,
+        }
+
+        if payout.status == 'SUCCESS':
+            body["message"] = "Cashout successful"
+            return Response(body)
+
+        if payout.status == 'UNKNOWN':
+            body["message"] = (
+                "Cashout is being confirmed with the mobile money provider. "
+                "Your wallet will be credited automatically if it fails."
+            )
+            return Response(body, status=202)
+
+        if payout.status in ('PROCESSING', 'PENDING'):
+            body["message"] = "Cashout is being processed."
+            return Response(body, status=202)
+
+        body["message"] = "Cashout failed. Your wallet has been credited back."
+        body["error"] = payout.failure_reason or "Disbursement failed"
+        return Response(body, status=400)
+
+    @action(detail=False, methods=['GET'])
+    def payouts(self, request):
+        qs = WalletPayout.objects.filter(actor=request.user).order_by('-created_at')[:50]
+        return Response([
+            {
+                'id': str(p.id),
+                'status': p.status,
+                'amount': float(p.amount),
+                'fee': float(p.fee),
+                'net_amount': float(p.net_amount),
+                'provider': p.provider,
+                'destination_phone': p.destination_phone,
+                'provider_reference': p.provider_reference,
+                'failure_reason': p.failure_reason,
+                'created_at': p.created_at,
+                'completed_at': p.completed_at,
+            }
+            for p in qs
+        ])
 
     @action(detail=False, methods=['GET'], url_path='stalls')
     def list_stall_wallets(self, request):
         """Restaurant owner (super admin) lists wallets and transactions of all their stalls."""
         if request.user.role != 'vendor':
             return Response({'error': 'Only restaurant owners can view stall wallets'}, status=403)
-            
+
         from apps.restaurants.models import Restaurant, RestaurantSection
         try:
             restaurant = Restaurant.objects.get(owner=request.user)
         except Restaurant.DoesNotExist:
             return Response({'error': 'You do not own a restaurant'}, status=404)
-            
+
         sections = RestaurantSection.objects.filter(restaurant=restaurant)
         wallets = Wallet.objects.filter(section__in=sections).select_related('section').prefetch_related('transactions')
-        
+
         data = []
         for wallet in wallets:
             data.append({

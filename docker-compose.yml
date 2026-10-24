@@ -17,8 +17,6 @@ x-env: &env
   CENTRIFUGO_API_KEY: ${CENTRIFUGO_API_KEY}
   CENTRIFUGO_HMAC_SECRET: ${CENTRIFUGO_HMAC_SECRET}
   CENTRIFUGO_PROXY_SECRET: ${CENTRIFUGO_PROXY_SECRET}
-  STOREFRONT_REVALIDATE_URL: ${STOREFRONT_REVALIDATE_URL}
-  STOREFRONT_REVALIDATE_SECRET: ${STOREFRONT_REVALIDATE_SECRET}
 
 services:
   db:
@@ -196,28 +194,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Storefront — read-only Next.js catalogue. It fetches the API over the
-  # compose network, so no browser ever talks to Django directly and no auth
-  # crosses this boundary.
-  web:
-    build: ../web
-    environment:
-      NODE_ENV: production
-      NEXT_TELEMETRY_DISABLED: '1'
-      API_BASE_URL: http://backend:8000
-      SITE_URL: ${SITE_URL:-https://mwanachuoshop.com}
-      REVALIDATE_SECRET: ${STOREFRONT_REVALIDATE_SECRET}
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
   nginx:
     build: ./nginx
     ports:
@@ -231,8 +207,6 @@ services:
       backend:
         condition: service_started
       centrifugo:
-        condition: service_started
-      web:
         condition: service_started
     restart: unless-stopped
 

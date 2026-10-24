@@ -18,6 +18,13 @@ PAYMENT_STATUS_CHOICES = (
 )
 PAYMENT_VALID_STATUSES = [c[0] for c in PAYMENT_STATUS_CHOICES]
 
+PAYMENT_METHOD_MOBILE_MONEY = 'MOBILE_MONEY'
+PAYMENT_METHOD_WALLET = 'WALLET'
+PAYMENT_METHOD_CHOICES = (
+    (PAYMENT_METHOD_MOBILE_MONEY, 'Mobile money'),
+    (PAYMENT_METHOD_WALLET, 'Wallet'),
+)
+
 
 class Payment(models.Model):
     # Full lifecycle vocabulary enforced by PaymentFSM plus the legacy
@@ -39,6 +46,10 @@ class Payment(models.Model):
 
     
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    method = models.CharField(
+        max_length=20, choices=PAYMENT_METHOD_CHOICES,
+        default=PAYMENT_METHOD_MOBILE_MONEY, db_index=True,
+    )
     status = models.CharField(max_length=50, default='INITIATED', db_index=True, choices=STATUS_CHOICES)
     provider_reference = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     rrn = models.CharField(max_length=255, null=True, blank=True)

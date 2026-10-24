@@ -118,7 +118,14 @@ def record_failed_payout(payment, reason):
 
 class InitiatePaymentService:
     @staticmethod
-    def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None):
+    def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None, method='MOBILE_MONEY'):
+        if str(method or '').upper() == 'WALLET':
+            return WalletCheckoutService.execute(
+                payable_type=payable_type,
+                payable_id=payable_id,
+                actor=actor,
+            )
+
         # Phase 1: resolve target and persist the Payment row. Short
         # transaction, no network I/O — a gateway stall must never hold a
         # Postgres row lock (DDIA Ch.1 "I/O in a transaction").
@@ -150,6 +157,7 @@ class InitiatePaymentService:
                 if payment.status == 'FAILED':
                     payment.status = 'INITIATED'
                     reset_from_failed = True
+            payment.method = 'MOBILE_MONEY'
 
             # Sync legacy fields for backward compatibility
             if not payment.order and payable_type == 'order': payment.order_id = payable_id
@@ -241,6 +249,94 @@ class InitiatePaymentService:
             'is_push': response.get('success') and not response.get('instant_success')
         }
 
+class WalletCheckoutService:
+    """Pay an existing payable from the customer's wallet balance.
+
+    The debit and the payment completion share one transaction: if escrow,
+    order confirmation or any downstream handler fails, the wallet is not
+    charged. The ledger reference is tied to the payment id so a retried
+    request can never move the same money twice.
+    """
+
+    @staticmethod
+    def execute(payable_type, payable_id, actor=None):
+        from domain.services.wallet_services import WalletDomainService
+
+        if actor is None or not getattr(actor, 'is_authenticated', False):
+            raise ValueError("Authentication is required to pay from a wallet.")
+
+        try:
+            payable_id = str(uuid.UUID(str(payable_id)))
+        except (ValueError, AttributeError):
+            pass
+
+        with transaction.atomic():
+            target = PaymentTargetResolver.resolve(payable_type, payable_id)
+            if not _can_pay_target(actor, target):
+                raise ValueError("You are not allowed to pay for this item.")
+            if target['user'].id != actor.id:
+                raise ValueError("Wallet payments can only be made by the account owner.")
+
+            payment, created = Payment.objects.select_for_update().get_or_create(
+                payable_type=payable_type,
+                payable_id=payable_id,
+                defaults={
+                    'amount': target['amount'],
+                    'status': 'INITIATED',
+                    'method': 'WALLET',
+                },
+            )
+            if not created and payment.status in [
+                'COLLECTED', 'ON_HOLD', 'DISBURSED',
+                'PARTIALLY_REFUNDED', 'REFUNDED',
+            ]:
+                raise ValueError("This has already been paid.")
+            if (
+                payment.status == 'INITIATED'
+                and payment.method == 'MOBILE_MONEY'
+                and payment.provider_reference
+            ):
+                raise ValueError(
+                    "A mobile money request is already in progress for this payment. "
+                    "Wait for it to finish before paying from your wallet."
+                )
+
+            payment.amount = target['amount']
+            payment.method = 'WALLET'
+            if payment.status == 'FAILED':
+                payment.status = 'INITIATED'
+            payment.provider_reference = f"WALLET_{payment.id.hex[:20]}"
+            payment.save()
+
+            WalletDomainService.post_transaction(
+                user=target['user'],
+                amount=target['amount'],
+                tx_type='DEBIT',
+                transaction_type='PAYMENT',
+                description=f"Wallet payment — {target['description']}",
+                reference=f"payment:{payment.id}:wallet-debit",
+            )
+
+            CompletePaymentService.execute(
+                payment_id=payment.id,
+                provider_reference=payment.provider_reference,
+                success=True,
+            )
+            payment.refresh_from_db()
+
+        return {
+            'payment': payment,
+            'gateway_response': {
+                'success': True,
+                'provider_reference': payment.provider_reference,
+                'message': 'Paid from wallet',
+                'instant_success': True,
+            },
+            'is_push': False,
+            'instant_success': True,
+        }
+
+
 PLATFORM_USER_PHONE = '+255000000000'
 
 
@@ -271,13 +367,36 @@ def _hold_escrow(amount: Decimal):
         wallet.save(update_fields=['pending_balance', 'updated_at'])
 
 
-def _release_escrow(total_amount: Decimal, platform_cut: Decimal):
-    """Move amount from escrow to cleared balance on disbursement."""
+def _release_escrow(total_amount: Decimal, platform_cut: Decimal, payment=None):
+    """Move amount from escrow to cleared balance on disbursement.
+
+    Escrow can drift (legacy rows, manual fixes, a pickup payout that already
+    spent part of it). Never let that block a restaurant/driver payout: release
+    what is actually held and let the platform absorb any shortfall.
+    """
+    from domain.services.wallet_services import WalletDomainService
     with transaction.atomic():
         wallet = _get_platform_wallet()
-        wallet.pending_balance -= total_amount.quantize(Decimal('0.01'))
-        wallet.balance += platform_cut.quantize(Decimal('0.01'))
-        wallet.save(update_fields=['pending_balance', 'balance', 'updated_at'])
+        total_amount = total_amount.quantize(Decimal('0.01'))
+        released = min(wallet.pending_balance, total_amount)
+        if released < total_amount:
+            logger.error(
+                f"[escrow] Short by {total_amount - released} when releasing "
+                f"{total_amount} for payment {getattr(payment, 'id', None)}."
+            )
+        wallet.pending_balance -= released
+        wallet.save(update_fields=['pending_balance', 'updated_at'])
+        platform_cut = min(platform_cut.quantize(Decimal('0.01')), released)
+        if platform_cut > 0:
+            WalletDomainService.post_transaction(
+                wallet=wallet,
+                amount=platform_cut,
+                tx_type='CREDIT',
+                transaction_type='REVENUE',
+                description='Platform commission on order payout',
+                reference=f"revenue:{payment.id}:platform-cut" if payment else None,
+                recover_debt=False,
+            )
 
 
 def debit_escrow_external(amount: Decimal, description: str = ''):
@@ -332,33 +451,55 @@ def restore_escrow_external(amount: Decimal, description: str = ''):
         return wallet.pending_balance
 
 
-def _record_platform_revenue(amount: Decimal, description: str):
+def _record_platform_revenue(amount: Decimal, description: str, reference: str = None):
     """Record platform-owned money that is not held for a future payout."""
-    from apps.wallets.models import WalletTransaction
-    with transaction.atomic():
-        wallet = _get_platform_wallet()
-        wallet.balance += amount
-        wallet.save(update_fields=['balance', 'updated_at'])
-        WalletTransaction.objects.create(
-            wallet=wallet,
-            amount=amount,
-            tx_type='CREDIT',
-            description=description,
-        )
+    from domain.services.wallet_services import WalletDomainService
+
+    wallet = _get_platform_wallet()
+    WalletDomainService.post_transaction(
+        wallet=wallet,
+        amount=amount,
+        tx_type='CREDIT',
+        transaction_type='REVENUE',
+        description=description,
+        reference=reference,
+    )
 
 
-def _release_escrow_refund(amount: Decimal, cancel_fee: Decimal):
-    """On refund: release full amount from escrow, keep cancel fee as earned."""
+def _release_escrow_refund(amount: Decimal, cancel_fee: Decimal, payment=None, fee_key=None):
+    """On refund: release full amount from escrow, keep cancel fee as earned.
+
+    Clamped to the escrow actually held so a refund never fails because an
+    older order's escrow bookkeeping drifted.
+    """
+    from domain.services.wallet_services import WalletDomainService
     with transaction.atomic():
         wallet = _get_platform_wallet()
-        wallet.pending_balance -= amount
+        amount = amount.quantize(Decimal('0.01'))
+        released = min(wallet.pending_balance, amount)
+        if released < amount:
+            logger.error(
+                f"[escrow] Short by {amount - released} when refunding "
+                f"{amount} for payment {getattr(payment, 'id', None)}."
+            )
+        wallet.pending_balance -= released
+        wallet.save(update_fields=['pending_balance', 'updated_at'])
+        cancel_fee = min(cancel_fee.quantize(Decimal('0.01')), released)
         if cancel_fee > 0:
-            wallet.balance += cancel_fee
-        wallet.save(update_fields=['pending_balance', 'balance', 'updated_at'])
+            WalletDomainService.post_transaction(
+                wallet=wallet,
+                amount=cancel_fee,
+                tx_type='CREDIT',
+                transaction_type='REVENUE',
+                description='Cancellation fee',
+                reference=f"revenue:{payment.id}:cancel-fee:{fee_key}" if payment else None,
+                recover_debt=False,
+            )
 
 
 def _release_escrow_disbursed_refund(payment):
     """On refund of a disbursed payment: reverse the platform_cut from balance."""
+    from domain.services.wallet_services import WalletDomainService
     from apps.payments.models import Transaction as PmtTransaction
     platform_entry = PmtTransaction.objects.filter(
         payment=payment,
@@ -367,8 +508,22 @@ def _release_escrow_disbursed_refund(payment):
     if platform_entry and platform_entry.amount > 0:
         with transaction.atomic():
             wallet = _get_platform_wallet()
-            wallet.balance -= platform_entry.amount
-            wallet.save(update_fields=['balance', 'updated_at'])
+            reversible = min(wallet.balance, Decimal(str(platform_entry.amount)))
+            if reversible > 0:
+                WalletDomainService.post_transaction(
+                    wallet=wallet,
+                    amount=reversible,
+                    tx_type='DEBIT',
+                    transaction_type='REVERSAL',
+                    description='Reversal of platform commission on refund',
+                    reference=f"reversal:{payment.id}:platform-cut",
+                    recover_debt=False,
+                )
+            if reversible < platform_entry.amount:
+                logger.error(
+                    f"[refund] Platform commission reversal short by "
+                    f"{Decimal(str(platform_entry.amount)) - reversible} for payment {payment.id}"
+                )
 
 
 def _create_double_entry(payment, from_user, to_user, amount, entry_type, status='COMPLETED'):
@@ -580,7 +735,11 @@ class CompletePaymentService:
             amount=payment.amount,
             entry_type='listing_fee',
         )
-        _record_platform_revenue(payment.amount, f"Marketplace listing fee for {product.id}")
+        _record_platform_revenue(
+            payment.amount,
+            f"Marketplace listing fee for {product.id}",
+            reference=f"revenue:{payment.id}:listing",
+        )
         _create_double_entry(
             payment=payment,
             from_user=get_platform_user(),
@@ -621,7 +780,11 @@ class CompletePaymentService:
                 amount=payment.amount,
                 entry_type='posting_bundle_purchase',
             )
-            _record_platform_revenue(payment.amount, f"Posting token bundle purchase: {purchase.id}")
+            _record_platform_revenue(
+                payment.amount,
+                f"Posting token bundle purchase: {purchase.id}",
+                reference=f"revenue:{payment.id}:tokens",
+            )
             _create_double_entry(
                 payment=payment,
                 from_user=get_platform_user(),
@@ -739,18 +902,20 @@ class ReleasePaymentService:
 
             # Release whatever escrow the pickup flow did not already spend.
             if escrow_release_amount > 0:
-                _release_escrow(escrow_release_amount, platform_cut)
+                _release_escrow(escrow_release_amount, platform_cut, payment=payment)
 
             # Credit wallets (ledger only — no real money moves)
             has_section_items = order.items.filter(section__isnull=False).exists() if order else False
             if restaurant_payout > 0 and order.restaurant:
                 if has_section_items:
-                    _distribute_restaurant_payout(order, restaurant_payout)
+                    _distribute_restaurant_payout(order, restaurant_payout, payment=payment)
                 elif order.restaurant.owner:
                     WalletDomainService.credit(
                         user=order.restaurant.owner,
                         amount=restaurant_payout,
                         description=f'Order payout — #{str(order.id)[:8]}',
+                        transaction_type='EARNING',
+                        reference=f"earning:{payment.id}:restaurant",
                     )
 
             if driver_payout > 0 and order.driver and order.driver.user:
@@ -758,6 +923,8 @@ class ReleasePaymentService:
                     user=order.driver.user,
                     amount=driver_payout,
                     description=f'Delivery payout — #{str(order.id)[:8]}',
+                    transaction_type='EARNING',
+                    reference=f"earning:{payment.id}:driver",
                 )
 
             # Double-entry accounting records
@@ -800,7 +967,7 @@ class ReleasePaymentService:
             return payment
 
 
-def _distribute_restaurant_payout(order, restaurant_payout):
+def _distribute_restaurant_payout(order, restaurant_payout, payment=None):
     """
     Distribute restaurant payout proportionally across sections.
 
@@ -810,6 +977,9 @@ def _distribute_restaurant_payout(order, restaurant_payout):
     - If the section has NO dedicated staff (e.g. auto-created "Main Kitchen"
       managed directly by the restaurant owner) → credit the owner's user wallet
       so the vendor can see the money in their personal wallet and cash out.
+
+    Each credit carries a reference derived from the payment and item so a
+    retried release cannot pay the same item twice.
     """
     from apps.wallets.models import Wallet
     from apps.restaurants.models import SectionStaff
@@ -852,6 +1022,8 @@ def _distribute_restaurant_payout(order, restaurant_payout):
                 wallet,
                 item_payout,
                 f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}",
+                transaction_type='EARNING',
+                reference=f"earning:{payment.id}:item:{item.id}" if payment else None,
             )
         else:
             # No dedicated staff — this is the owner-managed section (e.g. "Main Kitchen")
@@ -861,18 +1033,36 @@ def _distribute_restaurant_payout(order, restaurant_payout):
                     user=owner,
                     amount=item_payout,
                     description=f"Earnings for {item.food.name if item.food else 'item'} from Order #{order.id}",
+                    transaction_type='EARNING',
+                    reference=f"earning:{payment.id}:item:{item.id}" if payment else None,
                 )
 
 class RefundPaymentService:
     @staticmethod
-    def execute(payable_type, payable_id, override_amount: Decimal = None, cancel_fee_pct: Decimal = Decimal('0')):
+    def execute(
+        payable_type,
+        payable_id,
+        override_amount: Decimal = None,
+        cancel_fee_pct: Decimal = Decimal('0'),
+        refund_to_wallet: bool = False,
+    ):
+        """
+        Refund a collected payment.
+
+        ``refund_to_wallet`` keeps the money on-platform by crediting the
+        customer's wallet instead of calling the gateway. Wallet-funded
+        payments always refund to the wallet — their money never left the
+        platform, so a gateway refund would pay them twice.
+        """
+        from domain.services.wallet_services import WalletDomainService
+
         with transaction.atomic():
             payments = Payment.objects.select_for_update().filter(
                 payable_type=payable_type,
                 payable_id=payable_id,
                 status__in=['COLLECTED', 'ON_HOLD', 'DISBURSED', 'PARTIALLY_REFUNDED'],
             )
-            
+
             if not payments.exists():
                 # Legacy fallback for old callers passing order_id only
                 if payable_type == 'order':
@@ -882,7 +1072,7 @@ class RefundPaymentService:
 
             gateway = get_payment_gateway()
             refunded_any = False
-            
+
             for payment in payments:
                 already_refunded = _refunded_principal_total(payment)
                 remaining_amount = payment.amount - already_refunded
@@ -906,68 +1096,100 @@ class RefundPaymentService:
                 if was_disbursed:
                     refund_order = Order.objects.get(id=payment.payable_id)
 
-                response = gateway.refund(transaction_id=payment.provider_reference, amount=refund_amount)
-                if response and response.get('success'):
-                    refunded_any = True
-                    next_status = 'PARTIALLY_REFUNDED' if is_partial_refund else 'REFUNDED'
-                    payment.status = PaymentFSM.transition(payment.status, next_status)
-                    payment.refund_id = response.get('refund_id')
-                    if not is_partial_refund:
-                        payment.refunded_at = timezone.now()
-                    payment.save()
+                recipient = None
+                if payment.payable_type == 'order':
+                    recipient = refund_order.customer if refund_order else Order.objects.get(id=payment.payable_id).customer
+                elif payment.payable_type == 'pool_member':
+                    from apps.orders.models import PoolMember
+                    recipient = PoolMember.objects.get(id=payment.payable_id).user
 
-                    # Escrow release
-                    if was_disbursed:
-                        _release_escrow_disbursed_refund(payment)
-                    else:
-                        _release_escrow_refund(base_amount, cancel_fee)
+                to_wallet = refund_to_wallet or payment.method == 'WALLET'
+                if to_wallet and recipient is None:
+                    raise ValueError("This payment has no wallet to refund to.")
 
-                    # Determine refund recipient
-                    recipient = None
-                    if payment.payable_type == 'order':
-                        recipient = refund_order.customer if refund_order else Order.objects.get(id=payment.payable_id).customer
-                    elif payment.payable_type == 'pool_member':
-                        from apps.orders.models import PoolMember
-                        recipient = PoolMember.objects.get(id=payment.payable_id).user
+                if to_wallet:
+                    response = {
+                        'success': True,
+                        'refund_id': f"WALLET_{payment.id.hex[:16]}",
+                    }
+                else:
+                    response = gateway.refund(
+                        transaction_id=payment.provider_reference,
+                        amount=refund_amount,
+                    )
 
-                    if recipient:
-                        _create_double_entry(
-                            payment=payment,
-                            from_user=get_platform_user(),
-                            to_user=recipient,
+                if not (response and response.get('success')):
+                    continue
+
+                refunded_any = True
+                next_status = 'PARTIALLY_REFUNDED' if is_partial_refund else 'REFUNDED'
+                payment.status = PaymentFSM.transition(payment.status, next_status)
+                payment.refund_id = response.get('refund_id')
+                if not is_partial_refund:
+                    payment.refunded_at = timezone.now()
+                payment.save()
+
+                # Escrow release
+                if was_disbursed:
+                    _release_escrow_disbursed_refund(payment)
+                else:
+                    _release_escrow_refund(
+                        base_amount, cancel_fee, payment=payment,
+                        fee_key=int(already_refunded * 100),
+                    )
+
+                if recipient:
+                    if to_wallet:
+                        WalletDomainService.post_transaction(
+                            user=recipient,
                             amount=refund_amount,
-                            entry_type='platform_to_customer_refund',
+                            tx_type='CREDIT',
+                            transaction_type='REFUND',
+                            description=f"Refund for {payable_type} {str(payable_id)[:8]}",
+                            reference=f"refund:{payment.id}:{int(already_refunded * 100)}",
                         )
+                    _create_double_entry(
+                        payment=payment,
+                        from_user=get_platform_user(),
+                        to_user=recipient,
+                        amount=refund_amount,
+                        entry_type='platform_to_customer_refund',
+                    )
 
-                    if cancel_fee > 0:
-                        _create_double_entry(
-                            payment=payment,
-                            from_user=recipient,
-                            to_user=get_platform_user(),
-                            amount=cancel_fee,
-                            entry_type='platform_cancel_fee',
-                        )
+                if cancel_fee > 0:
+                    _create_double_entry(
+                        payment=payment,
+                        from_user=recipient,
+                        to_user=get_platform_user(),
+                        amount=cancel_fee,
+                        entry_type='platform_cancel_fee',
+                    )
 
-                    # Reverse section wallet credits if payment was previously disbursed
-                    if was_disbursed and refund_order:
-                        RefundPaymentService._clawback_section_wallets(payment, refund_order)
+                # Reverse section wallet credits if payment was previously disbursed
+                if was_disbursed and refund_order:
+                    RefundPaymentService._clawback_section_wallets(
+                        payment, refund_order, refund_key=int(already_refunded * 100),
+                    )
 
-                    # Use a function to capture the current payment in the closure
-                    def publish_refund(p=payment, amt=refund_amount):
-                        EventBus.publish(PaymentRefunded(
-                            aggregate_id=p.id,
-                            payload={'type': p.payable_type, 'payable_id': str(p.payable_id), 'refund_amount': str(amt)}
-                        ))
-                    transaction.on_commit(publish_refund)
-            
+                # Use a function to capture the current payment in the closure
+                def publish_refund(p=payment, amt=refund_amount):
+                    EventBus.publish(PaymentRefunded(
+                        aggregate_id=p.id,
+                        payload={'type': p.payable_type, 'payable_id': str(p.payable_id), 'refund_amount': str(amt)}
+                    ))
+                transaction.on_commit(publish_refund)
+
             return refunded_any
 
     @staticmethod
-    def _clawback_section_wallets(payment, order):
+    def _clawback_section_wallets(payment, order, refund_key=0):
         """
         Reverse the section/owner wallet credits that were made when the payment was disbursed.
         Uses the same routing logic as _distribute_restaurant_payout (staffed → section wallet,
         unstaffed → owner user wallet).
+
+        A shortfall (money already cashed out) is recorded as a WalletDebt instead
+        of being silently dropped; future earnings offset it automatically.
         """
         from apps.wallets.models import Wallet
         from apps.restaurants.models import SectionStaff
@@ -1006,21 +1228,51 @@ class RefundPaymentService:
 
             if item.section_id in staffed_section_ids:
                 wallet, _ = Wallet.objects.get_or_create(section=item.section)
-                try:
-                    WalletDomainService.debit_wallet(wallet, item_payout, f"Refund clawback for Order #{order.id}")
-                except ValueError as e:
-                    if 'Insufficient' in str(e):
-                        wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
-                        actual_debit = min(wallet.balance, item_payout)
-                        if actual_debit > 0:
-                            WalletDomainService.debit_wallet(wallet, actual_debit, f"Partial refund clawback for Order #{order.id}")
+            elif owner:
+                wallet, _ = Wallet.objects.get_or_create(user=owner)
             else:
-                if owner:
-                    try:
-                        from apps.wallets.models import Wallet as W
-                        user_wallet, _ = W.objects.get_or_create(user=owner)
-                        actual_debit = min(user_wallet.balance, item_payout)
-                        if actual_debit > 0:
-                            WalletDomainService.debit(owner, actual_debit, f"Refund clawback for Order #{order.id}")
-                    except ValueError:
-                        pass
+                wallet = None
+
+            if wallet is not None:
+                RefundPaymentService._debit_or_record_debt(
+                    payment, wallet, item_payout, order, refund_key, item.id,
+                )
+
+    @staticmethod
+    def _debit_or_record_debt(payment, wallet, amount, order, refund_key, item_id):
+        from apps.payments.models import WalletDebt
+        from apps.wallets.models import Wallet
+        from domain.services.wallet_services import WalletDomainService
+
+        wallet = Wallet.objects.select_for_update().get(pk=wallet.pk)
+        actual_debit = min(wallet.balance, amount)
+        if actual_debit > 0:
+            WalletDomainService.post_transaction(
+                wallet=wallet,
+                amount=actual_debit,
+                tx_type='DEBIT',
+                transaction_type='CLAWBACK',
+                description=f"Refund clawback for Order #{order.id}",
+                reference=f"clawback:{payment.id}:{refund_key}:{item_id}",
+            )
+
+        shortfall = amount - actual_debit
+        if shortfall > 0:
+            debt = WalletDebt.objects.select_for_update().filter(
+                payment=payment, wallet=wallet, status='OUTSTANDING',
+            ).first()
+            if debt:
+                debt.original_amount += amount
+                debt.remaining_balance += shortfall
+                debt.save(update_fields=['original_amount', 'remaining_balance', 'updated_at'])
+            else:
+                WalletDebt.objects.create(
+                    payment=payment,
+                    wallet=wallet,
+                    original_amount=amount,
+                    remaining_balance=shortfall,
+                )
+            logger.warning(
+                f"[refund] Clawback shortfall {shortfall} for payment {payment.id} "
+                f"wallet {wallet.id} recorded as WalletDebt."
+            )

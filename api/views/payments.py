@@ -36,9 +36,13 @@ class InitiatePaymentView(APIView):
         payable_id = request.data.get('payable_id')
         phone = request.data.get('phone', request.user.phone)
         bank_code = request.data.get('bank_code')
+        method = (request.data.get('method') or request.data.get('payment_method') or 'MOBILE_MONEY').upper()
 
         if not payable_type or not payable_id:
             return Response({'error': 'payable_type and payable_id are required'}, status=400)
+
+        if method not in ('MOBILE_MONEY', 'WALLET'):
+            return Response({'error': 'method must be MOBILE_MONEY or WALLET'}, status=400)
 
         try:
             from domain.services.payment_services import InitiatePaymentService
@@ -47,7 +51,8 @@ class InitiatePaymentView(APIView):
                 payable_id=payable_id,
                 phone=phone,
                 bank_code=bank_code,
-                actor=request.user
+                actor=request.user,
+                method=method,
             )
             
             payment = result['payment']
@@ -59,6 +64,7 @@ class InitiatePaymentView(APIView):
                 "success": push_sent,
                 "payment_id": str(payment.id),
                 "status": payment.status,
+                "method": payment.method,
                 "is_push": result.get('is_push', False),
             }
 
@@ -75,6 +81,9 @@ class InitiatePaymentView(APIView):
                 base_response["code"] = gateway_data.get('code')
 
             return Response(base_response)
+        except ValueError as exc:
+            logger.warning(f"Payment initiation rejected: {exc}")
+            return Response({"error": str(exc)}, status=400)
         except Exception:
             logger.exception("Payment initiation failed")
             return Response({"error": "Payment initiation failed."}, status=400)

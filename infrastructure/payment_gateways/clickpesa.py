@@ -183,7 +183,19 @@ class ClickpesaGateway(PaymentGateway):
             payload["checksum"] = checksum
 
             logger.info(f"Initiating ClickPesa manual payout for cashout {sanitized_ref}")
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=30)
+            except requests.exceptions.RequestException as exc:
+                # A timeout or dropped connection is NOT a rejection: the
+                # gateway may have already paid out. Returning a plain failure
+                # would make the caller refund the wallet and pay twice.
+                logger.error(f"ClickPesa payout transport error: {exc}")
+                return {
+                    'success': False,
+                    'unknown': True,
+                    'error': f'Payout outcome unknown: {exc}',
+                }
+
             if response.status_code in [200, 201]:
                 res_data = response.json()
                 return {
@@ -192,17 +204,18 @@ class ClickpesaGateway(PaymentGateway):
                     'message': 'Disbursement successful',
                     'raw_data': res_data
                 }
-            else:
-                logger.error(f"ClickPesa Payout failed: HTTP {response.status_code}: {response.text}")
-                try:
-                    res_json = response.json()
-                    error_msg = res_json.get('message') or f"ClickPesa Payout API Error: {response.status_code}"
-                except Exception:
-                    error_msg = f"ClickPesa Payout API Error: {response.status_code}"
-                return {'success': False, 'error': error_msg}
+
+            unknown = response.status_code >= 500 or response.status_code == 409
+            logger.error(f"ClickPesa Payout failed: HTTP {response.status_code}: {response.text}")
+            try:
+                res_json = response.json()
+                error_msg = res_json.get('message') or f"ClickPesa Payout API Error: {response.status_code}"
+            except Exception:
+                error_msg = f"ClickPesa Payout API Error: {response.status_code}"
+            return {'success': False, 'unknown': unknown, 'error': error_msg}
         except Exception as e:
             logger.error(f"ClickPesa payout exception: {str(e)}")
-            return {'success': False, 'error': str(e)}
+            return {'success': False, 'unknown': True, 'error': str(e)}
 
     def get_status(self, provider_reference):
         """

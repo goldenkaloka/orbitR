@@ -15,22 +15,16 @@ from domain.events.types import (
 
 def invalidate_product_list_cache():
     """
-    Bump the cached product-list version and purge the storefront's copy.
+    Bump the cached product-list version.
 
     Every path that mutates listing state must call this after commit — the
-    list view caches its response for 900s and the Next storefront holds its
-    own 60s window, so without a bump a seller's newly paid-for (or newly
-    expired) listing stays invisible for up to 15 minutes (DDIA Ch.9
-    read-your-writes). Local bump is synchronous; the cross-service purge is a
-    best-effort Celery task whose failure leaves the storefront on its TTL.
+    list view caches its response for 900s, so without a bump a seller's newly
+    paid-for (or newly expired) listing stays invisible for up to 15 minutes.
     """
-    from apps.marketplace.tasks import purge_storefront_cache
-
     try:
         cache.incr('marketplace_list_cache_version')
     except ValueError:
         cache.set('marketplace_list_cache_version', 1)
-    purge_storefront_cache.delay(['products'])
 
 
 class MarketplaceService:

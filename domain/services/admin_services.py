@@ -194,7 +194,8 @@ class DisputeResolutionService:
     RESOLUTION_ACTIONS = ('RESOLVED_REFUND', 'RESOLVED_PARTIAL', 'RESOLVED_DISMISSED')
 
     @staticmethod
-    def resolve(dispute_id: str, actor, resolution: str, resolution_note: str = '', refund_amount: Decimal = None):
+    def resolve(dispute_id: str, actor, resolution: str, resolution_note: str = '', refund_amount: Decimal = None,
+                refund_to_wallet: bool = False):
         from apps.orders.models import Dispute
         from apps.payments.models import Payment
         from domain.services.payment_services import RefundPaymentService
@@ -246,7 +247,11 @@ class DisputeResolutionService:
             if refund_amount is None:
                 refund_amount = order.total_amount
 
-            RefundPaymentService.execute('order', order.id, override_amount=refund_amount)
+            RefundPaymentService.execute(
+                'order', order.id,
+                override_amount=refund_amount,
+                refund_to_wallet=refund_to_wallet,
+            )
 
             order.status = OrderFSM.transition(order.status, 'RESOLVED')
             order.save(update_fields=['status'])

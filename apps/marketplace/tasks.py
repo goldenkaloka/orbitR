@@ -150,39 +150,6 @@ def cleanup_unpaid_products():
 
 
 @shared_task
-def purge_storefront_cache(tags=None):
-    """
-    Best-effort purge of the Next storefront's Data Cache / ISR (DDIA Ch.9).
-
-    The storefront tags its product/category fetches; when a listing mutates we
-    POST here so it re-renders immediately instead of waiting out its 60s TTL.
-    Failure is never fatal — the TTL remains the correctness backstop.
-    """
-    from django.conf import settings
-
-    url = getattr(settings, 'STOREFRONT_REVALIDATE_URL', '')
-    secret = getattr(settings, 'STOREFRONT_REVALIDATE_SECRET', '')
-    if not url or not secret:
-        return "Storefront purge not configured; TTL-only"
-
-    tags = list(tags or ['products'])
-    import requests
-    try:
-        resp = requests.post(
-            url.rstrip('/') + '/api/revalidate',
-            json={'tags': tags},
-            headers={'Authorization': f'Bearer {secret}'},
-            timeout=3,
-        )
-        if resp.ok:
-            return f"Purged storefront tags {tags}"
-        return f"Storefront purge rejected: HTTP {resp.status_code}"
-    except Exception as e:
-        logging.getLogger(__name__).debug(f"Storefront purge skipped: {e}")
-        return f"Storefront purge skipped: {e}"
-
-
-@shared_task
 def sweep_expired_products():
     """
     Daily task to transition products past their expiry date to EXPIRED.

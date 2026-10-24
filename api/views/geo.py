@@ -37,7 +37,25 @@ def _mapbox_token_or_503(response_factory):
     return None
 
 
-def _parse_searchbox_feature(feature: dict) -> dict:
+def _valid_coords(lat, lng):
+    """Return (lat, lng) as floats, or None when the pair is not a real point.
+
+    Mapbox omits `coordinates` on some features. Passing 0,0 through used to
+    render as a valid pin in the Gulf of Guinea and could be tapped by mistake.
+    """
+    try:
+        lat_f = float(lat)
+        lng_f = float(lng)
+    except (TypeError, ValueError):
+        return None
+    if not (-90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0):
+        return None
+    if abs(lat_f) < 1e-6 and abs(lng_f) < 1e-6:
+        return None
+    return lat_f, lng_f
+
+
+def _parse_searchbox_feature(feature: dict, *, reverse: bool = False) -> dict | None:
     props = feature.get('properties', {})
     feature_type = props.get('feature_type', '')
     if feature_type == 'poi':
@@ -45,31 +63,58 @@ def _parse_searchbox_feature(feature: dict) -> dict:
         full_address = props.get('full_address', '') or props.get('place_formatted', '')
     elif feature_type == 'address':
         name = props.get('address', '')
-        full_address = props.get('full_address', '')
+        full_address = props.get('full_address', '') or props.get('place_formatted', '')
     else:
         name = props.get('name', '')
         full_address = props.get('place_formatted', '')
-    coords = props.get('coordinates', {})
+
+    coords = props.get('coordinates') or {}
+    point = _valid_coords(coords.get('latitude'), coords.get('longitude'))
+    if point is None:
+        return None
+
+    # Reverse results are shown as the delivery address. On an address feature
+    # `name` is only the house number ("12"), and a bare POI name is not an
+    # address, so prefer the formatted address when there is one.
+    display_name = (full_address or name) if reverse else (name or full_address)
+    display_name = display_name.strip()
+    if not display_name:
+        return None
+
     return {
         'id': props.get('mapbox_id', ''),
-        'name': name,
-        'address': full_address,
-        'lat': coords.get('latitude', 0),
-        'lng': coords.get('longitude', 0),
+        'name': display_name,
+        'address': full_address or name,
+        'lat': point[0],
+        'lng': point[1],
         'feature_type': feature_type,
         'source': 'searchbox',
     }
 
 
-def _parse_geocoding_feature(feature: dict) -> dict:
-    center = feature.get('center', [0, 0])
-    context = [c.get('text') for c in feature.get('context', [])]
+def _parse_geocoding_feature(feature: dict, *, reverse: bool = False) -> dict | None:
+    center = feature.get('center') or []
+    if len(center) < 2:
+        return None
+    point = _valid_coords(center[1], center[0])
+    if point is None:
+        return None
+
+    context = [c.get('text') for c in feature.get('context', []) if c.get('text')]
+    text = (feature.get('text') or '').strip()
+    place_name = (feature.get('place_name') or '').strip()
+    # A v5 address result's `text` is the house number; `place_name` is the
+    # full readable address.
+    display_name = (place_name if reverse and place_name else text) or place_name
+    if not display_name:
+        return None
+
     return {
         'id': feature.get('id', ''),
-        'name': feature.get('text', ''),
-        'address': ', '.join(context) if context else feature.get('place_name', ''),
-        'lat': center[1],
-        'lng': center[0],
+        'name': display_name,
+        'address': ', '.join(context) if context else place_name,
+        'lat': point[0],
+        'lng': point[1],
         'feature_type': (feature.get('place_type') or [''])[0],
         'source': 'geocoding',
     }
@@ -226,14 +271,18 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         # ── Local operational zones first ─────────────────────────────────
         zone_names = set()
         for zone in OperationalZone.objects.filter(is_active=True, name__icontains=query):
-            zone_names.add(zone.name.lower())
             centroid = zone.boundary.centroid if zone.boundary else None
+            # A zone without a boundary has no point to fly to. Returning 0,0
+            # here used to hand the client an "Africa, Atlantic Ocean" pin.
+            if centroid is None:
+                continue
+            zone_names.add(zone.name.lower())
             results.append({
                 'id': str(zone.id),
                 'name': zone.name,
                 'address': zone.description or '',
-                'lat': centroid.y if centroid else 0,
-                'lng': centroid.x if centroid else 0,
+                'lat': centroid.y,
+                'lng': centroid.x,
                 'feature_type': 'zone',
                 'source': 'local',
             })
@@ -266,7 +315,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 if resp.status_code == 200:
                     for feature in resp.json().get('features', []):
                         parsed = _parse_searchbox_feature(feature)
-                        if parsed['name'].lower() not in zone_names:
+                        if parsed and parsed['name'].lower() not in zone_names:
                             results.append(parsed)
                 elif resp.status_code >= 500:
                     mapbox_down = True
@@ -290,8 +339,10 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 resp = req_lib.get(url, timeout=5)
                 if resp.status_code == 200:
                     results = [
-                        _parse_geocoding_feature(f)
-                        for f in resp.json().get('features', [])
+                        parsed for parsed in (
+                            _parse_geocoding_feature(f)
+                            for f in resp.json().get('features', [])
+                        ) if parsed
                     ]
             except Exception as exc:
                 logger.error('Geocoding v5 autocomplete fallback failed: %s', exc)
@@ -347,8 +398,10 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
             resp = req_lib.get(url, timeout=5)
             if resp.status_code == 200:
                 results = [
-                    _parse_searchbox_feature(f)
-                    for f in resp.json().get('features', [])
+                    parsed for parsed in (
+                        _parse_searchbox_feature(f, reverse=True)
+                        for f in resp.json().get('features', [])
+                    ) if parsed
                 ]
             elif resp.status_code >= 500:
                 reverse_down = True
@@ -370,11 +423,23 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                 resp = req_lib.get(url, timeout=5)
                 if resp.status_code == 200:
                     results = [
-                        _parse_geocoding_feature(f)
-                        for f in resp.json().get('features', [])
+                        parsed for parsed in (
+                            _parse_geocoding_feature(f, reverse=True)
+                            for f in resp.json().get('features', [])
+                        ) if parsed
                     ]
             except Exception as exc:
                 logger.error('Geocoding v5 reverse fallback failed: %s', exc)
+
+        # The customer is standing at a point, not shopping at whatever
+        # business happens to be closest, so a street address should win over
+        # a POI. Sorting is stable, so Mapbox's proximity order still wins
+        # inside each bucket.
+        type_priority = {
+            'address': 0, 'street': 1, 'neighborhood': 2,
+            'locality': 3, 'place': 4, 'poi': 5,
+        }
+        results.sort(key=lambda r: type_priority.get(r.get('feature_type', ''), 6))
 
         # An outage would otherwise pin an empty address on this coordinate
         # for a full hour — short TTL for misses, full TTL for real results.

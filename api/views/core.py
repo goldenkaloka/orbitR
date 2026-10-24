@@ -992,6 +992,7 @@ class OrderViewSet(viewsets.ModelViewSet):
                 today_earnings = WalletTransaction.objects.filter(
                     wallet=wallet,
                     tx_type='CREDIT',
+                    transaction_type__in=['EARNING', 'ADJUSTMENT'],
                     created_at__gte=start_of_day,
                     created_at__lt=end_of_day,
                 ).aggregate(Sum('amount'))['amount__sum'] or 0
@@ -1581,6 +1582,8 @@ class DisputeViewSet(viewsets.ModelViewSet):
                 resolution=resolution,
                 resolution_note=request.data.get('resolution_note', ''),
                 refund_amount=refund_amount,
+                refund_to_wallet=str(request.data.get('refund_to_wallet', '')).lower()
+                in ('1', 'true', 'yes'),
             )
         except ValueError as e:
             return Response({"error": str(e)}, status=400)
