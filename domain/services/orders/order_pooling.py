@@ -102,7 +102,7 @@ class PoolOrderService:
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
 
         if scheduled_for:
-            validate_scheduled_for(scheduled_for)
+            validate_scheduled_for(scheduled_for, restaurant=restaurant)
 
         h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
 
@@ -307,6 +307,8 @@ class PoolOrderService:
                 raise PermissionError("Only initiator can lock.")
             if pool.status != 'OPEN':
                 raise ValueError("Pool is not OPEN.")
+            if pool.expires_at <= timezone.now():
+                raise ValueError("This pool has expired.")
 
             # Auto-mark the initiator as READY when they lock
             initiator_member = pool.members.filter(user=actor).first()
@@ -569,6 +571,20 @@ class PoolOrderService:
                 raise ValueError(
                     f"Cannot decline bucket in {pool.status} state; "
                     "only paid buckets can be declined."
+                )
+
+            # A paid bucket stays PAID while its member orders move through
+            # the kitchen, so the pool status alone cannot tell us whether
+            # cooking has started. Refuse once any member order is being
+            # prepared (or later): the food is already being made.
+            cooking_started = pool.final_orders.filter(
+                status__in=(
+                    'PREPARING', 'READY', 'ASSIGNED', 'PICKED', 'DELIVERED',
+                ),
+            ).exists()
+            if cooking_started:
+                raise ValueError(
+                    "Cannot decline a bucket after the kitchen has started preparing."
                 )
 
             pool.status = PoolFSM.transition(pool.status, 'CANCELLED')

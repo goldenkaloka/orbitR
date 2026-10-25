@@ -17,7 +17,7 @@ from apps.payments.models import Payment
 from apps.restaurants.models import Restaurant, RestaurantSection
 from apps.users.models import User
 from django.contrib.gis.geos import Point
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from domain.services.orders.order_pooling import PoolOrderService
 from rest_framework.test import APIClient
@@ -109,6 +109,7 @@ class PoolDeclineTestMixin:
         return pool, members, orders, payments
 
 
+@override_settings(MOCK_PAYMENTS=True)
 class PoolDeclineTests(PoolDeclineTestMixin, TestCase):
     def test_decline_refunds_every_member_and_cancels_their_orders(self):
         pool, members, orders, payments = self._make_paid_bucket()
@@ -199,6 +200,17 @@ class PoolDeclineTests(PoolDeclineTestMixin, TestCase):
         pool.refresh_from_db()
         self.assertEqual(pool.status, 'PAID')
 
+    def test_cannot_decline_once_a_member_order_is_preparing(self):
+        pool, _, orders, _ = self._make_paid_bucket()
+        orders[0].status = 'PREPARING'
+        orders[0].save(update_fields=['status'])
+
+        with self.assertRaisesMessage(ValueError, 'started preparing'):
+            PoolOrderService.decline_pool(str(pool.id), self.owner)
+
+        pool.refresh_from_db()
+        self.assertEqual(pool.status, 'PAID')
+
     def test_only_scheduled_buckets_can_be_declined(self):
         pool, _, _, _ = self._make_paid_bucket()
         pool.scheduled_for = None
@@ -238,6 +250,7 @@ class PoolDeclineTests(PoolDeclineTestMixin, TestCase):
         )
 
 
+@override_settings(MOCK_PAYMENTS=True)
 class PoolCancellationTests(PoolDeclineTestMixin, TestCase):
     def test_cancelling_a_paid_bucket_cancels_its_parked_orders(self):
         pool, _, orders, payments = self._make_paid_bucket()

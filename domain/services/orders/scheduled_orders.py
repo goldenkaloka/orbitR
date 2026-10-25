@@ -108,6 +108,26 @@ def meal_windows_for(restaurant):
 
 
 def prep_minutes_for(restaurant):
+    """
+    Minutes the kitchen needs before the eating time.
+
+    A meal is only ready when every section that touches it has finished, so
+    the slowest active section gates the whole order. Falling back to the
+    restaurant's average keeps restaurants without section timings working.
+    """
+    sections = [
+        section
+        for section in restaurant.sections.all()
+        if getattr(section, 'is_active', True)
+    ]
+    section_prep = [
+        int(section.prep_time)
+        for section in sections
+        if getattr(section, 'prep_time', None)
+    ]
+    if section_prep:
+        return max(section_prep)
+
     return int(
         getattr(restaurant, 'average_prep_time', None)
         or getattr(restaurant, 'prep_time', None)
@@ -120,14 +140,41 @@ def release_at_for(restaurant, scheduled_for):
     return scheduled_for - timedelta(minutes=prep_minutes_for(restaurant))
 
 
-def validate_scheduled_for(scheduled_for, now=None):
+def format_eating_time(scheduled_for):
+    """Human-readable eating time in the pre-order timezone."""
+    if not scheduled_for:
+        return ''
+    local = scheduled_for.astimezone(_preorder_timezone())
+    return local.strftime('%a %d %b, %H:%M')
+
+
+def validate_scheduled_for(scheduled_for, now=None, restaurant=None):
+    """
+    Check the booking is far enough ahead for the kitchen to prep it.
+
+    ``restaurant`` is optional for backwards compatibility, but callers that
+    have it should pass it: the lead window has to include the slowest
+    section's prep time, otherwise a booking can be accepted whose release
+    time is already in the past.
+    """
+    if scheduled_for is None:
+        return None
+
     now = now or timezone.now()
     min_lead = settings.PREORDER_MIN_LEAD_MINUTES
     max_horizon = settings.PREORDER_MAX_HORIZON_DAYS
 
-    if scheduled_for <= now + timedelta(minutes=min_lead):
+    prep_minutes = prep_minutes_for(restaurant) if restaurant is not None else 0
+    lead_minutes = min_lead + prep_minutes
+
+    if scheduled_for < now + timedelta(minutes=lead_minutes):
+        detail = (
+            f" (including {prep_minutes} minutes of prep time)"
+            if restaurant is not None
+            else ''
+        )
         raise ValueError(
-            f"Pre-orders must be booked at least {min_lead} minutes ahead."
+            f"Pre-orders must be booked at least {lead_minutes} minutes ahead{detail}."
         )
     if scheduled_for > now + timedelta(days=max_horizon):
         raise ValueError(
@@ -224,7 +271,11 @@ def upcoming_slot_days(restaurant, days=2, now=None):
     base_capacity = slot_capacity_for(restaurant)
     tz = _preorder_timezone()
     local_now = now.astimezone(tz)
-    earliest = now + timedelta(minutes=settings.PREORDER_MIN_LEAD_MINUTES)
+    # A bookable slot must leave enough time for the kitchen's slowest section
+    # to prep, not just the customer's minimum lead window.
+    earliest = now + timedelta(
+        minutes=settings.PREORDER_MIN_LEAD_MINUTES + prep_minutes_for(restaurant),
+    )
     horizon = now + timedelta(days=settings.PREORDER_MAX_HORIZON_DAYS)
 
     first_day = local_now.date()
@@ -427,11 +478,13 @@ class ReleaseScheduledOrderService:
             return activate_paid_order(order)
 
 
+# Declining is only safe before the kitchen starts cooking. PREPARING (and
+# anything later) is excluded so a vendor cannot cancel food that is already
+# being made.
 DECLINABLE_STATUSES = (
     'SCHEDULED',
     'AWAITING_CONFIRMATION',
     'CONFIRMED',
-    'PREPARING',
 )
 
 

@@ -155,7 +155,7 @@ class ScheduledPoolReleaseTests(TestCase):
         self.assertEqual(pool.status, 'PAID')
         notify.assert_called_once_with(str(pool.id))
 
-    def test_pool_is_not_announced_until_every_member_is_released(self):
+    def test_pool_releases_as_one_unit_when_member_times_differ(self):
         pool = self._pool(self.scheduled_for)
         self._finalize(pool)
         orders = list(Order.objects.filter(pool=pool).order_by('created_at'))
@@ -171,9 +171,11 @@ class ScheduledPoolReleaseTests(TestCase):
         ) as notify:
             release_scheduled_orders()
 
-        notify.assert_not_called()
+        # A bucket is one delivery: the earliest member drags the rest of the
+        # bucket into the kitchen, and the kitchen gets one prep SMS.
+        notify.assert_called_once_with(str(pool.id))
         self.assertEqual(Order.objects.get(id=orders[0].id).status, 'CONFIRMED')
-        self.assertEqual(Order.objects.get(id=orders[1].id).status, 'SCHEDULED')
+        self.assertEqual(Order.objects.get(id=orders[1].id).status, 'CONFIRMED')
 
     def test_released_pool_order_does_not_sms_the_kitchen_per_member(self):
         pool = self._pool(self.scheduled_for)

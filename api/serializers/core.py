@@ -591,8 +591,23 @@ class OrderSerializer(serializers.ModelSerializer):
     def validate_scheduled_for(self, value):
         from domain.services.orders.scheduled_orders import validate_scheduled_for
 
+        # "Now" orders send scheduled_for: null; that is a valid choice, not
+        # a missing value to compare against a datetime.
+        if value is None:
+            return None
+
+        restaurant = None
+        restaurant_id = getattr(self, 'initial_data', {}).get('restaurant')
+        if restaurant_id:
+            from apps.restaurants.models import Restaurant
+
+            try:
+                restaurant = Restaurant.objects.filter(id=restaurant_id).first()
+            except (TypeError, ValueError):
+                restaurant = None
+
         try:
-            return validate_scheduled_for(value)
+            return validate_scheduled_for(value, restaurant=restaurant)
         except ValueError as exc:
             raise serializers.ValidationError(str(exc))
 

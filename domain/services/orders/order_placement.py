@@ -103,7 +103,7 @@ class PlaceOrderService:
             
         scheduled_for = validated_data.get('scheduled_for')
         if scheduled_for:
-            validate_scheduled_for(scheduled_for)
+            validate_scheduled_for(scheduled_for, restaurant=restaurant)
             validated_data['release_at'] = release_at_for(restaurant, scheduled_for)
         else:
             validated_data.pop('release_at', None)

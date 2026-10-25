@@ -41,13 +41,57 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             'final_orders',
         )
 
+    @staticmethod
+    def _matches_open_pool(pool, data):
+        """Whether an existing open bucket is the one this request asked for."""
+        requested_restaurant = data.get('restaurant')
+        if not requested_restaurant:
+            return False
+        if str(pool.restaurant_id) != str(requested_restaurant):
+            return False
+
+        raw_scheduled = data.get('scheduled_for')
+        if raw_scheduled in (None, ''):
+            requested_scheduled = None
+        else:
+            from datetime import datetime
+
+            from django.utils import timezone
+            from django.utils.dateparse import parse_datetime
+
+            requested_scheduled = parse_datetime(str(raw_scheduled))
+            if requested_scheduled is None:
+                try:
+                    requested_scheduled = datetime.fromisoformat(
+                        str(raw_scheduled).replace('Z', '+00:00'),
+                    )
+                except ValueError:
+                    return False
+            if timezone.is_naive(requested_scheduled):
+                requested_scheduled = timezone.make_aware(
+                    requested_scheduled, timezone.get_current_timezone(),
+                )
+
+        return pool.scheduled_for == requested_scheduled
+
     def create(self, request, *args, **kwargs):
-        # UX Improvement: If user already has an open pool, just return it
-        # instead of failing with a 400/500 error.
+        # Returning an open bucket is only safe when it is the same booking.
+        # Returning an unrelated restaurant/time would silently drop the
+        # customer's new choice.
         existing_pool = OrderPool.objects.filter(initiator=request.user, status='OPEN').first()
         if existing_pool:
-            serializer = self.get_serializer(existing_pool, context={'request': request})
-            return Response(serializer.data, status=status.HTTP_200_OK)
+            if self._matches_open_pool(existing_pool, request.data):
+                serializer = self.get_serializer(existing_pool, context={'request': request})
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(
+                {
+                    'error': (
+                        'You already have an open bucket. Finish or cancel it '
+                        'before starting another one.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         serializer = self.get_serializer(data=request.data)
         if not serializer.is_valid():

@@ -214,3 +214,74 @@ class PreorderPoolTests(TestCase):
             OrderPool.objects.get(id=response.json()['id']).scheduled_for,
             start,
         )
+
+    def test_api_create_returns_the_matching_open_bucket(self):
+        slot = self._first_slot()
+        start = _parse(slot['start'])
+        first = self._create_pool(self.initiator, start)
+        self.client.force_authenticate(self.initiator)
+
+        response = self.client.post(
+            '/api/pools/',
+            {
+                'restaurant': str(self.restaurant.id),
+                'delivery_address': ADDRESS,
+                'delivery_location': 'POINT(39.2083 -6.7924)',
+                'scheduled_for': slot['start'],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['id'], str(first.id))
+
+    def test_api_create_does_not_return_an_unrelated_open_bucket(self):
+        slot = self._first_slot()
+        start = _parse(slot['start'])
+        first = self._create_pool(self.initiator, start)
+        other_restaurant = Restaurant.objects.create(
+            owner=self.restaurant.owner,
+            name='Other Diner',
+            location='Main Hall',
+            geo_location=POINT,
+            average_prep_time=25,
+        )
+        self.client.force_authenticate(self.initiator)
+
+        response = self.client.post(
+            '/api/pools/',
+            {
+                'restaurant': str(other_restaurant.id),
+                'delivery_address': ADDRESS,
+                'delivery_location': 'POINT(39.2083 -6.7924)',
+                'scheduled_for': slot['start'],
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('already have an open bucket', response.json()['error'])
+        self.assertEqual(OrderPool.objects.count(), 1)
+        self.assertEqual(OrderPool.objects.get().id, first.id)
+
+    def test_expired_bucket_cannot_be_locked(self):
+        pool = OrderPool.objects.create(
+            initiator=self.initiator,
+            restaurant=self.restaurant,
+            invite_code='EXPIRD',
+            delivery_address=ADDRESS,
+            delivery_location=POINT,
+            expires_at=timezone.now() - timedelta(minutes=1),
+        )
+        PoolMember.objects.create(
+            pool=pool,
+            user=self.initiator,
+            status='READY',
+            items_subtotal=Decimal('10000.00'),
+        )
+
+        with self.assertRaisesMessage(ValueError, 'expired'):
+            PoolOrderService.lock_pool(str(pool.id), self.initiator)
+
+        pool.refresh_from_db()
+        self.assertEqual(pool.status, 'OPEN')

@@ -20,6 +20,7 @@ from domain.services.orders.scheduled_orders import (
     PreorderSlotUnavailable,
     ReleaseScheduledOrderService,
     ensure_preorder_slot_capacity,
+    prep_minutes_for,
     release_at_for,
     slot_capacity_for,
     slot_window_for,
@@ -82,6 +83,33 @@ class PreOrderTimingTests(TestCase):
         scheduled_for = now + timedelta(hours=4)
 
         self.assertEqual(validate_scheduled_for(scheduled_for, now=now), scheduled_for)
+
+    def test_release_uses_the_slowest_section_prep_time(self):
+        RestaurantSection.objects.create(
+            restaurant=self.restaurant, name='Grill', prep_time=90,
+        )
+        scheduled_for = timezone.now() + timedelta(hours=4)
+
+        self.assertEqual(prep_minutes_for(self.restaurant), 90)
+        self.assertEqual(
+            release_at_for(self.restaurant, scheduled_for),
+            scheduled_for - timedelta(minutes=90),
+        )
+
+    def test_rejects_a_time_whose_prep_window_already_started(self):
+        now = timezone.now()
+        # 45 min lead + 25 min prep = 70 min; 60 min would start prep in the
+        # past and be released immediately instead of at the booked time.
+        with self.assertRaisesMessage(ValueError, 'at least'):
+            validate_scheduled_for(
+                now + timedelta(minutes=60), now=now, restaurant=self.restaurant,
+            )
+
+        exactly = now + timedelta(minutes=70)
+        self.assertEqual(
+            validate_scheduled_for(exactly, now=now, restaurant=self.restaurant),
+            exactly,
+        )
 
 
 @override_settings(MOCK_PAYMENTS=True)
@@ -254,6 +282,10 @@ class PreOrderSlotCapacityTests(TestCase):
             geo_location=RESTAURANT_POINT,
             average_prep_time=20,
         )
+        # The post-save signal creates a default "Main Kitchen" section. This
+        # test is about one section's throughput, so replace it rather than
+        # counting two sections and doubling the expected capacity.
+        self.restaurant.sections.all().delete()
         self.section = RestaurantSection.objects.create(
             restaurant=self.restaurant, name='Main', prep_time=20,
         )
@@ -501,6 +533,15 @@ class PreorderDeclineTests(TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, 'READY')
 
+    def test_cannot_decline_once_cooking_has_started(self):
+        order, _ = self._make_order(status='PREPARING')
+
+        with self.assertRaisesMessage(ValueError, 'Cannot decline'):
+            PreorderDeclineService.execute(str(order.id), self.owner)
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'PREPARING')
+
     def test_refused_refund_is_queued_and_then_retried(self):
         from apps.payments.tasks import retry_failed_refunds
 
@@ -530,3 +571,135 @@ class PreorderDeclineTests(TestCase):
         self.assertEqual(payment.status, 'REFUNDED')
         self.assertFalse(FailedRefund.objects.filter(payment=payment).exists())
         self.assertIn('1 completed', result)
+
+
+@override_settings(MOCK_PAYMENTS=True)
+class LatePaymentAfterCancellationTests(TestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(
+            username='cust_late', phone='+255700001020',
+            password='password123', role='customer',
+        )
+        owner = User.objects.create_user(
+            username='owner_late', phone='+255700001021',
+            password='password123', role='vendor',
+        )
+        self.restaurant = Restaurant.objects.create(
+            owner=owner,
+            name='Late Diner',
+            location='Main Hall',
+            geo_location=RESTAURANT_POINT,
+            average_prep_time=25,
+        )
+        self.order = Order.objects.create(
+            customer=self.customer,
+            restaurant=self.restaurant,
+            status='CANCELLED',
+            is_paid=False,
+            items_subtotal=Decimal('10000.00'),
+            total_amount=Decimal('10000.00'),
+            cancelled_at=timezone.now(),
+            cancelled_by='SYSTEM',
+            cancellation_category='payment_timeout',
+            cancellation_reason='Payment timeout before collection',
+        )
+        self.payment = Payment.objects.create(
+            payable_type='order',
+            payable_id=str(self.order.id),
+            amount=Decimal('10000.00'),
+            status='INITIATED',
+        )
+
+    def test_late_success_is_refunded_without_resurrecting_the_order(self):
+        with self.captureOnCommitCallbacks(execute=True):
+            CompletePaymentService.execute(
+                payment_id=self.payment.id,
+                provider_reference='LATE_SUCCESS',
+                success=True,
+            )
+
+        self.order.refresh_from_db()
+        self.payment.refresh_from_db()
+
+        # The order stays cancelled; the money is recorded and returned.
+        self.assertEqual(self.order.status, 'CANCELLED')
+        self.assertFalse(self.order.is_paid)
+        self.assertEqual(self.payment.status, 'REFUNDED')
+        self.assertTrue(
+            self.payment.transactions.filter(
+                transaction_type='customer_to_platform',
+            ).exists(),
+        )
+        self.assertTrue(
+            self.payment.transactions.filter(
+                transaction_type='platform_to_customer_refund',
+            ).exists(),
+        )
+
+
+@override_settings(MOCK_PAYMENTS=True)
+class PreorderBookingNotificationTests(TestCase):
+    def setUp(self):
+        self.customer = User.objects.create_user(
+            username='cust_booked', phone='+255700001022',
+            password='password123', role='customer',
+        )
+        owner = User.objects.create_user(
+            username='owner_booked', phone='+255700001023',
+            password='password123', role='vendor',
+        )
+        self.restaurant = Restaurant.objects.create(
+            owner=owner,
+            name='Booking Diner',
+            location='Main Hall',
+            geo_location=RESTAURANT_POINT,
+            average_prep_time=25,
+        )
+
+    def test_paid_preorder_confirms_the_booking_to_customer_and_vendor(self):
+        scheduled_for = timezone.now() + timedelta(hours=3)
+        order = Order.objects.create(
+            customer=self.customer,
+            restaurant=self.restaurant,
+            status='PENDING_PAYMENT',
+            is_paid=False,
+            items_subtotal=Decimal('10000.00'),
+            total_amount=Decimal('10000.00'),
+            scheduled_for=scheduled_for,
+            release_at=release_at_for(self.restaurant, scheduled_for),
+        )
+        payment = Payment.objects.create(
+            payable_type='order',
+            payable_id=str(order.id),
+            amount=Decimal('10000.00'),
+            status='INITIATED',
+        )
+
+        with (
+            patch(
+                'infrastructure.notifications.service.NotificationService.send_push',
+            ) as push,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            CompletePaymentService.execute(
+                payment_id=payment.id,
+                provider_reference='PREORDER_PAID',
+                success=True,
+            )
+
+        order.refresh_from_db()
+        self.assertEqual(order.status, 'SCHEDULED')
+
+        pushed_types = [
+            call.kwargs.get('data', {}).get('type')
+            for call in push.call_args_list
+        ]
+        self.assertIn('preorder_booked', pushed_types)
+        self.assertIn('vendor_preorder_booked', pushed_types)
+
+
+class ScheduledForValidationTests(TestCase):
+    def test_null_scheduled_for_is_treated_as_now(self):
+        from api.serializers.core import OrderSerializer
+
+        self.assertIsNone(OrderSerializer().validate_scheduled_for(None))

@@ -64,6 +64,22 @@ def preorder_declined_customer(short_id: str) -> tuple[str, str]:
     )
 
 
+def preorder_booked_customer(short_id: str, when_label: str) -> tuple[str, str]:
+    return (
+        "Pre-Order Imehifadhiwa 🗓️",
+        f"Oda #{short_id} imehifadhiwa kwa {when_label}. "
+        "Mkahawa utaanza kuiandaa kabla ya muda huo.",
+    )
+
+
+def preorder_booked_group(restaurant_name: str, when_label: str) -> tuple[str, str]:
+    return (
+        "Oda ya Pamoja Imehifadhiwa 🗓️",
+        f"Oda yako ya pamoja kutoka {restaurant_name} imehifadhiwa kwa {when_label}. "
+        "Mkahawa utaanza kuiandaa kabla ya muda huo.",
+    )
+
+
 def order_cancelled_restaurant_delay(short_id: str) -> tuple[str, str]:
     return (
         "Oda Imefutwa — Mkahawa Ulichelewa",
@@ -111,6 +127,23 @@ def vendor_new_group_order(short_id: str, items_count: int) -> tuple[str, str]:
         "Oda ya Pamoja Mpya! 👥",
         f"Oda ya pamoja imepokelewa: #{short_id} ({items_count} bidhaa). Ianze kuandaa."
     )
+
+
+def vendor_preorder_booked(short_id: str, when_label: str) -> tuple[str, str]:
+    return (
+        "Pre-Order Mpya 🗓️",
+        f"Una pre-order iliyolipwa #{short_id} kwa {when_label}. "
+        "Itaanza kuandaliwa kabla ya muda huo.",
+    )
+
+
+def vendor_preorder_group_booked(restaurant_name: str, when_label: str) -> tuple[str, str]:
+    return (
+        "Oda ya Pamoja ya Baadaye 🗓️",
+        f"Oda ya pamoja kutoka {restaurant_name} imehifadhiwa kwa {when_label}. "
+        "Itaanza kuandaliwa kabla ya muda huo.",
+    )
+
 
 def vendor_order_overdue(short_id: str, minutes: int) -> tuple[str, str]:
     return (

@@ -134,6 +134,65 @@ def record_failed_refund(payment, amount, reason):
         logger.exception(f"Could not record FailedRefund for payment {payment.id}")
 
 
+def _refund_closed_order_payment(order_id):
+    """Refund a collection that arrived after its order was closed."""
+    try:
+        RefundPaymentService.execute('order', order_id)
+    except Exception:
+        logger.exception(
+            f"Could not refund late payment for closed order {order_id}",
+        )
+
+
+def _refund_closed_pool_member_payment(member_id):
+    """Refund a member whose bucket was cancelled before their payment landed."""
+    try:
+        RefundPaymentService.execute('pool_member', member_id)
+    except Exception:
+        logger.exception(
+            f"Could not refund late payment for closed pool member {member_id}",
+        )
+
+
+def _notify_preorder_booked(order):
+    """Confirm a parked pre-order to the customer and the restaurant."""
+    try:
+        from domain.services.orders.scheduled_orders import format_eating_time
+        from infrastructure.notifications.messages import (
+            preorder_booked_customer,
+            vendor_preorder_booked,
+        )
+        from infrastructure.notifications.service import NotificationService
+
+        short_id = str(order.id)[:8]
+        when_label = format_eating_time(order.scheduled_for)
+
+        title, body = preorder_booked_customer(short_id, when_label)
+        NotificationService.send_push(
+            user_id=str(order.customer_id),
+            title=title,
+            body=body,
+            data={
+                'order_id': str(order.id),
+                'type': 'preorder_booked',
+            },
+        )
+
+        if order.restaurant and order.restaurant.owner_id:
+            v_title, v_body = vendor_preorder_booked(short_id, when_label)
+            NotificationService.send_push(
+                user_id=str(order.restaurant.owner_id),
+                title=v_title,
+                body=v_body,
+                data={
+                    'order_id': str(order.id),
+                    'type': 'vendor_preorder_booked',
+                },
+            )
+    except Exception:
+        logger.exception(f"Could not send pre-order booking notification for {order.id}")
+
+
 class InitiatePaymentService:
     @staticmethod
     def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None, method='MOBILE_MONEY'):
@@ -658,6 +717,26 @@ class CompletePaymentService:
         from domain.services.orders.scheduled_orders import activate_paid_order
 
         order = Order.objects.select_for_update().select_related('restaurant').get(id=payment.payable_id)
+
+        # A late success can arrive after cleanup_unpaid_orders cancelled the
+        # order. The money is real, but the order is closed: record the
+        # collection and refund it instead of trying CANCELLED -> CREATED
+        # (which would roll the whole payment back and lose the collection).
+        if order.status in ('CANCELLED', 'REFUNDED', 'EXPIRED', 'DELIVERED', 'RESOLVED'):
+            _create_double_entry(
+                payment=payment,
+                from_user=order.customer,
+                to_user=get_platform_user(),
+                amount=payment.amount,
+                entry_type='customer_to_platform',
+            )
+            _hold_escrow(payment.amount)
+            _order_id = str(order.id)
+            transaction.on_commit(
+                lambda: _refund_closed_order_payment(_order_id),
+            )
+            return
+
         order.is_paid = True
 
         # A pre-order whose kitchen prep has not started yet is parked in
@@ -689,6 +768,9 @@ class CompletePaymentService:
         _hold_escrow(payment.amount)
 
         if order.status == 'SCHEDULED':
+            # Tell the customer their booking is confirmed. Without this the
+            # only message they get is at release time, hours or days later.
+            transaction.on_commit(lambda: _notify_preorder_booked(order))
             return
 
         # Platform-managed/concierge listings are operated by real third-party
@@ -700,7 +782,24 @@ class CompletePaymentService:
         from apps.orders.models import OrderPool, PoolMember
         member = PoolMember.objects.select_for_update().get(id=payment.payable_id)
         pool = OrderPool.objects.select_for_update().get(id=member.pool_id)
-        
+
+        # A member can pay just as the bucket is cancelled. Never resurrect a
+        # cancelled bucket: record the collection and refund that member.
+        if pool.status in ('CANCELLED', 'COMPLETED') or member.status == 'REFUNDED':
+            _create_double_entry(
+                payment=payment,
+                from_user=member.user,
+                to_user=get_platform_user(),
+                amount=payment.amount,
+                entry_type='pool_member_to_platform',
+            )
+            _hold_escrow(payment.amount)
+            _member_id = str(member.id)
+            transaction.on_commit(
+                lambda: _refund_closed_pool_member_payment(_member_id),
+            )
+            return
+
         member.status = 'PAID'
         member.save()
         

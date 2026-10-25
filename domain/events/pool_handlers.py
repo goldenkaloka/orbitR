@@ -14,6 +14,8 @@ from infrastructure.notifications.messages import (
     pool_completed,
     pool_locked,
     pool_paid,
+    preorder_booked_group,
+    vendor_preorder_group_booked,
 )
 from infrastructure.notifications.service import NotificationService
 
@@ -41,8 +43,38 @@ def on_pool_paid(event):
     pool_id = event.payload.get('pool_id')
     try:
         from apps.orders.models import OrderPool
-        pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
-        pp_title, pp_body = pool_paid(pool.restaurant.name)
+        pool = (
+            OrderPool.objects
+            .select_related('restaurant')
+            .prefetch_related('members__user')
+            .get(id=pool_id)
+        )
+
+        # A scheduled bucket is not being cooked yet. Telling members the
+        # restaurant is preparing now would be wrong, so confirm the booking
+        # instead and notify the kitchen once about the upcoming slot.
+        if pool.scheduled_for:
+            from domain.services.orders.scheduled_orders import format_eating_time
+
+            when_label = format_eating_time(pool.scheduled_for)
+            pp_title, pp_body = preorder_booked_group(
+                pool.restaurant.name, when_label,
+            )
+            if pool.restaurant.owner_id:
+                v_title, v_body = vendor_preorder_group_booked(
+                    pool.restaurant.name, when_label,
+                )
+                NotificationService.send_push(
+                    user_id=str(pool.restaurant.owner_id),
+                    title=v_title, body=v_body,
+                    data={
+                        'pool_id': str(pool_id),
+                        'type': 'vendor_preorder_booked',
+                    },
+                )
+        else:
+            pp_title, pp_body = pool_paid(pool.restaurant.name)
+
         for member in pool.members.all():
             if member.user_id:
                 NotificationService.send_push(
