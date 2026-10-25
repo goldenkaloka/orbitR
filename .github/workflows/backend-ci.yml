@@ -1,0 +1,125 @@
+name: Backend CI
+
+# Reused by backend-release.yml as the test gate before anything is published,
+# and run directly on every pull request.
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# settings.py raises on boot when DEBUG=False and SECRET_KEY/CORS/MINIO_EXTERNAL_URL
+# are unset, so the test environment has to satisfy the production checks.
+env:
+  DEBUG: "False"
+  SECRET_KEY: ci-only-not-a-real-secret
+  ALLOWED_HOSTS: localhost,127.0.0.1,testserver
+  CORS_ALLOWED_ORIGINS: http://localhost:3000
+  MINIO_ENDPOINT: http://127.0.0.1:9000
+  MINIO_EXTERNAL_URL: https://media.example.test
+  MINIO_ACCESS_KEY: ci-access-key
+  MINIO_SECRET_KEY: ci-secret-key
+  MINIO_STORAGE_BUCKET_NAME: static
+  DB_NAME: mwanachuo_db
+  DB_USER: postgres
+  DB_PASSWORD: postgres
+  DB_HOST: 127.0.0.1
+  DB_PORT: "5432"
+  REDIS_URL: redis://127.0.0.1:6379/1
+  CELERY_BROKER_URL: redis://127.0.0.1:6379/0
+  CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/0
+
+jobs:
+  test:
+    name: Django checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgis/postgis:15-3.3
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mwanachuo_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # GeoDjango loads libgdal at import time. psql is used to install the
+      # PostGIS extension into template1 below.
+      - name: Install GEOS/GDAL libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gdal-bin libgdal-dev libproj-dev postgresql-client
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Django creates the test database from template1, not from POSTGRES_DB,
+      # so the extensions have to exist there or every geometry column fails.
+      - name: Enable PostGIS in template1
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d template1 <<'SQL'
+          CREATE EXTENSION IF NOT EXISTS postgis;
+          CREATE EXTENSION IF NOT EXISTS pg_trgm;
+          CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
+          CREATE EXTENSION IF NOT EXISTS btree_gist;
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+          SQL
+
+      - name: Django system checks
+        run: python manage.py check
+
+      - name: Check for missing migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run test suite
+        run: python -m pytest -q --maxfail=1
+
+  docker-build:
+    name: Docker image builds
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

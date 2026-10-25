@@ -175,3 +175,7 @@ debug_mnos.py
 # Throwaway gateway diagnostics (never commit — they held live credentials)
 test_airpay*.py
 decrypt_log.py
+
+# Deployment artefacts: database dumps and GHCR credentials
+.deploy.env
+backups/
