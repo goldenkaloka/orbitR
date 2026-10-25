@@ -92,6 +92,20 @@ class FailedPayout(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
 
+class FailedRefund(models.Model):
+    """A refund the gateway refused; retried by retry_failed_refunds.
+
+    Without this queue a cancelled order could leave the customer paid: the
+    refund service treats a refused gateway call as a no-op.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    payment = models.ForeignKey(Payment, on_delete=models.CASCADE, related_name='failed_refunds')
+    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    reason = models.TextField(blank=True, null=True)
+    retry_count = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class LedgerEntry(models.Model):
     """Proper double-entry accounting record referencing Wallet (not User)."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

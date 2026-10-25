@@ -52,6 +52,22 @@ def _is_vendor_or_staff(actor, order):
     ).exists()
 
 
+def _payment_for_order(order):
+    """The order's payment, however it was created.
+
+    Wallet checkout stores only the polymorphic payable_type/payable_id pair,
+    so relying on the legacy reverse ``order.payment`` link would skip the
+    refund for wallet-paid orders.
+    """
+    payment = getattr(order, 'payment', None)
+    if payment is None:
+        from apps.payments.models import Payment
+        payment = Payment.objects.filter(
+            payable_type='order', payable_id=str(order.id),
+        ).first()
+    return payment
+
+
 def _pool_member_id_for_order(order):
     if not getattr(order, 'is_pool_order', False):
         return None
@@ -133,7 +149,7 @@ class CancelOrderService:
 
             cancel_status = None
             if actor.role == 'customer' and order.customer == actor:
-                if order.status not in ['PENDING_PAYMENT', 'CREATED', 'AWAITING_CONFIRMATION', 'CONFIRMED']:
+                if order.status not in ['PENDING_PAYMENT', 'SCHEDULED', 'CREATED', 'AWAITING_CONFIRMATION', 'CONFIRMED']:
                     raise PermissionError("Cannot cancel after preparation started.")
                 cancel_status = order.status
             elif _is_vendor_or_staff(actor, order):
@@ -158,19 +174,19 @@ class CancelOrderService:
                 affects_restaurant_reputation=affects_restaurant_reputation,
             )
 
-            if hasattr(order, 'payment') and order.payment:
+            payment = _payment_for_order(order)
+            if payment and payment.status == 'INITIATED':
                 from domain.fsm.payment_fsm import PaymentFSM
-                if order.payment.status == 'INITIATED':
-                    order.payment.status = PaymentFSM.transition(order.payment.status, 'FAILED')
-                    order.payment.save(update_fields=['status'])
+                payment.status = PaymentFSM.transition(payment.status, 'FAILED')
+                payment.save(update_fields=['status'])
 
-            if order.is_paid and getattr(order, 'payment', None):
+            if order.is_paid and payment:
                 fee_pct = Decimal('0')
                 customer_caused_paid_cancel = (
                     actor.role == 'customer'
                     and order.customer_id == actor.id
                     and cancel_status
-                    and cancel_status != 'PENDING_PAYMENT'
+                    and cancel_status not in ('PENDING_PAYMENT', 'SCHEDULED')
                 )
                 if customer_caused_paid_cancel:
                     from apps.reliability.services import get_cancel_fee_percent, get_reliability

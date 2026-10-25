@@ -74,7 +74,8 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             initiator=self.request.user,
             restaurant_id=restaurant_id,
             delivery_address=serializer.validated_data.get('delivery_address'),
-            delivery_location=point
+            delivery_location=point,
+            scheduled_for=serializer.validated_data.get('scheduled_for'),
         )
         serializer.instance = pool
 
@@ -232,6 +233,21 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         """Restaurant marks the pool's food as ready for dispatch (PAID → READY)."""
         try:
             pool = PoolOrderService.mark_pool_ready(pk, request.user)
+            return Response(OrderPoolSerializer(pool, context={'request': request}).data)
+        except PermissionError as e:
+            return Response({'error': str(e)}, status=403)
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
+
+    @action(detail=True, methods=['POST'], url_path='pool-decline')
+    def decline_pool(self, request, pk=None):
+        """Restaurant declines a paid pre-order bucket; every member is refunded."""
+        try:
+            pool = PoolOrderService.decline_pool(
+                pk,
+                request.user,
+                reason=request.data.get('reason', 'Pre-order declined by restaurant'),
+            )
             return Response(OrderPoolSerializer(pool, context={'request': request}).data)
         except PermissionError as e:
             return Response({'error': str(e)}, status=403)

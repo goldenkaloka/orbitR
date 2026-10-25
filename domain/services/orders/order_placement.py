@@ -13,6 +13,11 @@ from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import OrderConfirmed, OrderCreated
 from domain.fsm.order_fsm import OrderFSM
+from domain.services.orders.scheduled_orders import (
+    ensure_preorder_slot_capacity,
+    release_at_for,
+    validate_scheduled_for,
+)
 from domain.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
@@ -96,10 +101,25 @@ class PlaceOrderService:
             quantity = item_data['quantity']
             items_subtotal += (food.price * quantity)
             
+        scheduled_for = validated_data.get('scheduled_for')
+        if scheduled_for:
+            validate_scheduled_for(scheduled_for)
+            validated_data['release_at'] = release_at_for(restaurant, scheduled_for)
+        else:
+            validated_data.pop('release_at', None)
+
         total_amount = items_subtotal + dynamic_fee + service_fee
         otp = str(random.randint(1000, 9999))
         
         with transaction.atomic():
+            if scheduled_for:
+                # Serialise pre-order bookings per restaurant so two customers
+                # cannot both take the same last slot.
+                locked_restaurant = Restaurant.objects.select_for_update().get(
+                    id=restaurant.id,
+                )
+                ensure_preorder_slot_capacity(locked_restaurant, scheduled_for)
+
             order = Order.objects.create(
                 items_subtotal=items_subtotal,
                 delivery_fee=dynamic_fee, 

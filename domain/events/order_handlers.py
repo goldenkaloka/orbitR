@@ -10,6 +10,7 @@ from infrastructure.notifications.messages import (
     order_picked,
     order_preparing,
     order_ready,
+    preorder_declined_customer,
     restaurant_paid_at_pickup,
     vendor_new_group_order,
     vendor_new_order,
@@ -42,6 +43,14 @@ def _notify_order_event(event):
         }
         status_msg = messages.get(event.event_type, f"Order status: {event.event_type}")
 
+        declined_preorder = (
+            event.event_type == 'OrderCancelled'
+            and order.scheduled_for is not None
+            and event.payload.get('cancellation_fault') == 'VENDOR'
+        )
+        if declined_preorder:
+            status_msg = preorder_declined_customer(short_id)[1]
+
         broadcast_order_status(
             order_id=str(event.aggregate_id),
             status=event.event_type,
@@ -63,31 +72,34 @@ def _notify_order_event(event):
                 user_id=str(order.customer.id),
                 title=co_title, body=co_body, data=extra_data,
             )
-            vendor_short_id = str(order.id).split('-')[0]
-            is_group = bool(order.group_breakdown)
-            items_count = sum(
-                item.get('quantity', 0) for member in (order.group_breakdown or [])
-                for item in member.get('items', [])
-            ) if is_group else order.items.count()
+            # A bucket is announced to the kitchen once when it is released;
+            # per-member pushes and prep SMS would duplicate the same meal.
+            if not order.is_pool_order:
+                vendor_short_id = str(order.id).split('-')[0]
+                is_group = bool(order.group_breakdown)
+                items_count = sum(
+                    item.get('quantity', 0) for member in (order.group_breakdown or [])
+                    for item in member.get('items', [])
+                ) if is_group else order.items.count()
 
-            vendor_data = {
-                **extra_data,
-                'type': 'vendor_order',
-                'order_short_id': vendor_short_id,
-                'items_count': items_count,
-                'is_group': is_group,
-                'restaurant_name': order.restaurant.name,
-            }
-            v_title, v_body = (
-                vendor_new_group_order(vendor_short_id, items_count)
-                if is_group else vendor_new_order(vendor_short_id, items_count)
-            )
-            NotificationService.send_push(
-                user_id=str(order.restaurant.owner.id),
-                title=v_title, body=v_body, data=vendor_data,
-            )
-            from domain.services.order_sms_notifications import OrderPrepSmsService
-            OrderPrepSmsService.notify_single_order(str(order.id))
+                vendor_data = {
+                    **extra_data,
+                    'type': 'vendor_order',
+                    'order_short_id': vendor_short_id,
+                    'items_count': items_count,
+                    'is_group': is_group,
+                    'restaurant_name': order.restaurant.name,
+                }
+                v_title, v_body = (
+                    vendor_new_group_order(vendor_short_id, items_count)
+                    if is_group else vendor_new_order(vendor_short_id, items_count)
+                )
+                NotificationService.send_push(
+                    user_id=str(order.restaurant.owner.id),
+                    title=v_title, body=v_body, data=vendor_data,
+                )
+                from domain.services.order_sms_notifications import OrderPrepSmsService
+                OrderPrepSmsService.notify_single_order(str(order.id))
 
         elif event.event_type in ['OrderPreparing', 'FoodReady', 'DriverAssigned', 'OrderPicked']:
             msg_title = {
@@ -101,7 +113,10 @@ def _notify_order_event(event):
                 title=msg_title, body=status_msg, data=extra_data,
             )
         elif event.event_type == 'OrderCancelled':
-            cc_title, _ = order_cancelled_customer(short_id, is_paid=order.is_paid)
+            if declined_preorder:
+                cc_title, _ = preorder_declined_customer(short_id)
+            else:
+                cc_title, _ = order_cancelled_customer(short_id, is_paid=order.is_paid)
             NotificationService.send_push(
                 user_id=str(order.customer.id),
                 title=cc_title, body=status_msg, data=extra_data,

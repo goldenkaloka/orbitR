@@ -9,6 +9,7 @@ from .models import FailedPayout
 logger = logging.getLogger(__name__)
 RETRY_BATCH_SIZE = 100
 MAX_RETRY_COUNT = 5
+MAX_REFUND_RETRY_COUNT = 10
 
 @shared_task(name='apps.payments.tasks.retry_failed_payouts')
 def retry_failed_payouts():
@@ -54,6 +55,84 @@ def retry_failed_payouts():
             payout.save(update_fields=['reason'])
     if processed:
         logger.info(f"Processed {processed} payout retries")
+
+@shared_task(name='apps.payments.tasks.retry_failed_refunds')
+def retry_failed_refunds():
+    """
+    Finish refunds the gateway refused at cancellation time.
+
+    RefundPaymentService treats a gateway refusal as "nothing refunded" and
+    queues a FailedRefund row. Until somebody retries it the customer stays
+    paid for a cancelled order, so this sweep drives the refund to completion
+    and gives up only after MAX_REFUND_RETRY_COUNT attempts.
+    """
+    from decimal import Decimal
+
+    from apps.payments.models import FailedRefund
+    from domain.services.payment_services import (
+        RefundPaymentService,
+        _refunded_principal_total,
+    )
+
+    refundable_statuses = ['COLLECTED', 'ON_HOLD', 'DISBURSED', 'PARTIALLY_REFUNDED']
+    with transaction.atomic():
+        refund_ids = list(
+            FailedRefund.objects.select_for_update(skip_locked=True)
+            .filter(retry_count__lt=MAX_REFUND_RETRY_COUNT)
+            .order_by('created_at')
+            .values_list('id', flat=True)[:RETRY_BATCH_SIZE]
+        )
+
+    processed = 0
+    for record in FailedRefund.objects.filter(id__in=refund_ids).select_related('payment'):
+        payment = record.payment
+        try:
+            remaining = Decimal(str(payment.amount)) - _refunded_principal_total(payment)
+            if payment.status not in refundable_statuses or remaining <= 0:
+                # Already refunded through another path, or never collected.
+                record.delete()
+                continue
+
+            payable_type, payable_id = payment.payable_type, payment.payable_id
+            if not payable_type:
+                # Legacy rows point at the payable through the FK only.
+                if payment.order_id:
+                    payable_type, payable_id = 'order', payment.order_id
+                elif payment.pool_member_id:
+                    payable_type, payable_id = 'pool_member', payment.pool_member_id
+            if not payable_type or not payable_id:
+                logger.error(f"Cannot resolve refund target for payment {payment.id}")
+                record.delete()
+                continue
+
+            # Increment first so a crash mid-refund cannot retry forever.
+            record.retry_count += 1
+            record.save(update_fields=['retry_count'])
+
+            refunded = RefundPaymentService.execute(
+                payable_type,
+                payable_id,
+                override_amount=min(Decimal(str(record.amount)), remaining),
+            )
+            if refunded:
+                record.delete()
+                processed += 1
+                logger.info(f"Retried refund for payment {payment.id} successfully")
+        except Exception as e:
+            logger.error(f"Retry failed for refund {record.id}: {str(e)}")
+            record.reason = f"Last retry failed: {str(e)}"[:2000]
+            record.save(update_fields=['reason'])
+
+    if processed:
+        logger.info(f"Processed {processed} refund retries")
+    exhausted = FailedRefund.objects.filter(
+        retry_count__gte=MAX_REFUND_RETRY_COUNT,
+    ).count()
+    if exhausted:
+        logger.error(
+            f"{exhausted} failed refunds exhausted retries; manual intervention needed"
+        )
+    return f"Retried {len(refund_ids)} failed refunds; {processed} completed."
 
 @shared_task(name='apps.payments.tasks.cleanup_expired_payments')
 def cleanup_expired_payments():

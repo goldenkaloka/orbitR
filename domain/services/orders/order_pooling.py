@@ -16,6 +16,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
 from domain.events.types import (
+    OrderCancelled,
     OrderCreated,
     PoolCancelled,
     PoolCompleted,
@@ -24,11 +25,30 @@ from domain.events.types import (
     PoolReady,
 )
 from domain.fsm.pool_fsm import InvalidPoolTransitionError, PoolFSM
+from domain.services.orders.scheduled_orders import (
+    ensure_preorder_slot_capacity,
+    release_at_for,
+    validate_scheduled_for,
+)
 from domain.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
 
 LOCKED_POOL_TIMEOUT_MINUTES = 30
+
+# Orders a cancelled bucket may still own. A batch that already left the
+# kitchen is out of this set on purpose, and a picked order must never be
+# flipped to CANCELLED without going through the driver-release flow.
+CANCELLABLE_POOL_ORDER_STATUSES = (
+    'PENDING_PAYMENT',
+    'SCHEDULED',
+    'CREATED',
+    'AWAITING_CONFIRMATION',
+    'CONFIRMED',
+    'PREPARING',
+    'READY',
+    'ASSIGNED',
+)
 
 
 def _split_fee_proportionally(total: Decimal, shares: list[Decimal]) -> list[Decimal]:
@@ -66,7 +86,13 @@ class PoolOrderService:
     MAX_POOL_MEMBERS = 10
 
     @staticmethod
-    def create_pool(initiator, restaurant_id, delivery_address, delivery_location):
+    def create_pool(
+        initiator,
+        restaurant_id,
+        delivery_address,
+        delivery_location,
+        scheduled_for=None,
+    ):
         if OrderPool.objects.filter(initiator=initiator, status='OPEN').exists():
             raise ValueError("You already have an open bucket.")
 
@@ -74,6 +100,9 @@ class PoolOrderService:
 
         if not delivery_location or not hasattr(delivery_location, 'x'):
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
+
+        if scheduled_for:
+            validate_scheduled_for(scheduled_for)
 
         h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
 
@@ -100,27 +129,44 @@ class PoolOrderService:
 
         max_retries = 3
         pool = None
-        for i in range(max_retries):
-            invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            try:
-                with transaction.atomic():
-                    pool = OrderPool.objects.create(
-                        initiator=initiator,
-                        restaurant=restaurant,
-                        invite_code=invite_code,
-                        delivery_address=delivery_address,
-                        delivery_location=delivery_location,
-                        h3_index=h3_index,
-                        expires_at=timezone.now() + timedelta(hours=2)
-                    )
-                    PoolMember.objects.create(pool=pool, user=initiator, status='ADDING')
-                break
-            except IntegrityError as e:
-                if 'unique_open_pool_per_user' in str(e).lower() or 'initiator' in str(e).lower():
-                    raise ValueError("You already have an active bucket.")
-                if i == max_retries - 1:
-                    raise ValueError("Failed to generate a unique invite code.")
-                continue
+        if scheduled_for:
+            # A scheduled bucket must be settled before the kitchen starts
+            # prepping; an immediate bucket keeps the usual two-hour window.
+            expires_at = release_at_for(restaurant, scheduled_for)
+        else:
+            expires_at = timezone.now() + timedelta(hours=2)
+
+        with transaction.atomic():
+            if scheduled_for:
+                # Take the same restaurant lock as the solo pre-order path so a
+                # bucket and a solo order cannot both claim the last seat.
+                locked_restaurant = Restaurant.objects.select_for_update().get(
+                    id=restaurant.id,
+                )
+                ensure_preorder_slot_capacity(locked_restaurant, scheduled_for)
+
+            for i in range(max_retries):
+                invite_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+                try:
+                    with transaction.atomic():
+                        pool = OrderPool.objects.create(
+                            initiator=initiator,
+                            restaurant=restaurant,
+                            invite_code=invite_code,
+                            delivery_address=delivery_address,
+                            delivery_location=delivery_location,
+                            h3_index=h3_index,
+                            expires_at=expires_at,
+                            scheduled_for=scheduled_for,
+                        )
+                        PoolMember.objects.create(pool=pool, user=initiator, status='ADDING')
+                    break
+                except IntegrityError as e:
+                    if 'unique_open_pool_per_user' in str(e).lower() or 'initiator' in str(e).lower():
+                        raise ValueError("You already have an active bucket.")
+                    if i == max_retries - 1:
+                        raise ValueError("Failed to generate a unique invite code.")
+                    continue
 
         if pool:
             broadcast_pool_status(str(pool.id), 'OPEN')
@@ -354,7 +400,7 @@ class PoolOrderService:
 
         from django.utils import timezone
 
-        pool = OrderPool.objects.get(id=pool_id)
+        pool = OrderPool.objects.select_related('restaurant').get(id=pool_id)
 
         if Order.objects.filter(pool=pool).exists():
             logger.info(f"[finalize_pool] Orders already exist for pool {pool_id}, skipping.")
@@ -363,6 +409,14 @@ class PoolOrderService:
         members = pool.members.filter(status='PAID')
         if not members.exists():
             raise ValueError(f"No paid members found in pool {pool_id}.")
+
+        # A scheduled bucket parks its orders in SCHEDULED so the per-minute
+        # release sweep hands them to the kitchen at prep time. Immediate
+        # buckets keep the confirmed-at-payment behaviour.
+        scheduled_for = pool.scheduled_for
+        release_at = (
+            release_at_for(pool.restaurant, scheduled_for) if scheduled_for else None
+        )
 
         # Transition pool LOCKED → PAID (required before READY)
         try:
@@ -389,7 +443,9 @@ class PoolOrderService:
                 pool=pool,
                 is_pool_order=True,
                 is_paid=True,
-                status='CONFIRMED',
+                status='SCHEDULED' if scheduled_for else 'CONFIRMED',
+                scheduled_for=scheduled_for,
+                release_at=release_at,
                 items_subtotal=items_subtotal,
                 delivery_fee=delivery_fee,
                 service_fee=service_fee,
@@ -402,7 +458,7 @@ class PoolOrderService:
                     'member_id': str(member.id),
                     'invite_code': pool.invite_code,
                 },
-                confirmed_at=timezone.now(),
+                confirmed_at=None if scheduled_for else timezone.now(),
             )
             orders.append(order)
 
@@ -429,14 +485,21 @@ class PoolOrderService:
             OrderItem.objects.bulk_create(order_items_bulk)
 
             _pool_id = str(pool.id)
+            _message = (
+                "All paid! Your group order is booked for later."
+                if scheduled_for
+                else "All paid! Restaurant is preparing."
+            )
             transaction.on_commit(lambda: broadcast_pool_status(
-                _pool_id, 'PAID', message="All paid! Restaurant is preparing."
+                _pool_id, 'PAID', message=_message
             ))
             transaction.on_commit(lambda: EventBus.publish(PoolPaid(
                 aggregate_id=pool.id,
                 payload={'pool_id': _pool_id, 'all_paid': True},
             )))
-            transaction.on_commit(lambda pid=_pool_id: _notify_pool_prep_sms(pid))
+            if not scheduled_for:
+                # The kitchen is only told when a scheduled bucket is released.
+                transaction.on_commit(lambda pid=_pool_id: _notify_pool_prep_sms(pid))
 
             for order in orders:
                 _oid = str(order.id)
@@ -444,7 +507,7 @@ class PoolOrderService:
                 _pid = _pool_id
                 transaction.on_commit(lambda oid=_oid, cid=_cid, pid=_pid: EventBus.publish(OrderCreated(
                     aggregate_id=oid,
-                    payload={'customer_id': cid, 'pool_id': pid},
+                    payload={'customer_id': cid, 'pool_id': pid, 'is_pool': True},
                 )))
 
         logger.info(f"[finalize_pool] Created {len(orders)} order(s) for pool {pool_id}")
@@ -461,6 +524,14 @@ class PoolOrderService:
             if pool.restaurant.owner != actor:
                 raise PermissionError("Only the restaurant owner can mark the pool as ready.")
 
+            if pool.scheduled_for:
+                release_at = release_at_for(pool.restaurant, pool.scheduled_for)
+                if timezone.now() < release_at:
+                    raise ValueError(
+                        "This bucket is booked for a later eating time; it "
+                        "cannot be prepared before its release time."
+                    )
+
             pool.status = PoolFSM.transition(pool.status, 'READY')
             pool.save(update_fields=['status'])
 
@@ -471,6 +542,70 @@ class PoolOrderService:
             transaction.on_commit(lambda: EventBus.publish(PoolReady(
                 aggregate_id=pool.id,
                 payload={'pool_id': _pool_id},
+            )))
+            return pool
+
+    @staticmethod
+    def decline_pool(pool_id: str, actor, reason: str = 'Pre-order declined by restaurant'):
+        """
+        The restaurant declines a paid pre-order bucket.
+
+        Every member is refunded in full and their parked order is cancelled
+        with a VENDOR fault, so each customer receives the pre-order-declined
+        push while the reputation hit lands on the restaurant.
+        """
+        with transaction.atomic():
+            pool = OrderPool.objects.select_for_update().get(id=pool_id)
+
+            if actor.role != 'admin' and not PoolOrderService._is_pool_restaurant_staff(actor, pool):
+                raise PermissionError("Only the restaurant or an admin can decline this bucket.")
+
+            if not pool.scheduled_for:
+                raise ValueError("Only scheduled pre-order buckets can be declined.")
+
+            # Declining is a paid-booking action: before payment the pool is
+            # just an open invite, and cancel_pool already covers that case.
+            if pool.status != 'PAID':
+                raise ValueError(
+                    f"Cannot decline bucket in {pool.status} state; "
+                    "only paid buckets can be declined."
+                )
+
+            pool.status = PoolFSM.transition(pool.status, 'CANCELLED')
+            pool.save(update_fields=['status'])
+
+            from domain.services.payment_services import RefundPaymentService
+            paid_members = list(pool.members.filter(status='PAID'))
+            for member in paid_members:
+                RefundPaymentService.execute('pool_member', member.id)
+            PoolMember.objects.filter(
+                id__in=[member.id for member in paid_members]
+            ).update(status='REFUNDED')
+
+            cancelled_orders = PoolOrderService._cancel_pool_orders(
+                pool,
+                actor,
+                reason,
+                category='vendor_rejected',
+                fault='VENDOR',
+                affects_restaurant_reputation=True,
+            )
+
+            _pool_id = str(pool.id)
+            _actor_id = str(actor.id)
+            _batch_id = str(pool.batch_id) if pool.batch_id else None
+            transaction.on_commit(lambda: broadcast_pool_status(
+                _pool_id, 'CANCELLED',
+                message="The restaurant declined this bucket. Refunds are on the way.",
+            ))
+            transaction.on_commit(lambda: EventBus.publish(PoolCancelled(
+                aggregate_id=pool.id,
+                payload={
+                    'pool_id': _pool_id,
+                    'batch_id': _batch_id,
+                    'actor_id': _actor_id,
+                    'orders_cancelled': cancelled_orders,
+                }
             )))
             return pool
 
@@ -495,12 +630,38 @@ class PoolOrderService:
             if not PoolFSM.can_cancel(pool.status):
                 raise ValueError(f"Cannot cancel pool in {pool.status} state.")
 
+            restaurant_cancelled = is_restaurant and pool.initiator != actor
+
             pool.status = PoolFSM.transition(pool.status, 'CANCELLED')
             pool.save(update_fields=['status'])
 
             from domain.services.payment_services import RefundPaymentService
-            for member in pool.members.filter(status='PAID'):
+            paid_members = list(pool.members.filter(status='PAID'))
+            for member in paid_members:
                 RefundPaymentService.execute('pool_member', member.id)
+            PoolMember.objects.filter(
+                id__in=[member.id for member in paid_members]
+            ).update(status='REFUNDED')
+
+            # Finalized member orders are not tied to a batch until the bucket
+            # is dispatched, so cancelling the pool alone used to leave them
+            # live (and their customers waiting on a meal nobody would cook).
+            if restaurant_cancelled:
+                cancelled_orders = PoolOrderService._cancel_pool_orders(
+                    pool,
+                    actor,
+                    f'Pool {pool.id} was cancelled by the restaurant',
+                    category='vendor_rejected',
+                    fault='VENDOR',
+                    affects_restaurant_reputation=True,
+                )
+            else:
+                cancelled_orders = PoolOrderService._cancel_pool_orders(
+                    pool,
+                    actor,
+                    f'Pool {pool.id} was cancelled',
+                    category='pool_cancelled',
+                )
 
             _pool_id = str(pool.id)
             _batch_id = str(pool.batch_id) if pool.batch_id else None
@@ -512,8 +673,13 @@ class PoolOrderService:
                 )
 
             from apps.events.utils import broadcast_pool_status
+            _message = (
+                "Pool has been cancelled by the restaurant."
+                if restaurant_cancelled
+                else "Pool has been cancelled by the initiator."
+            )
             transaction.on_commit(lambda: broadcast_pool_status(
-                _pool_id, 'CANCELLED', message="Pool has been cancelled by the initiator."
+                _pool_id, 'CANCELLED', message=_message
             ))
             transaction.on_commit(lambda: EventBus.publish(PoolCancelled(
                 aggregate_id=pool.id,
@@ -521,9 +687,75 @@ class PoolOrderService:
                     'pool_id': _pool_id,
                     'batch_id': _batch_id,
                     'actor_id': _actor_id,
+                    'orders_cancelled': cancelled_orders,
                 }
             )))
             return pool
+
+    @staticmethod
+    def _cancel_pool_orders(
+        pool,
+        actor,
+        reason,
+        *,
+        category,
+        fault=None,
+        affects_restaurant_reputation=False,
+    ):
+        """
+        Cancel every live order behind a cancelled bucket.
+
+        This cannot reuse ``CancelOrderService``: that service authorises one
+        order at a time, so the initiator would be rejected when cancelling
+        another member's order. Refunds are issued once by the pool-level
+        caller; this only rewrites state and publishes the per-order events
+        that refresh customers' screens.
+        """
+        from domain.services.orders.order_cancellation import (
+            _cancel_actor_type,
+            _fault_for_actor,
+        )
+
+        cancelled_by = _cancel_actor_type(actor)
+        resolved_fault = fault or _fault_for_actor(cancelled_by)
+        order_ids = list(
+            Order.objects.filter(
+                pool=pool,
+                status__in=CANCELLABLE_POOL_ORDER_STATUSES,
+            ).values_list('id', flat=True)
+        )
+        if not order_ids:
+            return 0
+
+        Order.objects.filter(id__in=order_ids).update(
+            status='CANCELLED',
+            cancelled_at=timezone.now(),
+            cancelled_by=cancelled_by,
+            cancellation_fault=resolved_fault,
+            cancellation_category=category,
+            cancellation_reason=reason,
+            affects_restaurant_reputation=affects_restaurant_reputation,
+        )
+
+        _pool_id = str(pool.id)
+        _actor_id = str(actor.id)
+        for order_id in order_ids:
+            _order_id = str(order_id)
+            transaction.on_commit(
+                lambda oid=_order_id: EventBus.publish(OrderCancelled(
+                    aggregate_id=oid,
+                    payload={
+                        'actor_id': _actor_id,
+                        'pool_id': _pool_id,
+                        'reason': reason,
+                        'cancelled_by': cancelled_by,
+                        'cancellation_fault': resolved_fault,
+                        'cancellation_category': category,
+                        'affects_restaurant_reputation': affects_restaurant_reputation,
+                    },
+                ))
+            )
+        return len(order_ids)
 
     @staticmethod
     def remove_member(pool_id, member_id, actor):

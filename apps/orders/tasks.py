@@ -173,7 +173,7 @@ def concierge_confirmation_timeout_check():
             Order.objects.select_for_update(skip_locked=True)
             .filter(
                 status='AWAITING_CONFIRMATION',
-                created_at__lt=cutoff,
+                status_changed_at__lt=cutoff,
             )
         )
 
@@ -215,3 +215,67 @@ def concierge_confirmation_timeout_check():
     logger.info(f"[ConciergeTimeout] Cancelled {cancelled_count} stale orders.")
     return f"Auto-cancelled {cancelled_count} stale concierge orders."
 
+
+@shared_task
+def release_scheduled_orders():
+    """
+    Moves paid pre-orders whose prep window has started out of SCHEDULED and
+    into the normal confirmed pipeline.
+    """
+    now = timezone.now()
+    due_ids = list(
+        Order.objects.filter(
+            status='SCHEDULED',
+            is_paid=True,
+            release_at__lte=now,
+        ).order_by('release_at').values_list('id', flat=True)[:200]
+    )
+    if not due_ids:
+        return "Released 0 scheduled orders."
+
+    # A bucket is one delivery: if any member order is due, release the rest
+    # of that bucket in the same run even when the per-run cap truncated it.
+    pool_ids = set(
+        Order.objects.filter(id__in=due_ids, pool__isnull=False)
+        .values_list('pool_id', flat=True)
+    )
+    if pool_ids:
+        due_ids += list(
+            Order.objects.filter(
+                pool_id__in=pool_ids,
+                status='SCHEDULED',
+                is_paid=True,
+            ).exclude(id__in=due_ids).values_list('id', flat=True)
+        )
+
+    from domain.services.orders.scheduled_orders import ReleaseScheduledOrderService
+
+    released = 0
+    released_pools = set()
+    for order_id in due_ids:
+        try:
+            order = ReleaseScheduledOrderService.execute(order_id)
+            if order.status != 'SCHEDULED':
+                released += 1
+                if order.pool_id:
+                    released_pools.add(str(order.pool_id))
+        except Exception as exc:
+            logger.exception(f"[PreOrder] Failed to release order {order_id}: {exc}")
+
+    # A bucket reaches the kitchen as one unit, so it gets one prep SMS once
+    # all of its member orders are out of SCHEDULED.
+    if released_pools:
+        from domain.services.orders.order_pooling import _notify_pool_prep_sms
+
+        for pool_id in released_pools:
+            if Order.objects.filter(pool_id=pool_id, status='SCHEDULED').exists():
+                continue
+            try:
+                _notify_pool_prep_sms(pool_id)
+            except Exception as exc:
+                logger.exception(
+                    f"[PreOrder] Failed to notify kitchen for released pool {pool_id}: {exc}"
+                )
+
+    logger.info(f"[PreOrder] Released {released}/{len(due_ids)} scheduled orders.")
+    return f"Released {released} scheduled orders."

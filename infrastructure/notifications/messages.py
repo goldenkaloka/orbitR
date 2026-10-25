@@ -57,6 +57,13 @@ def order_cancelled_customer(short_id: str, is_paid: bool = True) -> tuple[str, 
         msg
     )
 
+def preorder_declined_customer(short_id: str) -> tuple[str, str]:
+    return (
+        "Pre-Order Imekataliwa",
+        f"Mkahawa hauwezi kuandaa pre-order #{short_id}. Malipo yako yatarejeshwa kikamilifu.",
+    )
+
+
 def order_cancelled_restaurant_delay(short_id: str) -> tuple[str, str]:
     return (
         "Oda Imefutwa — Mkahawa Ulichelewa",

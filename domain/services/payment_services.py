@@ -116,6 +116,24 @@ def record_failed_payout(payment, reason):
         logger.exception(f"Could not record FailedPayout for payment {payment.id}")
 
 
+def record_failed_refund(payment, amount, reason):
+    """Queue a refused refund so retry_failed_refunds can finish it."""
+    from apps.payments.models import FailedRefund
+
+    try:
+        record, created = FailedRefund.objects.get_or_create(
+            payment=payment,
+            defaults={'amount': amount, 'reason': str(reason)[:2000]},
+        )
+        if not created:
+            record.amount = amount
+            record.reason = str(reason)[:2000]
+            record.save(update_fields=['amount', 'reason'])
+        logger.warning(f"Queued failed refund for payment {payment.id}: {reason}")
+    except Exception:
+        logger.exception(f"Could not record FailedRefund for payment {payment.id}")
+
+
 class InitiatePaymentService:
     @staticmethod
     def execute(payable_type, payable_id, phone=None, bank_code=None, actor=None, method='MOBILE_MONEY'):
@@ -637,13 +655,26 @@ class CompletePaymentService:
     @staticmethod
     def _handle_order_payment(payment):
         from domain.fsm.order_fsm import OrderFSM
-        from domain.services.orders.order_placement import ConfirmOrderService
+        from domain.services.orders.scheduled_orders import activate_paid_order
 
         order = Order.objects.select_for_update().select_related('restaurant').get(id=payment.payable_id)
         order.is_paid = True
+
+        # A pre-order whose kitchen prep has not started yet is parked in
+        # SCHEDULED; release_scheduled_orders moves it into the pipeline later.
+        release_due = not (
+            order.scheduled_for
+            and order.release_at
+            and order.release_at > timezone.now()
+        )
         # Idempotent: a replayed webhook/event must not require a self-loop.
-        if order.status not in ('CREATED', 'AWAITING_CONFIRMATION'):
-            order.status = OrderFSM.transition(order.status, 'CREATED')
+        if release_due:
+            if order.status in ('PENDING_PAYMENT', 'SCHEDULED'):
+                order.status = OrderFSM.transition(order.status, 'CREATED')
+            elif order.status not in ('CREATED', 'AWAITING_CONFIRMATION'):
+                order.status = OrderFSM.transition(order.status, 'CREATED')
+        elif order.status == 'PENDING_PAYMENT':
+            order.status = OrderFSM.transition(order.status, 'SCHEDULED')
         order.save(update_fields=['is_paid', 'status'])
 
         _create_double_entry(
@@ -657,33 +688,12 @@ class CompletePaymentService:
         # Escrow hold: record money expected from the gateway
         _hold_escrow(payment.amount)
 
-        # Platform-managed/concierge listings are operated by real third-party
-        # restaurants. Ops must call and confirm availability before the order
-        # is dispatched, so do not auto-confirm these.
-        if (
-            order.restaurant
-            and (
-                order.restaurant.source_type == 'PLATFORM_MANAGED'
-                or order.restaurant.settlement_mode == 'PLATFORM_PREPAID'
-            )
-            and order.confirmation_status != 'CONFIRMED'
-        ):
-            if order.status == 'CREATED':
-                order.status = OrderFSM.transition(
-                    order.status, 'AWAITING_CONFIRMATION',
-                )
-            order.confirmation_status = 'PENDING'
-            order.save(update_fields=['status', 'confirmation_status', 'is_paid'])
-            try:
-                from domain.services.order_sms_notifications import OrderPrepSmsService
-                OrderPrepSmsService.notify_single_order(str(order.id))
-            except Exception as se:
-                logger.warning(f"Could not dispatch SMS for concierge order {order.id}: {se}")
+        if order.status == 'SCHEDULED':
             return
 
-        # Confirm synchronously so the order is reflected immediately,
-        # not waiting on Celery event dispatch
-        ConfirmOrderService.execute(order.id, order.customer)
+        # Platform-managed/concierge listings are operated by real third-party
+        # restaurants, so activation waits for ops confirmation before dispatch.
+        activate_paid_order(order)
 
     @staticmethod
     def _handle_pool_payment(payment):
@@ -1119,6 +1129,13 @@ class RefundPaymentService:
                     )
 
                 if not (response and response.get('success')):
+                    record_failed_refund(
+                        payment,
+                        refund_amount,
+                        (response or {}).get('error')
+                        or (response or {}).get('message')
+                        or 'Gateway refused the refund',
+                    )
                     continue
 
                 refunded_any = True

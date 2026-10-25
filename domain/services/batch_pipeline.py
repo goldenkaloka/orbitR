@@ -13,6 +13,7 @@ Pipeline:
 from __future__ import annotations
 
 import logging
+import math
 from decimal import Decimal
 
 from django.db import models, transaction
@@ -30,6 +31,7 @@ SECTION_TIMEOUT_MINUTES = 20         # If a section takes >20 min, escalate
 PENDING_DRIVER_TIMEOUT_MINUTES = 60  # 1 hour in PENDING_DRIVER before expiry
 MAX_ACCUMULATING_BATCHES_PER_RESTAURANT = 2  # Busy restaurants: max concurrent accumulating batches
 BUSY_ACCUMULATE_WINDOW_MINUTES = 5   # Shorter window when restaurant is busy (≥2 batches)
+PREORDER_BATCH_BUFFER_MINUTES = 2    # Slack after the slot's last release to let it join
 
 
 class BatchPipeline:
@@ -104,6 +106,11 @@ class BatchPipeline:
         """
         from apps.orders.models import DeliveryBatch
 
+        # Pre-orders are grouped by eating-time slot before any dispatch takes
+        # place, so the 12:00 rush is known workload rather than a race.
+        if order.scheduled_for:
+            return BatchPipeline.on_preorder_released(order)
+
         order_h3 = order.h3_index
         if not order_h3:
             logger.warning(f"[BatchPipeline] Order {order.id} has no h3_index — creating single batch")
@@ -123,12 +130,14 @@ class BatchPipeline:
         existing_count = DeliveryBatch.objects.filter(
             restaurant_id=order.restaurant_id,
             status='ACCUMULATING',
+            preorder_slot_start__isnull=True,
         ).count()
         if existing_count >= MAX_ACCUMULATING_BATCHES_PER_RESTAURANT:
             oldest = (
                 DeliveryBatch.objects.filter(
                     restaurant_id=order.restaurant_id,
                     status='ACCUMULATING',
+                    preorder_slot_start__isnull=True,
                 )
                 .order_by('accumulating_since')
                 .first()
@@ -142,6 +151,62 @@ class BatchPipeline:
 
         # No compatible batch found — create a new ACCUMULATING batch
         return BatchPipeline._create_single_batch(order)
+
+    @staticmethod
+    def on_preorder_released(order):
+        """Put a released pre-order into its restaurant's slot batch.
+
+        All pre-orders for the same restaurant and eating-time slot share one
+        batch, regardless of which release sweep they arrive in. The batch
+        stays open until the slot's last possible release so later bookings
+        still land in the same unit of kitchen work.
+        """
+        from domain.services.orders.scheduled_orders import (
+            release_at_for,
+            slot_window_for,
+        )
+
+        slot_start, slot_end = slot_window_for(order.scheduled_for)
+        last_release = release_at_for(order.restaurant, slot_end)
+        now = timezone.now()
+        window_minutes = max(
+            ACCUMULATE_WINDOW_MINUTES,
+            math.ceil((last_release - now).total_seconds() / 60)
+            + PREORDER_BATCH_BUFFER_MINUTES,
+        )
+
+        candidate = BatchPipeline._find_preorder_batch(order, slot_start)
+        if candidate:
+            return BatchPipeline._join_batch(order, candidate)
+
+        return BatchPipeline._create_single_batch(
+            order,
+            preorder_slot_start=slot_start,
+            accumulate_window_minutes=window_minutes,
+        )
+
+    @staticmethod
+    def _find_preorder_batch(order, slot_start):
+        """The open batch for this restaurant and slot, if it has room."""
+        from apps.orders.models import DeliveryBatch
+
+        batches = (
+            DeliveryBatch.objects.filter(
+                restaurant_id=order.restaurant_id,
+                preorder_slot_start=slot_start,
+                status__in=['ACCUMULATING', 'SOFT_LOCK'],
+            )
+            .annotate(order_count=models.Count('orders'))
+            .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
+            .order_by('accumulating_since')
+        )
+
+        for batch in batches:
+            if BatchPipeline._batch_is_compatible(
+                order, batch, is_soft_lock=batch.status == 'SOFT_LOCK',
+            ):
+                return batch
+        return None
 
     @staticmethod
     def on_pool_ready(pool):
@@ -172,11 +237,13 @@ class BatchPipeline:
         else:
             pool = [order.restaurant_id]
 
-        # Prefer ACCUMULATING first, then SOFT_LOCK
+        # Prefer ACCUMULATING first, then SOFT_LOCK. Slot batches are reserved
+        # for pre-orders so live orders cannot eat into the promised workload.
         accumulating = list(
             DeliveryBatch.objects.filter(
                 restaurant_id__in=pool,
                 status='ACCUMULATING',
+                preorder_slot_start__isnull=True,
             )
             .annotate(order_count=models.Count('orders'))
             .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
@@ -191,6 +258,7 @@ class BatchPipeline:
             DeliveryBatch.objects.filter(
                 restaurant_id__in=pool,
                 status='SOFT_LOCK',
+                preorder_slot_start__isnull=True,
             )
             .annotate(order_count=models.Count('orders'))
             .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
@@ -388,7 +456,11 @@ class BatchPipeline:
         return locked_batch
 
     @staticmethod
-    def _create_single_batch(order):
+    def _create_single_batch(
+        order,
+        preorder_slot_start=None,
+        accumulate_window_minutes=ACCUMULATE_WINDOW_MINUTES,
+    ):
         """
         Create a new ACCUMULATING batch with this order as the first member.
         """
@@ -420,7 +492,8 @@ class BatchPipeline:
                 company_profit=Decimal('0'),
                 offer_attempt=0,
                 max_orders=MAX_ORDERS_PER_BATCH,
-                accumulate_window_minutes=ACCUMULATE_WINDOW_MINUTES,
+                accumulate_window_minutes=accumulate_window_minutes,
+                preorder_slot_start=preorder_slot_start,
             )
 
             locked_order.batch = batch
@@ -435,12 +508,13 @@ class BatchPipeline:
             transaction.on_commit(
                 lambda: close_accumulating_batch_task.apply_async(
                     args=[batch_id_str],
-                    countdown=ACCUMULATE_WINDOW_MINUTES * 60
+                    countdown=accumulate_window_minutes * 60
                 )
             )
 
         logger.info(
             f"[BatchPipeline] Created ACCUMULATING batch {batch.id} for order {order.id}"
+            + (f" (slot {preorder_slot_start.isoformat()})" if preorder_slot_start else "")
         )
         return batch
 
@@ -722,6 +796,13 @@ class BatchPipeline:
         """Create a batch for a pool and dispatch it immediately."""
         from apps.orders.models import DeliveryBatch, Order
         from domain.services.mapbox_routing_service import MapboxRoutingService
+        from domain.services.orders.scheduled_orders import slot_window_for
+
+        # A pre-order bucket is delivered for its booked slot; tagging the
+        # batch keeps it out of live-order sweeps and ties it to that meal.
+        preorder_slot_start = None
+        if getattr(pool, 'scheduled_for', None):
+            preorder_slot_start, _ = slot_window_for(pool.scheduled_for)
 
         route_distance = Decimal('0')
         if route_dict is None:
@@ -759,6 +840,7 @@ class BatchPipeline:
                 batch_type='SINGLE_RESTAURANT',
                 restaurant_id=pool.restaurant_id,
                 status='PENDING_DRIVER',
+                preorder_slot_start=preorder_slot_start,
                 route_optimization=route_dict,
                 route_distance_km=route_distance,
                 user_paid_total=user_paid_total,
@@ -837,6 +919,8 @@ class BatchPipeline:
         """
         Periodic check: move ACCUMULATING batches past their window to SOFT_LOCK.
         Busy restaurants (≥2 concurrent batches) use a shorter window.
+        Pre-order slot batches use their own deadline (the end of the slot) so
+        they are never closed or cancelled before every slot booking released.
         Also cleans up stale ACCUMULATING batches where no order has progressed
         to PREPARING or READY after more than 2x the accumulate window.
         Uses efficient batch-queries — never loads all batches into Python memory.
@@ -849,6 +933,7 @@ class BatchPipeline:
         # ── Pass 1: Batches past their normal accumulate window → SOFT_LOCK ──
         expired = DeliveryBatch.objects.filter(
             status='ACCUMULATING',
+            preorder_slot_start__isnull=True,
             accumulating_since__isnull=False,
             accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES),
         ).only('id')
@@ -857,7 +942,10 @@ class BatchPipeline:
 
         # ── Pass 1b: Busy restaurants — shorter window ──
         busy = (
-            DeliveryBatch.objects.filter(status='ACCUMULATING')
+            DeliveryBatch.objects.filter(
+                status='ACCUMULATING',
+                preorder_slot_start__isnull=True,
+            )
             .values('restaurant_id')
             .annotate(cnt=Count('id'))
             .filter(cnt__gte=MAX_ACCUMULATING_BATCHES_PER_RESTAURANT)
@@ -867,10 +955,26 @@ class BatchPipeline:
             busy_expired = DeliveryBatch.objects.filter(
                 restaurant_id__in=busy_restaurant_ids,
                 status='ACCUMULATING',
+                preorder_slot_start__isnull=True,
                 accumulating_since__isnull=False,
                 accumulating_since__lt=now - timezone.timedelta(minutes=BUSY_ACCUMULATE_WINDOW_MINUTES),
             ).only('id')
             for batch in busy_expired:
+                BatchPipeline._close_accumulating_batch(str(batch.id))
+
+        # ── Pass 1c: pre-order slot batches use their own deadline ──
+        # They span the whole slot so late bookings can join, which is longer
+        # than the generic windows above.
+        preorder_open = DeliveryBatch.objects.filter(
+            status='ACCUMULATING',
+            preorder_slot_start__isnull=False,
+            accumulating_since__isnull=False,
+        ).only('id', 'accumulating_since', 'accumulate_window_minutes')
+        for batch in preorder_open:
+            deadline = batch.accumulating_since + timezone.timedelta(
+                minutes=batch.accumulate_window_minutes,
+            )
+            if now >= deadline:
                 BatchPipeline._close_accumulating_batch(str(batch.id))
 
         # ── Pass 2: Batches > 2x window with no cooking progress → cancel ──
@@ -883,6 +987,7 @@ class BatchPipeline:
         )
         stale_no_progress = DeliveryBatch.objects.filter(
             status='ACCUMULATING',
+            preorder_slot_start__isnull=True,
             accumulating_since__isnull=False,
             accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES * 2),
         ).annotate(

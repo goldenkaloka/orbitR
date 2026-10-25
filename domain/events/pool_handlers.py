@@ -63,8 +63,16 @@ def on_pool_cancelled(event):
         from apps.orders.models import OrderPool
         pool = OrderPool.objects.prefetch_related('members__user').get(id=pool_id)
         pc_title, pc_body = pool_cancelled(pool.restaurant.name)
+        # When the pool's orders are cancelled too, each member already gets an
+        # OrderCancelled push naming their order — a pool-level push on top of
+        # that is duplicate noise.
+        members_notified_by_orders = bool(event.payload.get('orders_cancelled'))
         for member in pool.members.all():
-            if member.user_id and str(member.user_id) != actor_id:
+            if (
+                member.user_id
+                and str(member.user_id) != actor_id
+                and not members_notified_by_orders
+            ):
                 NotificationService.send_push(
                     user_id=str(member.user_id),
                     title=pc_title, body=pc_body,
@@ -129,8 +137,7 @@ def on_pool_ready(event):
             logger.debug(f"[PoolReady] Pool {pool_id} has no h3_index — skipping batching")
             return
 
-        pool_ref = _PoolBatchable(pool)
-        result = BatchPipeline.run_for_pool(pool_ref)
+        result = BatchPipeline.on_pool_ready(pool)
         if result:
             with transaction.atomic():
                 pool = OrderPool.objects.select_for_update().get(id=pool_id)
@@ -143,27 +150,6 @@ def on_pool_ready(event):
             logger.debug(f"[PoolReady] No batch formed for pool {pool_id}, will retry in poll cycle")
     except Exception as e:
         logger.error(f"[PoolReady] Error processing pool {pool_id}: {e}", exc_info=True)
-
-
-class _PoolBatchable:
-    def __init__(self, pool):
-        self.id = pool.id
-        self.h3_index = pool.h3_index
-        self.restaurant = pool.restaurant
-        self.restaurant_id = pool.restaurant_id
-        self.delivery_location = pool.delivery_location
-        self.delivery_address = pool.delivery_address
-        self.customer = pool.initiator
-        self.customer_id = pool.initiator_id
-        self.status = 'READY'
-        self.batch = None
-        self.batch_id = None
-        self.ready_at = pool.updated_at
-        self.created_at = pool.created_at
-        self.is_pool = True
-        self.is_pool_order = True
-        self.delivery_fee = pool.total_delivery_fee
-        self.service_fee = pool.service_fee
 
 
 def register_handlers():

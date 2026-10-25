@@ -4,7 +4,7 @@ from leaflet.admin import LeafletGeoAdminMixin
 from unfold.admin import ModelAdmin, TabularInline
 from unfold.decorators import display
 
-from .models import Restaurant, RestaurantSection, SectionStaff
+from .models import MealPeriod, Restaurant, RestaurantSection, SectionStaff
 
 
 class FoodInline(TabularInline):
@@ -12,6 +12,12 @@ class FoodInline(TabularInline):
     extra = 0
     fields = ('name', 'price', 'is_available')
     show_change_link = True
+
+
+class MealPeriodInline(TabularInline):
+    model = MealPeriod
+    extra = 0
+    fields = ('kind', 'label', 'start_time', 'end_time', 'slot_capacity', 'is_active')
 
 
 class SectionInline(TabularInline):
@@ -36,6 +42,14 @@ class RestaurantSectionAdmin(ModelAdmin):
     inlines = [SectionStaffInline, FoodInline]
 
 
+@admin.register(MealPeriod)
+class MealPeriodAdmin(ModelAdmin):
+    list_display = ('restaurant', 'kind', 'label', 'start_time', 'end_time', 'slot_capacity', 'is_active')
+    list_filter = ('kind', 'is_active', 'restaurant')
+    search_fields = ('restaurant__name', 'label')
+    raw_id_fields = ('restaurant',)
+
+
 @admin.register(SectionStaff)
 class SectionStaffAdmin(ModelAdmin):
     list_display = ('user', 'section')
@@ -53,7 +67,7 @@ class RestaurantAdmin(LeafletGeoAdminMixin, ModelAdmin):
     list_per_page = 25
     raw_id_fields = ('owner',)
     readonly_fields = ('id', 'created_at')
-    inlines = [SectionInline]
+    inlines = [MealPeriodInline, SectionInline]
 
     settings_overrides = {
         'DEFAULT_CENTER': (-6.7924, 39.2083),

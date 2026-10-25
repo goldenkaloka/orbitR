@@ -5,7 +5,7 @@ from apps.core.models import Notification
 from apps.delivery.models import Driver
 from apps.orders.models import BatchSectionStatus, Dispute, Order, OrderItem
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant, RestaurantSection
+from apps.restaurants.models import MealPeriod, Restaurant, RestaurantSection
 from apps.users.models import User
 from domain.events.bus import EventBus
 from domain.events.types import OrderCreated
@@ -300,11 +300,19 @@ class RestaurantListSerializer(serializers.ModelSerializer):
         return float(result[1]) if result else None
 
 
+class MealPeriodSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MealPeriod
+        fields = ['id', 'kind', 'label', 'start_time', 'end_time',
+                  'slot_capacity', 'is_active']
+
+
 class RestaurantSerializer(RestaurantListSerializer):
     sections = RestaurantSectionSerializer(many=True, read_only=True)
+    meal_periods = MealPeriodSerializer(many=True, read_only=True)
 
     class Meta(RestaurantListSerializer.Meta):
-        fields = RestaurantListSerializer.Meta.fields + ['sections']
+        fields = RestaurantListSerializer.Meta.fields + ['sections', 'meal_periods']
 
 
 class AdminRestaurantSerializer(RestaurantSerializer):
@@ -403,13 +411,14 @@ class OrderSerializer(serializers.ModelSerializer):
             'settlement_mode', 'restaurant_payout_phone',
             'cancelled_at', 'cancelled_by', 'cancellation_fault', 'cancellation_category',
             'cancellation_reason', 'affects_restaurant_reputation', 'is_reviewed',
+            'scheduled_for', 'release_at',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
                            'original_delivery_fee', 'discount_applied', 'discount_amount',
                            'cancelled_at', 'cancelled_by', 'cancellation_fault',
                            'cancellation_category', 'cancellation_reason',
-                           'affects_restaurant_reputation']
+                           'affects_restaurant_reputation', 'release_at']
 
 
     def get_is_reviewed(self, obj):
@@ -579,6 +588,22 @@ class OrderSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("Quantity must be strictly greater than zero.")
         return value
 
+    def validate_scheduled_for(self, value):
+        from domain.services.orders.scheduled_orders import validate_scheduled_for
+
+        try:
+            return validate_scheduled_for(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def get_fields(self):
+        fields = super().get_fields()
+        # The eating time is fixed once the order exists: changing it after
+        # placement would leave release_at pointing at the old window.
+        if isinstance(self.instance, Order):
+            fields['scheduled_for'].read_only = True
+        return fields
+
     def create(self, validated_data):
         # Extract delivery_location directly from initial_data to bypass DRF PointField stripping
         point = parse_coordinate_dict(self.initial_data, 'delivery_location')
@@ -586,7 +611,12 @@ class OrderSerializer(serializers.ModelSerializer):
             validated_data['delivery_location'] = point
             
         from domain.services.order_services import PlaceOrderService
-        return PlaceOrderService.execute(validated_data)
+        from domain.services.orders.scheduled_orders import PreorderSlotUnavailable
+
+        try:
+            return PlaceOrderService.execute(validated_data)
+        except PreorderSlotUnavailable as exc:
+            raise serializers.ValidationError({'scheduled_for': str(exc)})
 
 
 class DriverSerializer(serializers.ModelSerializer):
@@ -707,6 +737,15 @@ class OrderPoolSerializer(serializers.ModelSerializer):
     is_initiator = serializers.SerializerMethodField()
     current_user_member_id = serializers.SerializerMethodField()
     restaurant_menu = serializers.SerializerMethodField()
+
+    scheduled_for = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_scheduled_for(self, value):
+        if self.instance is not None and value != self.instance.scheduled_for:
+            raise serializers.ValidationError(
+                "The eating time cannot be changed after the bucket is created."
+            )
+        return value
     
     class Meta:
         from apps.orders.models import OrderPool
@@ -715,9 +754,10 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
             'total_delivery_fee', 'total_service_fee', 'members', 'created_at', 'expires_at',
+            'scheduled_for', 'pool_type',
             'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
-        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'total_service_fee', 'initiator', 'expires_at']
+        read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'total_service_fee', 'initiator', 'expires_at', 'pool_type']
 
     total_service_fee = serializers.ReadOnlyField(source='service_fee')
 

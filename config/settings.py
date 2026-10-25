@@ -45,6 +45,16 @@ REVIEW_LOGIN_PHONE = config('REVIEW_LOGIN_PHONE', default='0635622485')
 REVIEW_LOGIN_OTP = config('REVIEW_LOGIN_OTP', default='121212')
 REVIEW_LOGIN_USERNAME = config('REVIEW_LOGIN_USERNAME', default='App Reviewer')
 
+# Pre-orders: minimum lead time, booking horizon and eating-time slot size.
+PREORDER_MIN_LEAD_MINUTES = config('PREORDER_MIN_LEAD_MINUTES', default=45, cast=int)
+PREORDER_MAX_HORIZON_DAYS = config('PREORDER_MAX_HORIZON_DAYS', default=7, cast=int)
+PREORDER_SLOT_MINUTES = config('PREORDER_SLOT_MINUTES', default=15, cast=int)
+# Slot pickers show a kitchen's local service hours, not UTC. Only the
+# presentation window is zoned; capacity and release timing stay absolute.
+PREORDER_TIMEZONE = config('PREORDER_TIMEZONE', default='Africa/Dar_es_Salaam')
+PREORDER_SERVICE_START_HOUR = config('PREORDER_SERVICE_START_HOUR', default=8, cast=int)
+PREORDER_SERVICE_END_HOUR = config('PREORDER_SERVICE_END_HOUR', default=22, cast=int)
+
 # Seconds a phone must wait between OTP requests. Guards against double-taps
 # and SMS spam beyond the coarser per-phone/IP rate limits.
 OTP_RESEND_COOLDOWN = config('OTP_RESEND_COOLDOWN', default=60, cast=int)
@@ -773,6 +783,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.payments.tasks.retry_failed_payouts',
         'schedule': crontab(minute='*/15'),
     },
+    'retry-failed-refunds-every-10-mins': {
+        'task': 'apps.payments.tasks.retry_failed_refunds',
+        'schedule': crontab(minute='*/10'),
+    },
     'cleanup-expired-payments': {
         'task': 'apps.payments.tasks.cleanup_expired_payments',
         'schedule': crontab(minute='*/2'),
@@ -800,6 +814,10 @@ CELERY_BEAT_SCHEDULE = {
     'cleanup-unpaid-orders-every-10-mins': {
         'task': 'apps.orders.tasks.cleanup_unpaid_orders',
         'schedule': crontab(minute='*/10'),
+    },
+    'release-scheduled-orders-every-minute': {
+        'task': 'apps.orders.tasks.release_scheduled_orders',
+        'schedule': crontab(minute='*'),
     },
     'expire-stale-assigned-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_assigned_orders_task',

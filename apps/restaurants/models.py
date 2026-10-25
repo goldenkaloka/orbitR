@@ -34,6 +34,61 @@ class RestaurantSection(models.Model):
         return f"{self.name} @ {self.restaurant.name}"
 
 
+class MealPeriod(models.Model):
+    """
+    A restaurant's serving window for breakfast, lunch or dinner.
+
+    Pre-orders are only accepted inside one of these windows, and each meal
+    can cap its own pre-order slots. A restaurant with no rows here serves the
+    platform defaults; an existing row set replaces them entirely, so a
+    restaurant can disable a meal by deactivating its row.
+    """
+
+    BREAKFAST = 'BREAKFAST'
+    LUNCH = 'LUNCH'
+    DINNER = 'DINNER'
+    KIND_CHOICES = (
+        (BREAKFAST, 'Breakfast'),
+        (LUNCH, 'Lunch'),
+        (DINNER, 'Dinner'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        'Restaurant', on_delete=models.CASCADE, related_name='meal_periods',
+    )
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, db_index=True)
+    label = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="Customer-facing name; defaults to the meal kind.",
+    )
+    start_time = models.TimeField()
+    end_time = models.TimeField()
+    slot_capacity = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Pre-orders accepted per slot during this meal; blank uses the restaurant capacity, 0 disables the meal.",
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
+
+    class Meta:
+        ordering = ['start_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'kind'],
+                name='unique_meal_period_per_kind',
+            ),
+            models.CheckConstraint(
+                check=models.Q(end_time__gt=models.F('start_time')),
+                name='meal_period_ends_after_start',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.label or self.get_kind_display()} @ {self.restaurant.name}"
+
+
 class SectionStaff(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='section_staff_assignments')
@@ -177,6 +232,14 @@ class Restaurant(models.Model):
     average_prep_time = models.PositiveIntegerField(
         default=20,
         help_text="Average preparation time in minutes"
+    )
+
+    # Pre-order capacity per eating-time slot. Blank derives it from the
+    # sections' prep throughput; 0 disables pre-orders for this kitchen.
+    preorder_slot_capacity = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Pre-orders accepted per slot; blank derives it from kitchen throughput.",
     )
 
     # Commission rate for platform monetization

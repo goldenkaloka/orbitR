@@ -300,7 +300,7 @@ class FoodViewSet(viewsets.ModelViewSet):
 
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
-    public_actions = {'list', 'retrieve', 'delivery_fee'}
+    public_actions = {'list', 'retrieve', 'delivery_fee', 'preorder_slots'}
 
     def get_permissions(self):
         if getattr(self, 'action', None) in self.public_actions:
@@ -676,6 +676,42 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         except Exception as e:
             return Response({'error': str(e)}, status=400)
 
+    @action(detail=True, methods=['GET'], url_path='preorder-slots')
+    def preorder_slots(self, request, pk=None):
+        """Bookable eating-time slots grouped by day and meal."""
+        from django.conf import settings as django_settings
+        from domain.services.orders.scheduled_orders import (
+            accepts_preorders,
+            meal_windows_for,
+            upcoming_slot_days,
+        )
+
+        restaurant = self.get_object()
+        try:
+            days = int(request.query_params.get('days', 2))
+        except (TypeError, ValueError):
+            days = 2
+
+        accepting = accepts_preorders(restaurant)
+        meals = [
+            {
+                'type': window.kind,
+                'label': window.label,
+                'start_time': window.start.strftime('%H:%M'),
+                'end_time': window.end.strftime('%H:%M'),
+            }
+            for window in meal_windows_for(restaurant)
+        ] if accepting else []
+        return Response({
+            'timezone': django_settings.PREORDER_TIMEZONE,
+            'slot_minutes': django_settings.PREORDER_SLOT_MINUTES,
+            'lead_time_minutes': django_settings.PREORDER_MIN_LEAD_MINUTES,
+            'max_horizon_days': django_settings.PREORDER_MAX_HORIZON_DAYS,
+            'accepting_preorders': accepting,
+            'meals': meals,
+            'days': upcoming_slot_days(restaurant, days=days) if accepting else [],
+        })
+
     @action(detail=True, methods=['GET'], url_path='delivery-fee')
     def delivery_fee(self, request, pk=None):
         """
@@ -778,6 +814,99 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'Invalid prep time value'}, status=400)
         invalidate_restaurant_cache(restaurant)
         return Response({'average_prep_time': restaurant.average_prep_time})
+
+    @action(detail=True, methods=['PUT'], url_path='meal-periods')
+    def update_meal_periods(self, request, pk=None):
+        """Replace the restaurant's bookable meal windows.
+
+        The whole schedule is validated before anything is written, so a bad
+        window never leaves half a schedule behind. Sending an empty list
+        deletes every row, which restores the platform defaults.
+        """
+        from apps.restaurants.models import MealPeriod
+        from django.db import transaction
+        from django.utils.dateparse import parse_time
+        from domain.services.permissions import check_restaurant_permission
+
+        restaurant = self.get_object()
+        if not check_restaurant_permission(request.user, restaurant):
+            return Response({'error': 'Not authorized'}, status=403)
+
+        payload = request.data.get('meal_periods')
+        if not isinstance(payload, list):
+            return Response({'error': 'meal_periods must be a list'}, status=400)
+
+        rows = []
+        seen_kinds = set()
+        for entry in payload:
+            if not isinstance(entry, dict):
+                return Response({'error': 'Each meal period must be an object'}, status=400)
+
+            kind = str(entry.get('kind') or '').upper()
+            if kind not in dict(MealPeriod.KIND_CHOICES):
+                return Response(
+                    {'error': f'Invalid meal kind: {kind or "missing"}'},
+                    status=400,
+                )
+            if kind in seen_kinds:
+                return Response({'error': f'Duplicate meal kind: {kind}'}, status=400)
+            seen_kinds.add(kind)
+
+            start = parse_time(str(entry.get('start_time') or ''))
+            end = parse_time(str(entry.get('end_time') or ''))
+            if not start or not end or start >= end:
+                return Response(
+                    {'error': f'{kind} needs a start_time before its end_time (HH:MM)'},
+                    status=400,
+                )
+
+            capacity = entry.get('slot_capacity')
+            if capacity in (None, ''):
+                capacity = None
+            else:
+                try:
+                    capacity = int(capacity)
+                except (TypeError, ValueError):
+                    return Response(
+                        {'error': f'{kind} slot_capacity must be a whole number'},
+                        status=400,
+                    )
+                if capacity < 0:
+                    return Response(
+                        {'error': f'{kind} slot_capacity cannot be negative'},
+                        status=400,
+                    )
+
+            rows.append({
+                'kind': kind,
+                'label': str(entry.get('label') or '').strip()[:64],
+                'start_time': start,
+                'end_time': end,
+                'slot_capacity': capacity,
+                'is_active': bool(entry.get('is_active', True)),
+            })
+
+        rows.sort(key=lambda row: row['start_time'])
+        for previous, current in zip(rows, rows[1:]):
+            if current['start_time'] < previous['end_time']:
+                return Response({'error': 'Meal windows cannot overlap'}, status=400)
+
+        with transaction.atomic():
+            # Serialise concurrent saves for this restaurant so the
+            # delete-and-recreate cannot collide on the per-kind constraint.
+            Restaurant.objects.select_for_update().filter(id=restaurant.id).first()
+            restaurant.meal_periods.all().delete()
+            MealPeriod.objects.bulk_create([
+                MealPeriod(restaurant=restaurant, **row) for row in rows
+            ])
+
+        invalidate_restaurant_cache(restaurant)
+        from api.serializers.core import MealPeriodSerializer
+        return Response({
+            'meal_periods': MealPeriodSerializer(
+                restaurant.meal_periods.all(), many=True,
+            ).data,
+        })
 
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
@@ -1242,6 +1371,23 @@ class OrderViewSet(viewsets.ModelViewSet):
             reason = request.data.get('reason', 'Rejected by restaurant')
             category = request.data.get('category', 'vendor_rejected')
             order = CancelOrderService.execute(pk, request.user, reason=reason, category=category)
+            return Response(OrderSerializer(order).data)
+        except PermissionError as e:
+            return Response({"error": str(e)}, status=403)
+        except (InvalidStateTransitionError, ValueError) as e:
+            return Response({"error": str(e)}, status=400)
+        except Exception as e:
+            return Response({"error": str(e)}, status=500)
+
+    @action(detail=True, methods=['POST'], url_path='decline-preorder')
+    def decline_preorder(self, request, pk=None):
+        try:
+            from domain.services.orders.scheduled_orders import PreorderDeclineService
+            order = PreorderDeclineService.execute(
+                pk,
+                request.user,
+                reason=request.data.get('reason', 'Pre-order declined by restaurant'),
+            )
             return Response(OrderSerializer(order).data)
         except PermissionError as e:
             return Response({"error": str(e)}, status=403)

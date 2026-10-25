@@ -397,6 +397,8 @@ class PayRestaurantAtPickupTests(TestCase):
         self.order.confirmation_status = Order.CONFIRMATION_PENDING
         self.order.created_at = timezone.now() - timedelta(minutes=15)
         self.order.save()
+        self.order.status_changed_at = timezone.now() - timedelta(minutes=15)
+        self.order.save(update_fields=['status_changed_at'])
 
         Payment.objects.create(
             payable_type='order',

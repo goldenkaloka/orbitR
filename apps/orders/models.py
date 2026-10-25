@@ -112,6 +112,10 @@ class Order(models.Model):
     pickup_paid_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     ready_at = models.DateTimeField(null=True, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    # Pre-order: the eating time the customer picked, and the moment the order
+    # must leave the SCHEDULED state (scheduled_for minus prep time).
+    scheduled_for = models.DateTimeField(null=True, blank=True, db_index=True)
+    release_at = models.DateTimeField(null=True, blank=True, db_index=True)
     # Concierge/platform-managed flow: the real restaurant must confirm the
     # items and final bill before the order is dispatched.
     confirmation_status = models.CharField(
@@ -300,6 +304,22 @@ class OrderPool(models.Model):
     invite_code = models.CharField(max_length=10, unique=True, db_index=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN', db_index=True)
 
+    # A pre-order bucket is cooked and delivered for its booked eating time;
+    # an immediate bucket goes out as soon as it is paid and ready. Kept in
+    # sync with `scheduled_for` in save() so queries never have to infer it.
+    POOL_TYPE_IMMEDIATE = 'IMMEDIATE'
+    POOL_TYPE_PREORDER = 'PREORDER'
+    POOL_TYPE_CHOICES = (
+        (POOL_TYPE_IMMEDIATE, 'Deliver as soon as ready'),
+        (POOL_TYPE_PREORDER, 'Deliver at the booked eating time'),
+    )
+    pool_type = models.CharField(
+        max_length=16,
+        choices=POOL_TYPE_CHOICES,
+        default=POOL_TYPE_IMMEDIATE,
+        db_index=True,
+    )
+
     # Deprecated: master Order created during old finalize_pool path
     # Will be removed once all pools use the new direct path
     final_order = models.OneToOneField('Order', on_delete=models.SET_NULL, null=True, blank=True, related_name='source_pool')
@@ -332,11 +352,25 @@ class OrderPool(models.Model):
     lock_expires_at = models.DateTimeField(null=True, blank=True)
     paid_at = models.DateTimeField(null=True, blank=True)
 
+    # When the group wants to eat. Null means an immediate bucket; a value
+    # makes this a group pre-order that reserves one kitchen slot seat.
+    scheduled_for = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Eating time for a group pre-order; null for immediate buckets.',
+    )
+
     def save(self, *args, **kwargs):
         if self.delivery_location:
             new_h3 = latlng_to_h3(self.delivery_location.y, self.delivery_location.x)
             if self.h3_index != new_h3:
                 self.h3_index = new_h3
+
+        self.pool_type = (
+            self.POOL_TYPE_PREORDER if self.scheduled_for
+            else self.POOL_TYPE_IMMEDIATE
+        )
 
         self._original_status = self.status
         super().save(*args, **kwargs)
@@ -347,7 +381,14 @@ class OrderPool(models.Model):
             models.Index(fields=['status', 'locked_at'], name='pool_locked_status_idx'),
         ]
         constraints = [
-            models.UniqueConstraint(fields=['initiator'], condition=models.Q(status='OPEN'), name='unique_open_pool_per_user')
+            models.UniqueConstraint(fields=['initiator'], condition=models.Q(status='OPEN'), name='unique_open_pool_per_user'),
+            models.CheckConstraint(
+                check=(
+                    models.Q(pool_type='PREORDER', scheduled_for__isnull=False)
+                    | models.Q(pool_type='IMMEDIATE', scheduled_for__isnull=True)
+                ),
+                name='pool_type_matches_schedule',
+            ),
         ]
 
     @property
@@ -457,6 +498,14 @@ class DeliveryBatch(models.Model):
 
     max_orders = models.PositiveIntegerField(default=5, help_text="Max orders before batch closes to new joins")
     accumulate_window_minutes = models.PositiveIntegerField(default=10, help_text="Minutes to stay in ACCUMULATING before SOFT_LOCK")
+    # Pre-orders for one restaurant and one eating-time slot share a batch so
+    # the kitchen sees the slot as a single unit of work. Null for live batches.
+    preorder_slot_start = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="Eating-time slot this batch was pre-grouped for.",
+    )
 
     first_order_confirmed_at = models.DateTimeField(null=True, blank=True, help_text="When first order was confirmed into this batch")
     last_order_confirmed_at = models.DateTimeField(null=True, blank=True, help_text="When last order was confirmed into this batch")
