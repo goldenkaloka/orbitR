@@ -250,6 +250,26 @@ class FoodViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = Food.objects.select_related('section__restaurant', 'section__restaurant__owner', 'section').all()
+        # Menu sub-category filter: a meal shows its own dishes plus anything
+        # the vendor marked as available all day.
+        meal_period = (self.request.query_params.get('meal_period') or '').strip().upper()
+        if meal_period:
+            from rest_framework.exceptions import ValidationError
+
+            valid_meals = dict(Food.MEAL_CHOICES)
+            if meal_period not in valid_meals:
+                raise ValidationError({
+                    'meal_period': (
+                        f"'{meal_period}' is not a valid meal period. "
+                        f"Choose one of: {', '.join(valid_meals)}."
+                    ),
+                })
+            if meal_period == Food.ALL_DAY:
+                queryset = queryset.filter(meal_period=Food.ALL_DAY)
+            else:
+                queryset = queryset.filter(
+                    meal_period__in=[meal_period, Food.ALL_DAY],
+                )
         if user.is_authenticated and user.serialized_role == 'admin':
             return queryset
         if user.is_authenticated and user.serialized_role in ('vendor', 'vendor_staff'):
@@ -269,6 +289,8 @@ class FoodViewSet(viewsets.ModelViewSet):
                 price=serializer.validated_data['price'],
                 description=serializer.validated_data.get('description', ''),
                 category=serializer.validated_data.get('category', 'MAIN'),
+                meal_period=serializer.validated_data.get('meal_period', Food.ALL_DAY),
+                is_popular=serializer.validated_data.get('is_popular', False),
                 is_available=serializer.validated_data.get('is_available', True),
                 image=serializer.validated_data.get('image'),
                 section=serializer.validated_data.get('section')
@@ -699,6 +721,11 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                 'label': window.label,
                 'start_time': window.start.strftime('%H:%M'),
                 'end_time': window.end.strftime('%H:%M'),
+                'preorder_cutoff_time': (
+                    window.preorder_cutoff.strftime('%H:%M')
+                    if window.preorder_cutoff
+                    else None
+                ),
             }
             for window in meal_windows_for(restaurant)
         ] if accepting else []
@@ -877,11 +904,34 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                         status=400,
                     )
 
+            raw_cutoff = entry.get('preorder_cutoff_time')
+            if raw_cutoff in (None, ''):
+                cutoff = None
+            else:
+                cutoff = parse_time(str(raw_cutoff))
+                if cutoff is None:
+                    return Response(
+                        {'error': (
+                            f'{kind} preorder_cutoff_time must be a time '
+                            '(HH:MM) or blank'
+                        )},
+                        status=400,
+                    )
+                if cutoff > end:
+                    return Response(
+                        {'error': (
+                            f'{kind} pre-order cutoff must be at or before '
+                            'the window closes'
+                        )},
+                        status=400,
+                    )
+
             rows.append({
                 'kind': kind,
                 'label': str(entry.get('label') or '').strip()[:64],
                 'start_time': start,
                 'end_time': end,
+                'preorder_cutoff_time': cutoff,
                 'slot_capacity': capacity,
                 'is_active': bool(entry.get('is_active', True)),
             })

@@ -11,7 +11,7 @@ from apps.events.utils import broadcast_pool_status
 from apps.geo.models import ZoneH3Index
 from apps.orders.models import Order, OrderItem, OrderPool, PoolMember
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import MealPeriod, Restaurant
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from domain.events.bus import EventBus
@@ -27,6 +27,7 @@ from domain.events.types import (
 from domain.fsm.pool_fsm import InvalidPoolTransitionError, PoolFSM
 from domain.services.orders.scheduled_orders import (
     ensure_preorder_slot_capacity,
+    meal_window_for,
     release_at_for,
     validate_scheduled_for,
 )
@@ -92,6 +93,7 @@ class PoolOrderService:
         delivery_address,
         delivery_location,
         scheduled_for=None,
+        meal_period=None,
     ):
         if OrderPool.objects.filter(initiator=initiator, status='OPEN').exists():
             raise ValueError("You already have an open bucket.")
@@ -101,8 +103,28 @@ class PoolOrderService:
         if not delivery_location or not hasattr(delivery_location, 'x'):
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
 
+        requested_meal = (meal_period or '').strip().upper() or None
+        if requested_meal and not scheduled_for:
+            raise ValueError("Choose an eating time for a pre-order bucket.")
+        if requested_meal and requested_meal not in dict(MealPeriod.KIND_CHOICES):
+            raise ValueError(f"Unknown meal period: {requested_meal}")
+
         if scheduled_for:
             validate_scheduled_for(scheduled_for, restaurant=restaurant)
+            # The booking must fall inside a serving window, and the bucket's
+            # meal must be the one that window serves. A time outside every
+            # window is rejected later by ensure_preorder_slot_capacity with
+            # the user-facing "only accepted during..." message.
+            window = meal_window_for(restaurant, scheduled_for)
+            if window is not None:
+                if requested_meal and requested_meal != window.kind:
+                    raise ValueError(
+                        f"This time belongs to the {window.label.lower()} menu, "
+                        f"not {requested_meal.title()}."
+                    )
+                meal_period = window.kind
+        else:
+            meal_period = None
 
         h3_index = latlng_to_h3(delivery_location.y, delivery_location.x)
 
@@ -158,6 +180,7 @@ class PoolOrderService:
                             h3_index=h3_index,
                             expires_at=expires_at,
                             scheduled_for=scheduled_for,
+                            meal_period=meal_period,
                         )
                         PoolMember.objects.create(pool=pool, user=initiator, status='ADDING')
                     break
@@ -209,6 +232,18 @@ class PoolOrderService:
 
             if food.section.restaurant != pool.restaurant:
                 raise ValueError("Food must be from the same restaurant as the pool.")
+
+            # A pre-order bucket has a meal-scoped menu: members cannot add a
+            # dinner dish to a lunch bucket, even if an old client shows it.
+            if pool.meal_period and food.meal_period not in (
+                pool.meal_period, Food.ALL_DAY,
+            ):
+                meal_label = dict(MealPeriod.KIND_CHOICES).get(
+                    pool.meal_period, pool.meal_period.title(),
+                )
+                raise ValueError(
+                    f"{food.name} is not part of the {meal_label.lower()} menu."
+                )
 
             items = list(member.items)
             found = False

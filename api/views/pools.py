@@ -72,7 +72,15 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
                     requested_scheduled, timezone.get_current_timezone(),
                 )
 
-        return pool.scheduled_for == requested_scheduled
+        if pool.scheduled_for != requested_scheduled:
+            return False
+
+        # Older clients do not send a meal. When they omit it, the schedule
+        # alone identifies the bucket; when they do send one, it must match.
+        requested_meal = str(data.get('meal_period') or '').strip().upper() or None
+        if requested_meal is None:
+            return True
+        return (pool.meal_period or None) == requested_meal
 
     def create(self, request, *args, **kwargs):
         # Returning an open bucket is only safe when it is the same booking.
@@ -120,6 +128,7 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             delivery_address=serializer.validated_data.get('delivery_address'),
             delivery_location=point,
             scheduled_for=serializer.validated_data.get('scheduled_for'),
+            meal_period=serializer.validated_data.get('meal_period'),
         )
         serializer.instance = pool
 

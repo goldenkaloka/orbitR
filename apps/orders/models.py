@@ -2,7 +2,7 @@ import uuid
 
 from apps.core.geo_utils import latlng_to_h3
 from apps.products.models import Food
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import MealPeriod, Restaurant
 from apps.users.models import User
 from django.contrib.gis.db import models as gis_models
 from django.db import models
@@ -361,6 +361,19 @@ class OrderPool(models.Model):
         help_text='Eating time for a group pre-order; null for immediate buckets.',
     )
 
+    # The meal a pre-order bucket is scoped to. The bucket's menu only offers
+    # dishes served at this meal (plus all-day items), which keeps a lunch
+    # bucket from collecting dinner-only dishes.
+    MEAL_PERIOD_CHOICES = MealPeriod.KIND_CHOICES
+    meal_period = models.CharField(
+        max_length=16,
+        choices=MEAL_PERIOD_CHOICES,
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text='Meal this pre-order bucket is booked for; null for immediate buckets.',
+    )
+
     def save(self, *args, **kwargs):
         if self.delivery_location:
             new_h3 = latlng_to_h3(self.delivery_location.y, self.delivery_location.x)
@@ -371,6 +384,9 @@ class OrderPool(models.Model):
             self.POOL_TYPE_PREORDER if self.scheduled_for
             else self.POOL_TYPE_IMMEDIATE
         )
+        # An immediate bucket has no meal scope; never leave a stale one behind.
+        if not self.scheduled_for:
+            self.meal_period = None
 
         self._original_status = self.status
         super().save(*args, **kwargs)

@@ -88,7 +88,7 @@ class FoodSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Food
-        fields = ['id', 'name', 'description', 'price', 'category', 'is_available', 'image', 'image_url', 'vendor_id', 'vendor_name', 'section']
+        fields = ['id', 'name', 'description', 'price', 'category', 'meal_period', 'is_popular', 'is_available', 'image', 'image_url', 'vendor_id', 'vendor_name', 'section']
 
     def validate(self, attrs):
         section = attrs.get('section')
@@ -246,6 +246,8 @@ class RestaurantListSerializer(serializers.ModelSerializer):
                     'description': food.description or '',
                     'price': float(food.price),
                     'category': food.category,
+                    'meal_period': food.meal_period,
+                    'is_popular': food.is_popular,
                     'is_available': food.is_available,
                     'image': food.image.url if food.image else None,
                     'image_url': food.image.url if food.image else None,
@@ -304,7 +306,7 @@ class MealPeriodSerializer(serializers.ModelSerializer):
     class Meta:
         model = MealPeriod
         fields = ['id', 'kind', 'label', 'start_time', 'end_time',
-                  'slot_capacity', 'is_active']
+                  'preorder_cutoff_time', 'slot_capacity', 'is_active']
 
 
 class RestaurantSerializer(RestaurantListSerializer):
@@ -754,6 +756,7 @@ class OrderPoolSerializer(serializers.ModelSerializer):
     restaurant_menu = serializers.SerializerMethodField()
 
     scheduled_for = serializers.DateTimeField(required=False, allow_null=True)
+    meal_period = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     def validate_scheduled_for(self, value):
         if self.instance is not None and value != self.instance.scheduled_for:
@@ -761,7 +764,15 @@ class OrderPoolSerializer(serializers.ModelSerializer):
                 "The eating time cannot be changed after the bucket is created."
             )
         return value
-    
+
+    def validate_meal_period(self, value):
+        meal = (value or '').strip().upper() or None
+        if self.instance is not None and meal != self.instance.meal_period:
+            raise serializers.ValidationError(
+                "The meal cannot be changed after the bucket is created."
+            )
+        return meal
+
     class Meta:
         from apps.orders.models import OrderPool
         model = OrderPool
@@ -769,7 +780,7 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
             'total_delivery_fee', 'total_service_fee', 'members', 'created_at', 'expires_at',
-            'scheduled_for', 'pool_type',
+            'scheduled_for', 'pool_type', 'meal_period',
             'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'total_service_fee', 'initiator', 'expires_at', 'pool_type']
@@ -803,8 +814,18 @@ class OrderPoolSerializer(serializers.ModelSerializer):
                 foods.extend([f for f in section.foods.all() if f.is_available])
         else:
             from apps.products.models import Food
-            foods = Food.objects.filter(section__restaurant=obj.restaurant, is_available=True).only('id', 'name', 'price', 'category', 'image')
-        return [{'id': str(f.id), 'name': f.name, 'price': float(f.price), 'category': f.category, 'image': f.image.url if f.image else None} for f in foods]
+            foods = Food.objects.filter(section__restaurant=obj.restaurant, is_available=True).only('id', 'name', 'price', 'category', 'meal_period', 'is_popular', 'image')
+
+        # A pre-order bucket shows only the menu for its meal, plus all-day
+        # items. The client filters too, but scoping here keeps every client
+        # consistent and stops out-of-meal dishes from being offered.
+        if obj.meal_period:
+            foods = [
+                f for f in foods
+                if f.meal_period in (obj.meal_period, 'ALL_DAY')
+            ]
+
+        return [{'id': str(f.id), 'name': f.name, 'price': float(f.price), 'category': f.category, 'meal_period': f.meal_period, 'is_popular': f.is_popular, 'image': f.image.url if f.image else None} for f in foods]
 
 
     def get_is_initiator(self, obj):

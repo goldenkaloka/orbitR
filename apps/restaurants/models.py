@@ -65,6 +65,15 @@ class MealPeriod(models.Model):
     )
     start_time = models.TimeField()
     end_time = models.TimeField()
+    preorder_cutoff_time = models.TimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Latest time of day a pre-order for this meal can be placed "
+            "(e.g. 11:00 for lunch). Blank accepts pre-orders until the "
+            "meal window closes."
+        ),
+    )
     slot_capacity = models.PositiveIntegerField(
         null=True,
         blank=True,

@@ -63,12 +63,13 @@ class MealPeriodTests(TestCase):
     def _local(self, hour, minute=0, day=25):
         return datetime(2026, 10, day, hour, minute, tzinfo=TZ)
 
-    def _add_period(self, kind, start, end, capacity=None, active=True):
+    def _add_period(self, kind, start, end, capacity=None, active=True, cutoff=None):
         return MealPeriod.objects.create(
             restaurant=self.restaurant,
             kind=kind,
             start_time=start,
             end_time=end,
+            preorder_cutoff_time=cutoff,
             slot_capacity=capacity,
             is_active=active,
         )
@@ -314,3 +315,107 @@ class MealPeriodTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('Invalid meal kind', response.json()['error'])
+
+    # ── Pre-order cutoff ────────────────────────────────────────────────────
+
+    def test_todays_meal_disappears_after_its_cutoff(self):
+        self._add_period(
+            MealPeriod.LUNCH, time(12, 0), time(15, 30),
+            cutoff=time(11, 0),
+        )
+
+        # 11:30 is past lunch's 11:00 ordering deadline, so today is not
+        # bookable at all and the first offered day is tomorrow.
+        days = upcoming_slot_days(
+            self.restaurant, days=2, now=self._local(11, 30),
+        )
+
+        self.assertEqual([day['date'] for day in days], ['2026-10-26'])
+        self.assertIn(
+            'LUNCH', [meal['type'] for meal in days[0]['meals']],
+        )
+
+    def test_cutoff_rejects_a_same_day_booking(self):
+        self._add_period(
+            MealPeriod.LUNCH, time(12, 0), time(15, 30),
+            cutoff=time(11, 0),
+        )
+
+        with self.assertRaisesMessage(
+            PreorderSlotUnavailable, 'Lunch pre-orders close at 11:00',
+        ):
+            ensure_preorder_slot_capacity(
+                self.restaurant, self._local(12, 0),
+                now=self._local(11, 30),
+            )
+
+    def test_cutoff_allows_a_booking_before_the_deadline(self):
+        self._add_period(
+            MealPeriod.LUNCH, time(12, 0), time(15, 30),
+            cutoff=time(11, 0),
+        )
+
+        ensure_preorder_slot_capacity(
+            self.restaurant, self._local(12, 0),
+            now=self._local(10, 59),
+        )
+
+    def test_cutoff_does_not_block_future_days(self):
+        self._add_period(
+            MealPeriod.LUNCH, time(12, 0), time(15, 30),
+            cutoff=time(11, 0),
+        )
+
+        ensure_preorder_slot_capacity(
+            self.restaurant, self._local(12, 0, day=26),
+            now=self._local(11, 30),
+        )
+
+    def test_meal_without_a_cutoff_stays_open(self):
+        self._add_period(MealPeriod.LUNCH, time(12, 0), time(15, 30))
+
+        ensure_preorder_slot_capacity(
+            self.restaurant, self._local(14, 30),
+            now=self._local(13, 0),
+        )
+
+    def test_owner_can_set_and_clear_a_cutoff(self):
+        response = self._put_windows(self.owner, [
+            {
+                'kind': 'LUNCH', 'start_time': '12:00', 'end_time': '15:30',
+                'preorder_cutoff_time': '11:00',
+            },
+        ])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json()['meal_periods'][0]['preorder_cutoff_time'],
+            '11:00:00',
+        )
+        self.assertEqual(
+            meal_windows_for(self.restaurant)[0].preorder_cutoff,
+            time(11, 0),
+        )
+
+        cleared = self._put_windows(self.owner, [
+            {
+                'kind': 'LUNCH', 'start_time': '12:00', 'end_time': '15:30',
+                'preorder_cutoff_time': '',
+            },
+        ])
+
+        self.assertEqual(cleared.status_code, 200)
+        self.assertIsNone(
+            cleared.json()['meal_periods'][0]['preorder_cutoff_time'],
+        )
+
+    def test_cutoff_after_the_window_closes_is_rejected(self):
+        response = self._put_windows(self.owner, [
+            {
+                'kind': 'LUNCH', 'start_time': '12:00', 'end_time': '15:30',
+                'preorder_cutoff_time': '16:00',
+            },
+        ])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('cutoff', response.json()['error'])

@@ -8,7 +8,7 @@ from domain.services.permissions import check_restaurant_permission
 
 class MenuService:
     @staticmethod
-    def create_food(owner_user, name, price, description='', category='MAIN', is_available=True, image=None, section=None):
+    def create_food(owner_user, name, price, description='', category='MAIN', meal_period=Food.ALL_DAY, is_popular=False, is_available=True, image=None, section=None):
         with transaction.atomic():
             restaurant = None
             if section is not None:
@@ -29,6 +29,8 @@ class MenuService:
                 price=price,
                 description=description,
                 category=category,
+                meal_period=meal_period,
+                is_popular=is_popular,
                 is_available=is_available,
                 image=image,
             )

@@ -62,6 +62,9 @@ class MealWindow:
     start: time
     end: time
     slot_capacity: int | None = None
+    # Latest time of day a pre-order for this meal can be placed. None keeps
+    # the old behaviour: bookable right up to the end of the window.
+    preorder_cutoff: time | None = None
 
 
 # Used until a restaurant configures its own serving windows.
@@ -89,6 +92,7 @@ def meal_windows_for(restaurant):
                 start=row.start_time,
                 end=row.end_time,
                 slot_capacity=row.slot_capacity,
+                preorder_cutoff=row.preorder_cutoff_time,
             )
             for row in configured
             if row.is_active
@@ -228,6 +232,33 @@ def meal_window_for(restaurant, scheduled_for):
     return None
 
 
+def cutoff_for_meal(restaurant, meal_kind):
+    """The configured pre-order cutoff for one meal, if any."""
+    for window in meal_windows_for(restaurant):
+        if window.kind == meal_kind:
+            return window.preorder_cutoff
+    return None
+
+
+def meal_cutoff_passed(window, scheduled_for, now=None):
+    """
+    Whether the ordering deadline for ``window`` has passed for that day.
+
+    The cutoff is a *placing* deadline, so it only applies to today's service:
+    a customer can still book tomorrow's lunch after today's cutoff. A window
+    with no cutoff never closes early.
+    """
+    if window.preorder_cutoff is None:
+        return False
+    tz = _preorder_timezone()
+    now = now or timezone.now()
+    local_now = now.astimezone(tz)
+    local_booking = scheduled_for.astimezone(tz)
+    if local_booking.date() != local_now.date():
+        return False
+    return local_now.time() >= window.preorder_cutoff
+
+
 def slot_capacity_for_meal(restaurant, window):
     """Seats per slot for one meal; a per-meal override beats the kitchen limit."""
     if window.slot_capacity is not None:
@@ -314,6 +345,16 @@ def upcoming_slot_days(restaurant, days=2, now=None):
             if capacity <= 0:
                 continue
 
+            # Today's meal stops taking pre-orders at its configured cutoff
+            # (e.g. lunch at 11:00). Future days are unaffected.
+            day_cutoff_passed = (
+                window.preorder_cutoff is not None
+                and day == local_now.date()
+                and local_now.time() >= window.preorder_cutoff
+            )
+            if day_cutoff_passed:
+                continue
+
             window_slots = []
             cursor = datetime.combine(day, window.start, tzinfo=tz)
             window_end = datetime.combine(day, window.end, tzinfo=tz)
@@ -373,11 +414,11 @@ def slot_seats_taken(restaurant, slot_start, slot_end):
     return orders + pools
 
 
-def ensure_preorder_slot_capacity(restaurant, scheduled_for):
+def ensure_preorder_slot_capacity(restaurant, scheduled_for, now=None):
     """
-    Refuse a booking outside a serving window or when its slot is full. The
-    caller must hold the restaurant row lock so concurrent bookings are
-    serialised.
+    Refuse a booking outside a serving window, after its pre-order cutoff, or
+    when its slot is full. The caller must hold the restaurant row lock so
+    concurrent bookings are serialised.
     """
     base_capacity = slot_capacity_for(restaurant)
     if base_capacity <= 0:
@@ -402,6 +443,12 @@ def ensure_preorder_slot_capacity(restaurant, scheduled_for):
     if capacity <= 0:
         raise PreorderSlotUnavailable(
             f"{window.label} pre-orders are not being accepted."
+        )
+
+    if meal_cutoff_passed(window, scheduled_for, now=now):
+        raise PreorderSlotUnavailable(
+            f"{window.label} pre-orders close at "
+            f"{window.preorder_cutoff.strftime('%H:%M')}."
         )
 
     slot_start, slot_end = slot_window_for(scheduled_for)

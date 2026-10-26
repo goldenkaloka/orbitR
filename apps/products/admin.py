@@ -7,8 +7,8 @@ from .models import Food
 
 @admin.register(Food)
 class FoodAdmin(ModelAdmin):
-    list_display = ('name', 'section', 'vendor', 'price', 'show_availability')
-    list_filter = ('is_available', 'section__restaurant', 'section')
+    list_display = ('name', 'section', 'vendor', 'price', 'meal_period', 'is_popular', 'show_availability')
+    list_filter = ('meal_period', 'is_popular', 'is_available', 'section__restaurant', 'section')
     search_fields = ('name', 'section__name', 'section__restaurant__name')
     ordering = ('section__restaurant__name', 'name')
     list_per_page = 25
@@ -18,7 +18,7 @@ class FoodAdmin(ModelAdmin):
 
     fieldsets = (
         (None, {'fields': ('id', 'name', 'section', 'description', 'image')}),
-        ('Pricing & Availability', {'fields': ('price', 'is_available')}),
+        ('Pricing & Availability', {'fields': ('price', 'meal_period', 'is_popular', 'is_available')}),
     )
 
     @display(
