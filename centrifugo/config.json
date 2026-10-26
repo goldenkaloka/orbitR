@@ -25,11 +25,12 @@
   "channel": {
     "proxy": {
       "subscribe": {
-        "endpoint": "http://backend:8000/api/ws-subscribe-check/",
+        "endpoint": "http://backend:8001/api/ws-subscribe-check/",
         "timeout": "10s",
         "http": {
           "static_headers": {
-            "X-Centrifugo-Proxy-Secret": "${CENTRIFUGO_VAR_PROXY_SECRET}"
+            "X-Centrifugo-Proxy-Secret": "${CENTRIFUGO_VAR_PROXY_SECRET}",
+            "X-Forwarded-Proto": "https"
           }
         }
       }

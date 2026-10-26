@@ -390,10 +390,14 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
 
         # ── Search Box reverse ────────────────────────────────────────────
         try:
+            # Only precise features: a city-level name ("Dar es Salaam") is
+            # useless as a delivery address and misleads drivers, so let the
+            # client fall back to the exact coordinates instead.
             url = (
                 f'https://api.mapbox.com/search/searchbox/v1/reverse'
                 f'?access_token={_MAPBOX_TOKEN}'
                 f'&latitude={lat}&longitude={lng}&limit=5'
+                f'&types=address,street,neighborhood,poi'
             )
             resp = req_lib.get(url, timeout=5)
             if resp.status_code == 200:
@@ -418,7 +422,7 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
                     f'https://api.mapbox.com/geocoding/v5/mapbox.places'
                     f'/{lng},{lat}.json'
                     f'?access_token={_MAPBOX_TOKEN}'
-                    f'&types=poi,place,neighborhood,locality'
+                    f'&types=address,poi,neighborhood'
                 )
                 resp = req_lib.get(url, timeout=5)
                 if resp.status_code == 200:

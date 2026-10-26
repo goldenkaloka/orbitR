@@ -69,6 +69,12 @@ DELIVERY_GEOFENCE_RADIUS_METERS = config('DELIVERY_GEOFENCE_RADIUS_METERS', defa
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,backend', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 if not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'backend']
+if not DEBUG:
+    # Centrifugo's subscribe proxy calls the backend by its compose service
+    # name. Production .env files list public hosts only, which made Django
+    # answer 400 to every proxy request and refuse all realtime subscriptions.
+    if 'backend' not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append('backend')
 if not DEBUG and '*' in ALLOWED_HOSTS:
     raise ValueError("ALLOWED_HOSTS must not contain '*' in production.")
 
@@ -80,6 +86,15 @@ if not CSRF_TRUSTED_ORIGINS:
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+    SECURE_REDIRECT_EXEMPT = [
+        # Internal plain-HTTP probes: Docker's healthcheck and Centrifugo's
+        # subscribe proxy. A 301 here makes the client follow to https on a
+        # plain port; gunicorn's sync worker blocks reading CRLF forever and
+        # is only freed by WORKER TIMEOUT, which poisoned every worker under
+        # subscribe bursts.
+        r'^health/?$',
+        r'^api/ws-subscribe-check/?$',
+    ]
     # Allow override via env — set to False when running over plain HTTP (no SSL)
     SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
     CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
