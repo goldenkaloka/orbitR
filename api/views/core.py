@@ -1971,8 +1971,8 @@ class AppConfigView(APIView):
 
     def get(self, request):
         return Response({
-            "minimum_version": os.getenv("MIN_APP_VERSION", "1.0.1+7"),
-            "latest_version": os.getenv("LATEST_APP_VERSION", "1.0.1+7"),
+            "minimum_version": os.getenv("MIN_APP_VERSION", "1.0.3"),
+            "latest_version": os.getenv("LATEST_APP_VERSION", "1.0.3+23"),
             "update_url": os.getenv(
                 "APP_UPDATE_URL",
                 "https://play.google.com/store/apps/details?id=com.mwanachuoshop.app",

@@ -87,6 +87,37 @@ class PoolOrderService:
     MAX_POOL_MEMBERS = 10
 
     @staticmethod
+    def _refresh_fee_preview(pool):
+        """Price an OPEN bucket so the card never reads 0 before it is locked.
+
+        The fixed delivery fee is re-split every time the squad changes; the
+        lock step recomputes the same total and logs it.
+        """
+        total_fee, service_fee, _ = PricingService.calculate_delivery_fee(
+            pool.restaurant,
+            pool.delivery_location,
+            pool=pool,
+            skip_log=True,
+        )
+        pool.total_delivery_fee = total_fee
+        pool.service_fee = service_fee
+        pool.save(update_fields=['total_delivery_fee', 'service_fee'])
+
+        members = list(pool.members.all())
+        if not members:
+            return
+
+        subtotals = [member.items_subtotal for member in members]
+        delivery_shares = _split_fee_proportionally(total_fee, subtotals)
+        service_shares = _split_fee_proportionally(service_fee, subtotals)
+        for i, member in enumerate(members):
+            member.delivery_fee_share = delivery_shares[i]
+            member.service_fee_share = service_shares[i]
+        PoolMember.objects.bulk_update(
+            members, ['delivery_fee_share', 'service_fee_share'],
+        )
+
+    @staticmethod
     def create_pool(
         initiator,
         restaurant_id,
@@ -192,6 +223,7 @@ class PoolOrderService:
                     continue
 
         if pool:
+            PoolOrderService._refresh_fee_preview(pool)
             broadcast_pool_status(str(pool.id), 'OPEN')
             notify_nearby_pool_created.delay(str(pool.id), restaurant.name)
         return pool
@@ -213,6 +245,7 @@ class PoolOrderService:
             member, created = PoolMember.objects.get_or_create(pool=pool, user=user, defaults={'status': 'ADDING'})
 
             if created:
+                PoolOrderService._refresh_fee_preview(pool)
                 _pool_id = str(pool.id)
                 _username = user.username
                 transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} joined the pool!"))
@@ -266,6 +299,7 @@ class PoolOrderService:
             member.items = items
             member.items_subtotal = sum(Decimal(str(i['price'])) for i in items)
             member.save(update_fields=['items', 'items_subtotal'])
+            PoolOrderService._refresh_fee_preview(pool)
 
             _pool_id, _username, _food_name = str(pool.id), user.username, food.name
             transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} added {_food_name}"))
@@ -297,6 +331,7 @@ class PoolOrderService:
             member.items = new_items
             member.items_subtotal = sum(Decimal(str(i['price'])) for i in new_items)
             member.save(update_fields=['items', 'items_subtotal'])
+            PoolOrderService._refresh_fee_preview(pool)
 
             _pool_id, _username = str(pool.id), user.username
             transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} updated items"))
@@ -330,6 +365,7 @@ class PoolOrderService:
                 raise PermissionError("Initiator cannot leave — cancel the pool instead.")
 
             PoolMember.objects.get(pool=pool, user=user).delete()
+            PoolOrderService._refresh_fee_preview(pool)
             _pool_id, _username = str(pool.id), user.username
             transaction.on_commit(lambda: broadcast_pool_status(_pool_id, 'OPEN', message=f"{_username} left."))
             return pool
@@ -828,6 +864,8 @@ class PoolOrderService:
                 RefundPaymentService.execute('pool_member', member.id)
 
             member.delete()
+            if pool.status == 'OPEN':
+                PoolOrderService._refresh_fee_preview(pool)
 
             _pool_id = str(pool.id)
             from apps.events.utils import broadcast_pool_status
