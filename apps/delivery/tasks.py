@@ -121,6 +121,15 @@ def notify_nearby_pool_created(pool_id: str, restaurant_name: str):
         logger.warning(f"[NearbyPoolNotify] Pool {pool_id} not found")
         return f"Pool {pool_id} not found"
 
+    # This task is queued at creation, so it can run after the initiator has
+    # already cancelled or the bucket has expired. Pushing "a bucket is near
+    # you" then sends people to a bucket that no longer exists.
+    if pool.status != 'OPEN' or pool.expires_at <= timezone.now():
+        logger.info(
+            f"[NearbyPoolNotify] Pool {pool_id} is {pool.status} — skipping push"
+        )
+        return f"Pool {pool_id} is not open"
+
     # Active pools within 1 km
     nearby_pools = OrderPool.objects.filter(
         status__in=['OPEN', 'LOCKED', 'PAID', 'READY'],

@@ -27,7 +27,7 @@ from apps.reviews.models import Review
 from apps.users.models import User
 from apps.wallets.models import Wallet, WalletTransaction
 from django.conf import settings
-from django.contrib.postgres.search import TrigramSimilarity
+from django.contrib.postgres.search import TrigramWordSimilarity
 from django.core.cache import cache
 from django.db import models
 from django.db.models import Avg, Case, Count, DurationField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Prefetch, Q, Subquery, Value, When
@@ -48,6 +48,7 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.settings import api_settings
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
@@ -324,6 +325,11 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
     public_actions = {'list', 'retrieve', 'delivery_fee', 'preorder_slots'}
 
+    # Matchmaking-style discovery: start with the immediate neighbourhood and
+    # widen the ring until a page holds enough options. Kilometres.
+    DISCOVERY_RINGS_KM = (1, 3, 5, 10, 20, 50)
+    MIN_DISCOVERY_RESULTS = 6
+
     def get_permissions(self):
         if getattr(self, 'action', None) in self.public_actions:
             return [AllowAny()]
@@ -381,7 +387,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         if getattr(self, "action", None) == "list":
             lat = self.request.query_params.get('lat')
             lng = self.request.query_params.get('lng')
-            sort_by = self.request.query_params.get('sort_by', 'recommended')
+            sort_by = self.request.query_params.get('sort_by', 'distance')
 
             if lat and lng:
                 from django.contrib.gis.db.models.functions import Distance
@@ -395,12 +401,10 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                     )
                 )
 
-                # Keep only restaurants that can serve this customer: either the
-                # customer sits inside the restaurant's delivery radius, or both
-                # are in the same operational zone. Without this the homepage
-                # ranks across every zone in the country and surfaces listings
-                # that cannot deliver here. The H3 lookup keeps the zone test on
-                # an index instead of a polygon scan per restaurant.
+                # Restaurant must be able to serve this customer: the customer
+                # sits inside its delivery radius, or both are in the same
+                # operational zone. The H3 lookup keeps the zone test on an
+                # index instead of a polygon scan per restaurant.
                 cell = latlng_to_h3(float(lat), float(lng), ZONE_RESOLUTION)
                 zone = (
                     OperationalZone.objects.filter(
@@ -410,11 +414,45 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                     .only('boundary')
                     .first()
                 )
-                reachable = Q(distance__lte=F('max_delivery_radius_km') * 1000.0)
+                deliverable = Q(distance__lte=F('max_delivery_radius_km') * 1000.0)
                 if zone is not None:
                     # coveredby has a geography implementation; ST_Within does not.
-                    reachable |= Q(geo_location__coveredby=zone.boundary)
-                queryset = queryset.filter(reachable, geo_location__isnull=False)
+                    deliverable |= Q(geo_location__coveredby=zone.boundary)
+
+                # Ringed discovery. A customer in a dense area only sees their
+                # neighbourhood; in a sparse one the ring keeps widening until
+                # it can fill a page, instead of an empty feed.
+                try:
+                    requested = int(self.request.query_params.get('limit', ''))
+                except (TypeError, ValueError):
+                    requested = 0
+                ring_target = max(
+                    self.MIN_DISCOVERY_RESULTS,
+                    min(requested or api_settings.PAGE_SIZE or 20, 50),
+                )
+                from django.contrib.gis.measure import D
+                located = queryset.filter(geo_location__isnull=False)
+                discovered = None
+                for ring_km in self.DISCOVERY_RINGS_KM:
+                    # ST_DWithin (not the distance annotation) so the GiST
+                    # index narrows the ring instead of scanning every row.
+                    ring_qs = located.filter(
+                        deliverable,
+                        geo_location__distance_lte=(user_location, D(km=ring_km)),
+                    )
+                    count = ring_qs.count()
+                    if count == 0:
+                        continue
+                    discovered = ring_qs
+                    if count >= ring_target:
+                        break
+                if discovered is None:
+                    # No deliverable restaurant at any ring: show the nearest
+                    # listings regardless, so the feed is never blank. Order
+                    # placement does not gate on delivery radius.
+                    queryset = located
+                else:
+                    queryset = discovered
 
             queryset = queryset.annotate(
                 review_count=Count(
@@ -455,12 +493,14 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             )
 
             if sort_by == 'distance' and lat and lng:
-                queryset = queryset.order_by('distance')
+                # Nearest first, with id as a stable tiebreak so limit/offset
+                # pagination does not repeat or skip rows.
+                queryset = queryset.order_by('distance', 'id')
             elif sort_by == 'rating':
                 queryset = queryset.order_by('-rating', '-review_count')
             elif sort_by == 'prep_time':
                 queryset = queryset.order_by('actual_prep_minutes')
-            elif sort_by == 'recommended':
+            else:
                 global_avg = Review.objects.filter(
                     review_type='restaurant',
                     is_visible=True,
@@ -1831,7 +1871,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
 class UniversalSearchView(APIView):
     """
     Search across multiple models (Restaurants, Foods).
-    Uses Postgres TrigramSimilarity for fuzzy matching.
+    Uses Postgres trigram word similarity for fuzzy matching.
 
     Public: the catalogue is browsable by guests, so search must be too. Reads
     of the same tables are already public through RestaurantViewSet.
@@ -1856,22 +1896,46 @@ class UniversalSearchView(APIView):
                 "products": []
             })
 
+        # A bare trigram cut-off is too permissive: "wali" (rice) shares its
+        # tail with "Ugali" and cleared the old 0.1 floor, so a rice search
+        # showed maize-meal dishes. Word-level similarity also inflates short
+        # queries ("chai" scores 0.6 against "Chapati"), so fuzzy matching is
+        # only trusted from five characters up. Below that, only an actual
+        # substring hit counts. Rank exact > prefix > contains > fuzzy.
+        fuzzy_allowed = len(query) >= 5
+
+        def search_qs(queryset):
+            queryset = queryset.annotate(
+                similarity=TrigramWordSimilarity(query, 'name'),
+                match_rank=Case(
+                    When(name__iexact=query, then=Value(3)),
+                    When(name__istartswith=query, then=Value(2)),
+                    When(name__icontains=query, then=Value(1)),
+                    default=Value(0),
+                    output_field=models.IntegerField(),
+                ),
+            )
+            match = Q(name__icontains=query)
+            if fuzzy_allowed:
+                match |= Q(similarity__gte=0.5)
+            return queryset.filter(match).order_by('-match_rank', '-similarity')
+
         # Search Restaurants — Prefetch foods to avoid N+1 in serializer
-        restaurants_qs = Restaurant.objects.filter(is_active=True).prefetch_related('sections__foods').annotate(
-            similarity=TrigramSimilarity('name', query)
-        ).filter(similarity__gt=0.1).order_by('-similarity')[:15]
+        restaurants_qs = search_qs(
+            Restaurant.objects.filter(is_active=True).prefetch_related('sections__foods')
+        )[:15]
 
         # Search Products — select_related for vendor info
-        products_qs = Food.objects.select_related('section__restaurant').filter(is_available=True).annotate(
-            similarity=TrigramSimilarity('name', query)
-        ).filter(similarity__gt=0.1).order_by('-similarity')[:30]
+        products_qs = search_qs(
+            Food.objects.select_related('section__restaurant').filter(is_available=True)
+        )[:30]
 
         # Search Marketplace
-        marketplace_qs = MarketplaceProduct.objects.select_related('seller', 'category').prefetch_related('images').filter(
-            status='ACTIVE'
-        ).annotate(
-            similarity=TrigramSimilarity('name', query)
-        ).filter(similarity__gt=0.1).order_by('-similarity')[:20]
+        marketplace_qs = search_qs(
+            MarketplaceProduct.objects.select_related('seller', 'category')
+            .prefetch_related('images')
+            .filter(status='ACTIVE')
+        )[:20]
 
         # Collect all required vendor data for the products found
         vendor_ids = set(p.vendor_id for p in products_qs)

@@ -45,6 +45,9 @@ pytz==2025.2
 cryptography==46.0.7
 pycryptodome
 
+# Pre-order kitchen sheets
+reportlab==4.4.4
+
 # Production
 gunicorn==23.0.0
 certifi==2025.1.31

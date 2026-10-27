@@ -121,9 +121,7 @@ class Command(BaseCommand):
                     'category': categories.get(category_name),
                     'description': description,
                     'price': Decimal(str(price)),
-                    'condition': random.choice(
-                        ['NEW', 'LIKE_NEW', 'GOOD', 'FAIR']
-                    ),
+                    'condition': random.choice(['NEW', 'USED', 'OTHER']),
                     'whatsapp_number': seller.phone,
                     'location': point,
                     'status': 'ACTIVE',

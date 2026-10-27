@@ -10,6 +10,7 @@ from .models import (
     Dispute,
     Order,
     OrderItem,
+    PreorderSheet,
 )
 
 
@@ -209,3 +210,20 @@ class BatchingStrategyAdmin(ModelAdmin):
         ('Pricing', {'fields': ('pricing',)}),
         ('Route Optimization', {'fields': ('route_optimization',)}),
     )
+
+
+@admin.register(PreorderSheet)
+class PreorderSheetAdmin(ModelAdmin):
+    list_display = (
+        'service_date', 'meal_period', 'restaurant', 'order_count',
+        'item_count', 'subtotal', 'locked_at', 'pdf_kb',
+    )
+    list_filter = ('meal_period', 'service_date', 'restaurant')
+    search_fields = ('restaurant__name',)
+    ordering = ('-service_date', 'locked_at')
+    raw_id_fields = ('restaurant',)
+    readonly_fields = ('id', 'generated_at')
+
+    @display(description='PDF')
+    def pdf_kb(self, obj):
+        return f'{len(obj.pdf or b"") // 1024} KB'

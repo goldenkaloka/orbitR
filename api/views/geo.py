@@ -9,12 +9,7 @@ from api.serializers.geo import (
 )
 from apps.core.geo_utils import ZONE_RESOLUTION, get_neighbors, latlng_to_h3
 from apps.geo.models import OperationalZone, ZoneH3Index
-from apps.geo.place_aliases import (
-    alias_coordinates,
-    aliases_near_cells,
-    cell_and_neighbours,
-    search_aliases,
-)
+from apps.geo.place_aliases import alias_coordinates, search_aliases
 from django.core.cache import cache
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -55,29 +50,20 @@ def _valid_coords(lat, lng):
     return lat_f, lng_f
 
 
-def _parse_searchbox_feature(feature: dict, *, reverse: bool = False) -> dict | None:
+def _parse_searchbox_feature(feature: dict) -> dict | None:
     props = feature.get('properties', {})
     feature_type = props.get('feature_type', '')
-    if feature_type == 'poi':
-        name = props.get('name', '')
-        full_address = props.get('full_address', '') or props.get('place_formatted', '')
-    elif feature_type == 'address':
+    name = props.get('name', '')
+    full_address = (props.get('full_address') or props.get('place_formatted') or '').strip()
+    if feature_type == 'address':
         name = props.get('address', '')
-        full_address = props.get('full_address', '') or props.get('place_formatted', '')
-    else:
-        name = props.get('name', '')
-        full_address = props.get('place_formatted', '')
 
     coords = props.get('coordinates') or {}
     point = _valid_coords(coords.get('latitude'), coords.get('longitude'))
     if point is None:
         return None
 
-    # Reverse results are shown as the delivery address. On an address feature
-    # `name` is only the house number ("12"), and a bare POI name is not an
-    # address, so prefer the formatted address when there is one.
-    display_name = (full_address or name) if reverse else (name or full_address)
-    display_name = display_name.strip()
+    display_name = (name or full_address).strip()
     if not display_name:
         return None
 
@@ -92,7 +78,7 @@ def _parse_searchbox_feature(feature: dict, *, reverse: bool = False) -> dict | 
     }
 
 
-def _parse_geocoding_feature(feature: dict, *, reverse: bool = False) -> dict | None:
+def _parse_geocoding_feature(feature: dict) -> dict | None:
     center = feature.get('center') or []
     if len(center) < 2:
         return None
@@ -103,9 +89,7 @@ def _parse_geocoding_feature(feature: dict, *, reverse: bool = False) -> dict | 
     context = [c.get('text') for c in feature.get('context', []) if c.get('text')]
     text = (feature.get('text') or '').strip()
     place_name = (feature.get('place_name') or '').strip()
-    # A v5 address result's `text` is the house number; `place_name` is the
-    # full readable address.
-    display_name = (place_name if reverse and place_name else text) or place_name
+    display_name = place_name or text
     if not display_name:
         return None
 
@@ -136,18 +120,6 @@ def _alias_result(alias):
         'feature_type': 'alias',
         'source': 'crowd',
     }
-
-
-def _nearest_alias_result(lat, lng):
-    """Best approved crowd name for the cell containing (lat, lng)."""
-    try:
-        cell = latlng_to_h3(lat, lng)
-    except (ValueError, TypeError):
-        return None
-    aliases = aliases_near_cells(cell_and_neighbours(cell), limit=1)
-    if not aliases:
-        return None
-    return _alias_result(aliases[0])
 
 
 class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
@@ -352,102 +324,3 @@ class OperationalZoneViewSet(viewsets.ReadOnlyModelViewSet):
         cache.set(cache_key, results, 300 if results else 30)
         return Response(results)
 
-    @action(detail=False, methods=['GET'])
-    def reverse_geocode(self, request):
-        """
-        Proxy for reverse geocoding (GPS → address).
-        Tries Mapbox Search Box first, falls back to Geocoding v5.
-        """
-        lat = request.query_params.get('lat')
-        lng = request.query_params.get('lng')
-
-        if not lat or not lng:
-            return Response({'error': 'lat and lng are required'}, status=400)
-
-        try:
-            lat_rounded = round(float(lat), 4)
-            lng_rounded = round(float(lng), 4)
-            cache_key = f'geo:reverse_geocode:{lat_rounded}:{lng_rounded}'
-        except (ValueError, TypeError):
-            return Response({'error': 'Invalid lat or lng format'}, status=400)
-
-        cached = cache.get(cache_key)
-        if cached is not None:
-            return Response(cached)
-
-        # Names customers actually use beat a Mapbox POI, and still work when
-        # the Mapbox quota is exhausted.
-        alias_fallback = _nearest_alias_result(lat_rounded, lng_rounded)
-
-        err = _mapbox_token_or_503(Response)
-        if err:
-            if alias_fallback:
-                return Response([alias_fallback])
-            return err
-
-        results = []
-        reverse_down = False
-
-        # ── Search Box reverse ────────────────────────────────────────────
-        try:
-            # Only precise features: a city-level name ("Dar es Salaam") is
-            # useless as a delivery address and misleads drivers, so let the
-            # client fall back to the exact coordinates instead.
-            url = (
-                f'https://api.mapbox.com/search/searchbox/v1/reverse'
-                f'?access_token={_MAPBOX_TOKEN}'
-                f'&latitude={lat}&longitude={lng}&limit=5'
-                f'&types=address,street,neighborhood,poi'
-            )
-            resp = req_lib.get(url, timeout=5)
-            if resp.status_code == 200:
-                results = [
-                    parsed for parsed in (
-                        _parse_searchbox_feature(f, reverse=True)
-                        for f in resp.json().get('features', [])
-                    ) if parsed
-                ]
-            elif resp.status_code >= 500:
-                reverse_down = True
-        except Exception as exc:
-            logger.warning('Search Box reverse geocode failed: %s', exc)
-            # Circuit-break: skip the second Mapbox hop after a transport
-            # failure — worst case 5 s, not 10 s, inside the request path.
-            reverse_down = True
-
-        # ── Geocoding v5 fallback ─────────────────────────────────────────
-        if not results and not reverse_down:
-            try:
-                url = (
-                    f'https://api.mapbox.com/geocoding/v5/mapbox.places'
-                    f'/{lng},{lat}.json'
-                    f'?access_token={_MAPBOX_TOKEN}'
-                    f'&types=address,poi,neighborhood'
-                )
-                resp = req_lib.get(url, timeout=5)
-                if resp.status_code == 200:
-                    results = [
-                        parsed for parsed in (
-                            _parse_geocoding_feature(f, reverse=True)
-                            for f in resp.json().get('features', [])
-                        ) if parsed
-                    ]
-            except Exception as exc:
-                logger.error('Geocoding v5 reverse fallback failed: %s', exc)
-
-        # The customer is standing at a point, not shopping at whatever
-        # business happens to be closest, so a street address should win over
-        # a POI. Sorting is stable, so Mapbox's proximity order still wins
-        # inside each bucket.
-        type_priority = {
-            'address': 0, 'street': 1, 'neighborhood': 2,
-            'locality': 3, 'place': 4, 'poi': 5,
-        }
-        results.sort(key=lambda r: type_priority.get(r.get('feature_type', ''), 6))
-
-        # An outage would otherwise pin an empty address on this coordinate
-        # for a full hour — short TTL for misses, full TTL for real results.
-        if alias_fallback:
-            results = [alias_fallback, *results]
-        cache.set(cache_key, results, 3600 if results else 30)
-        return Response(results)

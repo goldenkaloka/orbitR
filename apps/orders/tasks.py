@@ -279,3 +279,17 @@ def release_scheduled_orders():
 
     logger.info(f"[PreOrder] Released {released}/{len(due_ids)} scheduled orders.")
     return f"Released {released} scheduled orders."
+
+
+@shared_task
+def generate_preorder_sheets():
+    """
+    Freezes each meal's kitchen list once its bookings close.
+
+    Runs often; the service skips meals that are still open and meals whose
+    sheet already exists, so a re-run is cheap and never duplicates a sheet.
+    """
+    from domain.services.orders.preorder_sheets import generate_due_sheets
+
+    generated = generate_due_sheets()
+    return f"Generated {len(generated)} pre-order sheet(s)."

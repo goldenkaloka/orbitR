@@ -230,6 +230,50 @@ class OrderItem(models.Model):
     def __str__(self):
         return f"{self.quantity} x {self.food.name}"
 
+
+class PreorderSheet(models.Model):
+    """One meal service's kitchen list, rendered when bookings close.
+
+    Stored as bytes rather than rebuilt per download: the kitchen prints the
+    same list every time, even if an order is declined after the cut-off. It
+    also stays out of the public media bucket, where customer names and phones
+    would be readable by anyone guessing an object URL.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name='preorder_sheets',
+    )
+    service_date = models.DateField(db_index=True)
+    meal_period = models.CharField(max_length=16, db_index=True)
+    meal_label = models.CharField(max_length=64)
+    locked_at = models.DateTimeField(
+        help_text='Moment the meal stopped taking pre-orders.',
+    )
+    order_count = models.PositiveIntegerField(default=0)
+    item_count = models.PositiveIntegerField(default=0)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    pdf = models.BinaryField(editable=False)
+    generated_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        # Newest day first; within a day the meals lock in serving order.
+        ordering = ['-service_date', 'locked_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'service_date', 'meal_period'],
+                name='unique_preorder_sheet_per_meal',
+            ),
+        ]
+
+    @property
+    def filename(self):
+        return f'preorders-{self.service_date}-{self.meal_period.lower()}.pdf'
+
+    def __str__(self):
+        return f'{self.service_date} {self.meal_period} @ {self.restaurant_id}'
+
+
 class Dispute(models.Model):
     CATEGORY_CHOICES = [
         ('wrong_items', 'Wrong Items'),

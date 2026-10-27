@@ -24,6 +24,10 @@ from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet, PostingTokenBundleViewSet
 from api.views.payments import AirpayWebhookView, ClickpesaWebhookView, InitiatePaymentView, PlatformRevenueView
 from api.views.pools import PoolOrderViewSet
+from api.views.preorder_sheets import (
+    PreorderSheetDownloadView,
+    PreorderSheetViewSet,
+)
 from api.views.pricing import (
     DeliveryFeeLogViewSet,
     PricingPolicyViewSet,
@@ -43,6 +47,7 @@ router.register(r'addresses', UserAddressViewSet, basename='user-address')
 router.register(r'restaurants', RestaurantViewSet, basename='restaurant')
 router.register(r'products', FoodViewSet, basename='product')
 router.register(r'orders', OrderViewSet, basename='order')
+router.register(r'preorder-sheets', PreorderSheetViewSet, basename='preorder-sheet')
 router.register(r'pools', PoolOrderViewSet, basename='pool')
 router.register(r'disputes', DisputeViewSet, basename='dispute')
 router.register(r'drivers', DriverViewSet, basename='driver')
@@ -64,6 +69,11 @@ router.register(r'sections', SectionViewSet, basename='section')
 router.register(r'batch-section-statuses', BatchSectionStatusViewSet, basename='batch-section-status')
 
 urlpatterns = router.urls + [
+    path(
+        'preorder-sheets/<uuid:pk>/download/',
+        PreorderSheetDownloadView.as_view(),
+        name='preorder-sheet-download',
+    ),
     path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),
     path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
     path('auth/register/', RegisterView.as_view(), name='register'),

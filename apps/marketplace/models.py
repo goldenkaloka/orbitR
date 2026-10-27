@@ -30,10 +30,9 @@ class MarketplaceProduct(models.Model):
     )
 
     CONDITION_CHOICES = (
-        ('NEW', 'Brand New'),
-        ('LIKE_NEW', 'Used - Like New'),
-        ('GOOD', 'Used - Good'),
-        ('FAIR', 'Used - Fair'),
+        ('NEW', 'New'),
+        ('USED', 'Used'),
+        ('OTHER', 'Other'),
     )
 
     LISTING_TYPE_CHOICES = (
@@ -48,7 +47,7 @@ class MarketplaceProduct(models.Model):
     name = models.CharField(max_length=255)
     description = models.TextField()
     price = models.DecimalField(max_digits=12, decimal_places=2)
-    condition = models.CharField(max_length=20, choices=CONDITION_CHOICES, default='GOOD')
+    condition = models.CharField(max_length=20, choices=CONDITION_CHOICES, default='USED')
     
     # Contact
     whatsapp_number = models.CharField(max_length=20, help_text="WhatsApp phone number with country code")

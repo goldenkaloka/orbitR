@@ -834,6 +834,10 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.orders.tasks.release_scheduled_orders',
         'schedule': crontab(minute='*'),
     },
+    'generate-preorder-sheets-every-5-mins': {
+        'task': 'apps.orders.tasks.generate_preorder_sheets',
+        'schedule': crontab(minute='*/5'),
+    },
     'expire-stale-assigned-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_assigned_orders_task',
         'schedule': crontab(minute='*/5'),

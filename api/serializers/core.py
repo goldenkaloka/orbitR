@@ -3,7 +3,7 @@ from decimal import Decimal
 from api.serializers.utils import parse_coordinate_dict
 from apps.core.models import Notification
 from apps.delivery.models import Driver
-from apps.orders.models import BatchSectionStatus, Dispute, Order, OrderItem
+from apps.orders.models import BatchSectionStatus, Dispute, Order, OrderItem, PreorderSheet
 from apps.products.models import Food
 from apps.restaurants.models import MealPeriod, Restaurant, RestaurantSection
 from apps.users.models import User
@@ -350,6 +350,21 @@ class AdminRestaurantSerializer(RestaurantSerializer):
         # Populated by the my-restaurants queryset annotation. Falls back to 0
         # for other admin responses that don't annotate it.
         return getattr(obj, 'active_order_count', 0) or 0
+
+
+class PreorderSheetSerializer(serializers.ModelSerializer):
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+
+    class Meta:
+        model = PreorderSheet
+        fields = [
+            'id', 'restaurant', 'restaurant_name', 'service_date',
+            'meal_period', 'meal_label', 'locked_at', 'order_count',
+            'item_count', 'subtotal', 'generated_at',
+        ]
+        read_only_fields = fields
+
+
 class OrderItemSerializer(serializers.ModelSerializer):
     food_name = serializers.SerializerMethodField()
     section_name = serializers.CharField(source='section.name', read_only=True)

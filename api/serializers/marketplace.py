@@ -97,6 +97,22 @@ class MarketplaceProductSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['seller', 'status', 'expiry_date', 'is_fee_paid', 'h3_index']
 
+    #: App builds released before the three-condition scheme still send the old
+    #: four-grade vocabulary. Map it instead of rejecting their listings.
+    LEGACY_CONDITIONS = {
+        'LIKE_NEW': 'USED',
+        'GOOD': 'USED',
+        'FAIR': 'USED',
+        'POOR': 'OTHER',
+    }
+
+    def to_internal_value(self, data):
+        condition = data.get('condition')
+        if condition in self.LEGACY_CONDITIONS:
+            data = data.copy()
+            data['condition'] = self.LEGACY_CONDITIONS[condition]
+        return super().to_internal_value(data)
+
     def get_seller_avatar_url(self, obj):
         seller = obj.seller
         if seller.avatar:
