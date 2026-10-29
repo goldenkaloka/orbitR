@@ -12,6 +12,7 @@ from domain.services.wallet_payout_services import (
     CashoutError,
     CashoutService,
     cashout_wallets,
+    driver_auto_payout_config,
     wallet_summary,
 )
 from domain.services.wallet_services import InsufficientFunds
@@ -76,6 +77,10 @@ class WalletViewSet(viewsets.GenericViewSet):
         role = getattr(request.user, 'serialized_role', getattr(request.user, 'role', 'customer'))
         can_cashout = role in CASHOUT_ROLES
 
+        auto_payout = driver_auto_payout_config() if role == 'driver' else {
+            'enabled': False, 'threshold': 0.0, 'time': '',
+        }
+
         return Response({
             'id': str(primary.id),
             'balance': f"{balance:.2f}",
@@ -86,6 +91,9 @@ class WalletViewSet(viewsets.GenericViewSet):
             'fee_percent': _fee_percent(),
             'minimum_cashout': float(MINIMUM_CASHOUT),
             'maximum_cashout': float(MAXIMUM_CASHOUT),
+            'auto_payout_enabled': auto_payout['enabled'],
+            'auto_payout_threshold': auto_payout['threshold'],
+            'auto_payout_time': auto_payout['time'],
             'updated_at': max((w.updated_at for w in wallets), default=timezone.now()),
             'recent_transactions': TransactionSerializer(txs, many=True).data,
         })
@@ -250,6 +258,12 @@ class WalletViewSet(viewsets.GenericViewSet):
                 'destination_phone': p.destination_phone,
                 'provider_reference': p.provider_reference,
                 'failure_reason': p.failure_reason,
+                # The nightly driver sweep keys its idempotency row on
+                # ``auto-payout:<driver>:<day>``, so this is the only way the
+                # app can tell an automatic transfer from a manual cashout.
+                'is_automatic': bool(
+                    p.idempotency_key and p.idempotency_key.startswith('auto-payout:')
+                ),
                 'created_at': p.created_at,
                 'completed_at': p.completed_at,
             }

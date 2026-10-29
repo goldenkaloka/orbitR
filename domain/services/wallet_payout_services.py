@@ -19,6 +19,27 @@ CASHOUT_ROLES = {'driver', 'vendor', 'vendor_staff', 'admin'}
 WHOLE_TZS = Decimal('1')
 
 
+def driver_auto_payout_config():
+    """Daily automatic payout terms shown to drivers.
+
+    Disabled or misconfigured settings return ``enabled=False`` so the app
+    never promises a transfer that the beat task will not make.
+    """
+    from django.conf import settings
+
+    disabled = {'enabled': False, 'threshold': 0.0, 'time': ''}
+    if not getattr(settings, 'DRIVER_AUTO_PAYOUT_ENABLED', False):
+        return disabled
+    try:
+        threshold = Decimal(str(getattr(settings, 'DRIVER_AUTO_PAYOUT_THRESHOLD', '0')))
+    except (InvalidOperation, TypeError, ValueError):
+        return disabled
+    local_time = str(getattr(settings, 'DRIVER_AUTO_PAYOUT_LOCAL_TIME', '') or '')
+    if threshold <= 0 or not local_time:
+        return disabled
+    return {'enabled': True, 'threshold': float(threshold), 'time': local_time}
+
+
 class CashoutError(Exception):
     def __init__(self, code, message, status_code=400, **extra):
         super().__init__(message)
@@ -265,8 +286,16 @@ class CashoutService:
             payout.provider_reference = result.get('provider_reference') or ''
             payout.completed_at = timezone.now()
             payout.failure_reason = ''
+            # The user's 0.5% cashout fee is revenue; the gateway fee is a cost
+            # that used to be invisible. Record both so the two never get
+            # confused when revenue is reported.
+            from domain.services.gateway_fees import resolve_payout_fee
+            payout.gateway_fee, payout.gateway_fee_source = resolve_payout_fee(
+                result, net_amount, provider,
+            )
             payout.save(update_fields=[
-                'status', 'provider_reference', 'completed_at', 'failure_reason', 'updated_at',
+                'status', 'provider_reference', 'completed_at', 'failure_reason',
+                'gateway_fee', 'gateway_fee_source', 'updated_at',
             ])
             logger.info(
                 f"Cashout {payout.id} succeeded: amount={payout.amount} net={payout.net_amount} "
@@ -357,7 +386,16 @@ def reconcile_payout(payout_id, gateway=None):
         payout.status = 'SUCCESS'
         payout.completed_at = timezone.now()
         payout.failure_reason = ''
-        payout.save(update_fields=['status', 'completed_at', 'failure_reason', 'updated_at'])
+        # A payout that only settled later still cost a gateway fee.
+        if not payout.gateway_fee:
+            from domain.services.gateway_fees import resolve_payout_fee
+            payout.gateway_fee, payout.gateway_fee_source = resolve_payout_fee(
+                result, payout.net_amount, payout.provider,
+            )
+        payout.save(update_fields=[
+            'status', 'completed_at', 'failure_reason',
+            'gateway_fee', 'gateway_fee_source', 'updated_at',
+        ])
     elif status == 'FAILED':
         CashoutService._reverse_payout(payout, 'Provider reported the payout as failed.')
     return payout

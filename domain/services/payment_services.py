@@ -444,6 +444,23 @@ def _hold_escrow(amount: Decimal):
         wallet.save(update_fields=['pending_balance', 'updated_at'])
 
 
+def order_gateway_fee(order) -> Decimal:
+    """Gateway fee the platform already paid to settle this order at pickup.
+
+    The restaurant was paid in full, but the gateway kept a fixed fee out of
+    the platform's float. That fee is a platform cost, so it comes out of
+    ``platform_cut`` — otherwise revenue is booked that never arrived.
+    """
+    if order is None or not getattr(order, 'pk', None):
+        return Decimal('0')
+    from apps.payments.models import PickupDisbursement
+    fee = PickupDisbursement.objects.filter(
+        order_id=order.pk,
+        status=PickupDisbursement.STATUS_SUCCESS,
+    ).values_list('gateway_fee', flat=True).first()
+    return Decimal(str(fee or 0)).quantize(Decimal('0.01'))
+
+
 def _release_escrow(total_amount: Decimal, platform_cut: Decimal, payment=None):
     """Move amount from escrow to cleared balance on disbursement.
 
@@ -603,9 +620,14 @@ def _release_escrow_disbursed_refund(payment):
                 )
 
 
-def _create_double_entry(payment, from_user, to_user, amount, entry_type, status='COMPLETED'):
+def _create_double_entry(payment, from_user, to_user, amount, entry_type, status='COMPLETED',
+                         gateway_fee=Decimal('0')):
     """
     Create both a Transaction (User-based, backward compat) and a LedgerEntry (Wallet-based, double-entry).
+
+    ``gateway_fee`` is only meaningful for ``platform_revenue`` rows: it is the
+    payout cost already netted out of ``amount``, kept so gross and net cut can
+    both be read from the ledger.
     """
     txn = Transaction.objects.create(
         payment=payment,
@@ -626,6 +648,7 @@ def _create_double_entry(payment, from_user, to_user, amount, entry_type, status
         credit_wallet=to_credit,
         amount=amount,
         entry_type=entry_type,
+        gateway_fee=gateway_fee,
     )
     return txn
 
@@ -994,7 +1017,15 @@ class ReleasePaymentService:
                 Decimal('0.01')
             )
 
-            platform_cut = (escrow_release_amount - restaurant_payout - driver_payout).quantize(Decimal('0.01'))
+            # Gateway fees are a real cost of moving the money. Subtract them
+            # from the platform's share before it is booked as revenue: the
+            # fee has already left the platform's float, so a cut that ignores
+            # it is profit on paper only.
+            gateway_fee = order_gateway_fee(order)
+
+            platform_cut = (
+                escrow_release_amount - restaurant_payout - driver_payout - gateway_fee
+            ).quantize(Decimal('0.01'))
             if platform_cut < 0:
                 # Driver minimum guarantee can exceed what a single order's slice of the
                 # delivery/service fee covers.  The platform absorbs the shortfall rather
@@ -1062,6 +1093,7 @@ class ReleasePaymentService:
                     to_user=_platform,
                     amount=platform_cut,
                     entry_type='platform_revenue',
+                    gateway_fee=gateway_fee,
                 )
 
             transaction.on_commit(lambda: EventBus.publish(PaymentDisbursed(

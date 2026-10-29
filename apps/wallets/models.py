@@ -88,7 +88,18 @@ class WalletPayout(models.Model):
         related_name='wallet_payouts',
     )
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    # `fee` is what the platform charges the user (0.5%). `gateway_fee` is
+    # what ClickPesa charges the platform for the transfer — a real cost that
+    # used to be invisible and is now subtracted from reported revenue.
     fee = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    gateway_fee = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        help_text="Fee the payout gateway charged (TZS)",
+    )
+    gateway_fee_source = models.CharField(
+        max_length=16, blank=True, default='',
+        help_text="GATEWAY when the provider reported the fee, ESTIMATE otherwise",
+    )
     net_amount = models.DecimalField(max_digits=12, decimal_places=2)
     provider = models.CharField(max_length=32, blank=True, default='')
     destination_phone = models.CharField(max_length=20)

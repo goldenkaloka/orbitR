@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from api.serializers.core import (
     AdminRestaurantSerializer,
     DriverSerializer,
@@ -40,7 +42,14 @@ class AdminViewSet(viewsets.GenericViewSet):
     
     @action(detail=False, methods=['GET'])
     def stats(self, request):
-        """Platform-wide statistics with caching."""
+        """Platform-wide statistics with caching.
+
+        ``total_revenue`` / ``today_revenue`` are the platform's **net** cut,
+        not gross merchandise value: the ledger already nets out the pickup
+        payout fee, and the gateway fees paid on wallet cashouts are subtracted
+        here. ``total_gmv`` keeps the old "everything customers spent" figure so
+        the two are never confused again.
+        """
         cache_key = "admin_platform_stats"
         cached_data = cache.get(cache_key)
         if cached_data:
@@ -50,12 +59,59 @@ class AdminViewSet(viewsets.GenericViewSet):
         total_users = User.objects.count()
         total_orders = Order.objects.count()
         today_orders = Order.objects.filter(created_at__gte=today_start).count()
-        total_revenue = Order.objects.filter(
-            status='DELIVERED'
-        ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
-        today_revenue = Order.objects.filter(
-            status='DELIVERED', created_at__gte=today_start
-        ).aggregate(Sum('total_amount'))['total_amount__sum'] or 0
+
+        from apps.payments.models import LedgerEntry, PickupDisbursement
+        from apps.wallets.models import WalletPayout, WalletTransaction
+
+        def _sum(queryset, field):
+            return Decimal(str(queryset.aggregate(Sum(field))[f'{field}__sum'] or 0))
+
+        gmv = Order.objects.filter(status='DELIVERED')
+        today_gmv = gmv.filter(created_at__gte=today_start)
+
+        # platform_revenue rows already have the pickup payout fee deducted.
+        revenue_entries = LedgerEntry.objects.filter(entry_type='platform_revenue')
+        platform_revenue = _sum(revenue_entries, 'amount')
+        today_platform_revenue = _sum(
+            revenue_entries.filter(created_at__gte=today_start), 'amount',
+        )
+
+        # The 0.5% cashout fee is collected as a wallet transaction, not a
+        # ledger row, so it has to be added back explicitly: netting the
+        # gateway cost without its matching income understates revenue.
+        fee_income_entries = WalletTransaction.objects.filter(
+            tx_type='CREDIT', transaction_type='FEE', status='POSTED',
+        )
+        cashout_fee_income = _sum(fee_income_entries, 'amount')
+        today_cashout_fee_income = _sum(
+            fee_income_entries.filter(created_at__gte=today_start), 'amount',
+        )
+
+        # What the gateway kept for moving the money. A payout still in
+        # PROCESSING/UNKNOWN may have moved already, so count it.
+        cashout_payouts = WalletPayout.objects.filter(
+            status__in=('SUCCESS', 'PROCESSING', 'UNKNOWN')
+        )
+        cashout_fees = _sum(cashout_payouts, 'gateway_fee')
+        today_cashout_fees = _sum(
+            cashout_payouts.filter(created_at__gte=today_start), 'gateway_fee',
+        )
+
+        pickup_disbursements = PickupDisbursement.objects.filter(
+            status=PickupDisbursement.STATUS_SUCCESS,
+        )
+        pickup_fees = _sum(pickup_disbursements, 'gateway_fee')
+        today_pickup_fees = _sum(
+            pickup_disbursements.filter(created_at__gte=today_start), 'gateway_fee',
+        )
+
+        total_revenue = platform_revenue + cashout_fee_income - cashout_fees
+        today_revenue = (
+            today_platform_revenue
+            + today_cashout_fee_income
+            - today_cashout_fees
+        )
+
         active_drivers = Driver.objects.filter(status='ONLINE').count()
         total_drivers = Driver.objects.count()
         total_restaurants = Restaurant.objects.count()
@@ -76,8 +132,19 @@ class AdminViewSet(viewsets.GenericViewSet):
             'total_users': total_users,
             'total_orders': total_orders,
             'today_orders': today_orders,
+            # Net platform revenue — safe to show as "Revenue".
             'total_revenue': float(total_revenue),
             'today_revenue': float(today_revenue),
+            # Gross merchandise value, kept for the old "everything spent" tile.
+            'total_gmv': float(_sum(gmv, 'total_amount')),
+            'today_gmv': float(_sum(today_gmv, 'total_amount')),
+            # What the gateways charged to move the money.
+            'total_gateway_fees': float(pickup_fees + cashout_fees),
+            'today_gateway_fees': float(today_pickup_fees + today_cashout_fees),
+            'pickup_gateway_fees': float(pickup_fees),
+            'cashout_gateway_fees': float(cashout_fees),
+            'cashout_fee_income': float(cashout_fee_income),
+            'platform_revenue_gross': float(platform_revenue),
             'platform_balance': float(wallet_liabilities),
             'wallet_liabilities': float(wallet_liabilities),
             'platform_equity': float(platform_equity),

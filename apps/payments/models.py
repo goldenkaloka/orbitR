@@ -114,6 +114,12 @@ class LedgerEntry(models.Model):
     credit_wallet = models.ForeignKey('wallets.Wallet', on_delete=models.DO_NOTHING, related_name='credit_entries', null=True, blank=True)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     entry_type = models.CharField(max_length=50)
+    # Gateway cost already deducted from `amount` for platform_revenue rows.
+    # Stored so gross cut and net cut can both be read off the ledger.
+    gateway_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Payout fee the gateway charged, already netted out of amount",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -178,6 +184,17 @@ class PickupDisbursement(models.Model):
     )
 
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    # What the gateway charged the platform to make this transfer. The
+    # restaurant still receives `amount`; the fee is a platform cost and is
+    # deducted from platform_cut when the payment is released.
+    gateway_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Gateway fee for this payout (TZS)",
+    )
+    gateway_fee_source = models.CharField(
+        max_length=16, blank=True, default='',
+        help_text="GATEWAY when the provider reported the fee, ESTIMATE otherwise",
+    )
     account_number = models.CharField(
         max_length=32,
         help_text="Restaurant Lipa Namba / phone the money was sent to",

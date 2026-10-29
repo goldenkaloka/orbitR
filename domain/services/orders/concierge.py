@@ -224,6 +224,12 @@ class ConciergeOrderService:
                     result.get('provider_reference') or ''
                 )[:255]
                 disbursement.settled_at = timezone.now()
+                # Platform-managed restaurants settle through this path, so the
+                # fee must be recorded here too — otherwise the main flow looks
+                # fee-free and release books a cut the platform never received.
+                from domain.services.gateway_fees import resolve_payout_fee
+                disbursement.gateway_fee, disbursement.gateway_fee_source = \
+                    resolve_payout_fee(result, net)
                 disbursement.save()
                 order.pickup_paid_amount = net
                 order.restaurant_payment_status = Order.RESTAURANT_PAID

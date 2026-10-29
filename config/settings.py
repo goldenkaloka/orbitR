@@ -779,6 +779,32 @@ CELERY_TASK_ROUTES = {
 CELERY_TASK_ALWAYS_EAGER = False
 CELERY_TASK_EAGER_PROPAGATES = True
 
+# Drivers are swept once a day instead of cashing out after every delivery:
+# each payout carries a fixed gateway fee, so one transfer per driver per day
+# replaces one per order. A driver below the threshold keeps the balance.
+DRIVER_AUTO_PAYOUT_ENABLED = config('DRIVER_AUTO_PAYOUT_ENABLED', default=True, cast=bool)
+DRIVER_AUTO_PAYOUT_THRESHOLD = config('DRIVER_AUTO_PAYOUT_THRESHOLD', default='30000')
+# Local wall-clock time (Africa/Dar_es_Salaam, UTC+3 year-round) shown to
+# drivers. The beat schedule below is derived from it so the advertised time
+# and the actual run cannot drift apart.
+DRIVER_AUTO_PAYOUT_LOCAL_TIME = config('DRIVER_AUTO_PAYOUT_LOCAL_TIME', default='22:00')
+EAT_UTC_OFFSET_HOURS = 3
+
+
+def _auto_payout_beat_time(value):
+    try:
+        hour, minute = (int(part) for part in str(value).split(':'))
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            raise ValueError
+    except (AttributeError, TypeError, ValueError):
+        hour, minute = 22, 0
+    return (hour - EAT_UTC_OFFSET_HOURS) % 24, minute
+
+
+DRIVER_AUTO_PAYOUT_UTC_HOUR, DRIVER_AUTO_PAYOUT_UTC_MINUTE = _auto_payout_beat_time(
+    DRIVER_AUTO_PAYOUT_LOCAL_TIME
+)
+
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
@@ -809,6 +835,13 @@ CELERY_BEAT_SCHEDULE = {
     'reconcile-wallet-payouts-every-10-mins': {
         'task': 'apps.wallets.tasks.reconcile_wallet_payouts',
         'schedule': crontab(minute='*/10'),
+    },
+    'auto-payout-driver-wallets-daily': {
+        'task': 'apps.wallets.tasks.auto_payout_driver_wallets',
+        'schedule': crontab(
+            hour=DRIVER_AUTO_PAYOUT_UTC_HOUR,
+            minute=DRIVER_AUTO_PAYOUT_UTC_MINUTE,
+        ),
     },
     'recover-stuck-pools-hourly': {
         'task': 'domain.services.dispatch_tasks.recover_stuck_pools_task',

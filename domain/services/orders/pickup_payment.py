@@ -178,6 +178,13 @@ class PayRestaurantAtPickupService:
                 )[:255]
                 disbursement.failure_reason = ''
                 disbursement.settled_at = timezone.now()
+                # The restaurant receives `amount` in full; the gateway keeps
+                # its fee out of the platform's float. Record it here so
+                # release can subtract it from platform_cut instead of booking
+                # profit that already left the account.
+                from domain.services.gateway_fees import resolve_payout_fee
+                disbursement.gateway_fee, disbursement.gateway_fee_source = \
+                    resolve_payout_fee(result, amount)
                 order.pickup_paid_amount = amount
                 order.restaurant_payment_status = Order.RESTAURANT_PAID
                 order.restaurant_paid_amount = amount

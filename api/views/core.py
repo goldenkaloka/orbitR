@@ -1249,13 +1249,21 @@ class OrderViewSet(viewsets.ModelViewSet):
                         online_minutes = int(online_seconds / 60)
                 online_hours = online_minutes // 60
                 online_mins = online_minutes % 60
-                
+
+                from domain.services.wallet_payout_services import (
+                    driver_auto_payout_config,
+                )
+                auto_payout = driver_auto_payout_config()
+
                 data = {
                     "earnings_today": float(today_earnings),
                     "trips_today": delivered_count,
                     "online_time": f"{online_hours:02d}:{online_mins:02d}",
                     "wallet_balance": float(wallet.balance),
                     "pending_balance": float(wallet.pending_balance),
+                    "auto_payout_enabled": auto_payout['enabled'],
+                    "auto_payout_threshold": auto_payout['threshold'],
+                    "auto_payout_time": auto_payout['time'],
                     "status": driver.status,
                     "total_earnings": float(driver.total_earnings or 0),
                     "today_earnings": float(driver.today_earnings or 0),
