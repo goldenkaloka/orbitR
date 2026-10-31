@@ -251,6 +251,19 @@ class Restaurant(models.Model):
         help_text="Pre-orders accepted per slot; blank derives it from kitchen throughput.",
     )
 
+    # Opt-in switch. Off until the restaurant (or ops) turns it on, so a
+    # kitchen that never configured a schedule is not advertised as taking
+    # pre-orders. Turning it on with no MealPeriod rows uses the platform
+    # meal windows.
+    preorders_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            "Whether this restaurant takes pre-orders. Off by default; "
+            "turning it on with no meal periods uses the platform windows."
+        ),
+    )
+
     # Commission rate for platform monetization
     commission_rate = models.DecimalField(
         max_digits=4, 

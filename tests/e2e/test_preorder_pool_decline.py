@@ -43,6 +43,7 @@ class PoolDeclineTestMixin:
         self.restaurant = Restaurant.objects.create(
             owner=self.owner,
             name='Bucket Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,

@@ -48,6 +48,7 @@ class PreorderPoolTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Bucket Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,
@@ -260,6 +261,7 @@ class PreorderPoolTests(TestCase):
         other_restaurant = Restaurant.objects.create(
             owner=self.restaurant.owner,
             name='Other Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,

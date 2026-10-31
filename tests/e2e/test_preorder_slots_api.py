@@ -33,6 +33,7 @@ class PreorderSlotsApiTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Slots Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,

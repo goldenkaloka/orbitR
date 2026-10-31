@@ -332,7 +332,10 @@ class RestaurantSerializer(RestaurantListSerializer):
     meal_periods = MealPeriodSerializer(many=True, read_only=True)
 
     class Meta(RestaurantListSerializer.Meta):
-        fields = RestaurantListSerializer.Meta.fields + ['sections', 'meal_periods']
+        fields = RestaurantListSerializer.Meta.fields + [
+            'sections', 'meal_periods', 'preorders_enabled',
+            'preorder_slot_capacity',
+        ]
 
 
 class AdminRestaurantSerializer(RestaurantSerializer):

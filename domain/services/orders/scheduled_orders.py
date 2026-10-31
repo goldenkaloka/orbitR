@@ -273,7 +273,14 @@ def slot_capacity_for_meal(restaurant, window):
 
 
 def accepts_preorders(restaurant):
-    """Whether at least one meal still takes pre-orders."""
+    """Whether at least one meal still takes pre-orders.
+
+    Pre-orders are opt-in: a kitchen that never turned them on keeps its
+    default meal windows for the schedule, but is neither advertised nor
+    bookable.
+    """
+    if not restaurant.preorders_enabled:
+        return False
     base_capacity = slot_capacity_for(restaurant)
     if base_capacity <= 0:
         return False
@@ -295,18 +302,56 @@ def next_preorder_hint(restaurant, now=None):
     """The next meal that still takes pre-orders, for a listing badge.
 
     Answers "can I pre-order here soon", not "what is the full calendar": only
-    today and tomorrow are considered. Today's meal counts while its cut-off is
-    still ahead; tomorrow always does. Returns ``None`` when the kitchen takes
-    no pre-orders at all.
+    today and tomorrow are considered, and the meal must have a slot the
+    customer could actually book. That means a closed kitchen advertises
+    nothing, today's meal must clear the cut-off and the lead time (minimum
+    lead + the kitchen's prep), and the slot must have a seat left. Returns
+    ``None`` when no such meal exists.
     """
+    if not getattr(restaurant, 'is_active', True):
+        return None
     if not accepts_preorders(restaurant):
         return None
 
-    local_now = (now or timezone.now()).astimezone(_preorder_timezone())
+    now = now or timezone.now()
+    tz = _preorder_timezone()
+    local_now = now.astimezone(tz)
+    slot_minutes = settings.PREORDER_SLOT_MINUTES
+    earliest = now + timedelta(
+        minutes=settings.PREORDER_MIN_LEAD_MINUTES + prep_minutes_for(restaurant),
+    )
+    base_capacity = slot_capacity_for(restaurant)
     windows = [
         window for window in meal_windows_for(restaurant)
         if slot_capacity_for_meal(restaurant, window) > 0
     ]
+    if not windows:
+        return None
+
+    # One read covers both advertised days; the feed serialises every kitchen,
+    # so this must not become a query per candidate slot.
+    range_start = datetime.combine(local_now.date(), time.min, tzinfo=tz)
+    range_end = datetime.combine(
+        local_now.date() + timedelta(days=2), time.min, tzinfo=tz,
+    )
+    used = Counter()
+    booked = list(Order.objects.filter(
+        restaurant=restaurant,
+        pool__isnull=True,
+        scheduled_for__gte=range_start,
+        scheduled_for__lt=range_end,
+        status__in=SLOT_COUNTED_STATUSES,
+    ).values_list('scheduled_for', flat=True))
+    booked += list(OrderPool.objects.filter(
+        restaurant=restaurant,
+        scheduled_for__gte=range_start,
+        scheduled_for__lt=range_end,
+        status__in=SLOT_COUNTED_POOL_STATUSES,
+    ).values_list('scheduled_for', flat=True))
+    for scheduled_for in booked:
+        slot_start, _ = slot_window_for(scheduled_for.astimezone(tz))
+        used[slot_start] += 1
+
     for offset in range(0, 2):
         day = local_now.date() + timedelta(days=offset)
         for window in windows:
@@ -318,15 +363,24 @@ def next_preorder_hint(restaurant, now=None):
                     and local_now.time() >= window.preorder_cutoff
                 ):
                     continue
-            return {
-                'accepting': True,
-                'meal': window.label,
-                'cutoff': (
-                    window.preorder_cutoff.strftime('%H:%M')
-                    if window.preorder_cutoff else None
-                ),
-                'day': _day_label(day, local_now.date()),
-            }
+            capacity = slot_capacity_for_meal(restaurant, window)
+            cursor = datetime.combine(day, window.start, tzinfo=tz)
+            window_end = datetime.combine(day, window.end, tzinfo=tz)
+            while cursor < window_end:
+                slot_end = cursor + timedelta(minutes=slot_minutes)
+                if slot_end > window_end:
+                    break
+                if cursor >= earliest and used.get(cursor, 0) < capacity:
+                    return {
+                        'accepting': True,
+                        'meal': window.label,
+                        'cutoff': (
+                            window.preorder_cutoff.strftime('%H:%M')
+                            if window.preorder_cutoff else None
+                        ),
+                        'day': _day_label(day, local_now.date()),
+                    }
+                cursor = slot_end
     return None
 
 
@@ -465,6 +519,11 @@ def ensure_preorder_slot_capacity(restaurant, scheduled_for, now=None):
     when its slot is full. The caller must hold the restaurant row lock so
     concurrent bookings are serialised.
     """
+    if not restaurant.preorders_enabled:
+        raise PreorderSlotUnavailable(
+            "This restaurant is not accepting pre-orders."
+        )
+
     base_capacity = slot_capacity_for(restaurant)
     if base_capacity <= 0:
         raise PreorderSlotUnavailable(

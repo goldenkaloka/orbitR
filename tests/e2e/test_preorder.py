@@ -55,6 +55,7 @@ class PreOrderTimingTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Pre Cafe',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=25,
@@ -126,6 +127,7 @@ class ReleaseScheduledOrderTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Pre Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=25,
@@ -278,6 +280,7 @@ class PreOrderSlotCapacityTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Slot Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=20,
@@ -417,6 +420,7 @@ class PreorderDeclineTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=self.owner,
             name='Decline Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=25,
@@ -587,6 +591,7 @@ class LatePaymentAfterCancellationTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Late Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=25,
@@ -651,6 +656,7 @@ class PreorderBookingNotificationTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Booking Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=RESTAURANT_POINT,
             average_prep_time=25,

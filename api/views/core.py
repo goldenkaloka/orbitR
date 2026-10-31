@@ -1,5 +1,6 @@
 import os
 import logging
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +15,10 @@ from api.serializers.core import (
     UserSerializer,
 )
 from api.serializers.marketplace import MarketplaceProductSerializer
+from api.views.pickup_receipts import (
+    DOWNLOAD_MAX_AGE as RECEIPT_LINK_MAX_AGE,
+    build_receipt_download_token,
+)
 from apps.core.cache_keys import stable_cache_key
 from apps.core.geo_utils import get_neighbors
 from apps.core.models import Notification
@@ -30,6 +35,7 @@ from django.core.cache import cache
 from django.db import models
 from django.db.models import Avg, Case, Count, DurationField, Exists, ExpressionWrapper, F, FloatField, OuterRef, Prefetch, Q, Subquery, Value, When
 from django.db.models.functions import Cast, Coalesce, Extract
+from django.urls import reverse
 from django.utils import timezone
 from domain.fsm.order_fsm import InvalidStateTransitionError
 from domain.services.order_services import (
@@ -42,6 +48,7 @@ from domain.services.order_services import (
     PickupOrderService,
     StartPreparingService,
 )
+from domain.services.orders.pickup_receipt import receipt_filename
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -831,24 +838,37 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
         The whole schedule is validated before anything is written, so a bad
         window never leaves half a schedule behind. Sending an empty list
-        deletes every row, which restores the platform defaults.
+        removes the custom schedule and falls back to the platform windows
+        (which only apply while ``enabled`` is true).
+
+        ``enabled`` is the pre-order opt-in switch; omitting it leaves the
+        current state untouched. Sending only ``enabled`` flips the switch and
+        leaves the kitchen's schedule as it is, which is what the admin
+        console needs to turn a restaurant on without editing its hours.
         """
         from apps.restaurants.models import MealPeriod
         from django.db import transaction
         from django.utils.dateparse import parse_time
-        from domain.services.permissions import check_restaurant_permission
 
         restaurant = self.get_object()
-        if not check_restaurant_permission(request.user, restaurant):
+        is_admin = getattr(request.user, 'role', None) == 'admin'
+        if not (is_admin or restaurant.owner_id == request.user.id):
             return Response({'error': 'Not authorized'}, status=403)
 
         payload = request.data.get('meal_periods')
-        if not isinstance(payload, list):
+        enabled = request.data.get('enabled')
+        if 'enabled' in request.data and not isinstance(enabled, bool):
+            return Response({'error': 'enabled must be true or false'}, status=400)
+        if payload is None and enabled is None:
+            return Response(
+                {'error': 'Send meal_periods, enabled, or both'}, status=400,
+            )
+        if payload is not None and not isinstance(payload, list):
             return Response({'error': 'meal_periods must be a list'}, status=400)
 
         rows = []
         seen_kinds = set()
-        for entry in payload:
+        for entry in payload or []:
             if not isinstance(entry, dict):
                 return Response({'error': 'Each meal period must be an object'}, status=400)
 
@@ -928,14 +948,21 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             # Serialise concurrent saves for this restaurant so the
             # delete-and-recreate cannot collide on the per-kind constraint.
             Restaurant.objects.select_for_update().filter(id=restaurant.id).first()
-            restaurant.meal_periods.all().delete()
-            MealPeriod.objects.bulk_create([
-                MealPeriod(restaurant=restaurant, **row) for row in rows
-            ])
+            # Omitting meal_periods leaves the schedule alone, so an admin
+            # can flip the switch without knowing the kitchen's hours.
+            if payload is not None:
+                restaurant.meal_periods.all().delete()
+                MealPeriod.objects.bulk_create([
+                    MealPeriod(restaurant=restaurant, **row) for row in rows
+                ])
+            if enabled is not None:
+                restaurant.preorders_enabled = enabled
+                restaurant.save(update_fields=['preorders_enabled'])
 
         invalidate_restaurant_cache(restaurant)
         from api.serializers.core import MealPeriodSerializer
         return Response({
+            'enabled': restaurant.preorders_enabled,
             'meal_periods': MealPeriodSerializer(
                 restaurant.meal_periods.all(), many=True,
             ).data,
@@ -1395,6 +1422,30 @@ class OrderViewSet(viewsets.ModelViewSet):
             return Response({"error": str(e)}, status=403)
         except (ValueError, InvalidStateTransitionError) as e:
             return Response({"error": str(e)}, status=400)
+
+    @action(detail=True, methods=['GET'], url_path='pickup-receipt')
+    def pickup_receipt(self, request, pk=None):
+        """A short-lived link to the customer's printable counter receipt.
+
+        Scoped by ``get_queryset``: only the order's customer, its restaurant
+        staff or an admin can mint the link. Admin-owned kitchens go through
+        the same path; they simply need no vendor app to serve the PDF.
+        """
+        order = self.get_object()
+        if order.fulfillment_type != Order.FULFILLMENT_PICKUP:
+            return Response(
+                {'error': 'Only pickup orders have a counter receipt.'},
+                status=400,
+            )
+        target = request.build_absolute_uri(
+            reverse('pickup-receipt-download', args=[order.id])
+        )
+        token = quote(build_receipt_download_token(order.id), safe='')
+        return Response({
+            'url': f'{target}?token={token}',
+            'filename': receipt_filename(order),
+            'expires_in': RECEIPT_LINK_MAX_AGE,
+        })
 
     @action(detail=True, methods=['POST'], url_path='rider-cancel')
     def rider_cancel(self, request, pk=None):

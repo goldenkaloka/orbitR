@@ -37,6 +37,7 @@ class PreorderBatchingTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=owner,
             name='Batch Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,

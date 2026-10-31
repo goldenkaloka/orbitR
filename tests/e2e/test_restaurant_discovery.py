@@ -120,7 +120,10 @@ class RestaurantDiscoveryTests(TestCase):
     def test_feed_reports_whether_a_kitchen_takes_preorders(self):
         takes = self._restaurant("Takes Preorders", 0.4)
         takes.preorder_slot_capacity = 4
-        takes.save(update_fields=["preorder_slot_capacity"])
+        takes.preorders_enabled = True
+        takes.save(
+            update_fields=["preorder_slot_capacity", "preorders_enabled"],
+        )
         MealPeriod.objects.create(
             restaurant=takes,
             kind=MealPeriod.LUNCH,

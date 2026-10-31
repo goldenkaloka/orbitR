@@ -1,9 +1,10 @@
 """
 Meal periods: breakfast, lunch and dinner shape when pre-orders are allowed.
 
-A restaurant without configured windows serves the platform defaults; its own
-rows replace them, each meal can cap its own slots, and times between services
-are not bookable at all.
+Pre-orders are opt-in: a restaurant that never enabled them advertises
+nothing and rejects bookings, even though it keeps the platform meal windows
+as its schedule. Once enabled, its own rows replace the defaults, each meal
+can cap its own slots, and times between services are not bookable at all.
 """
 
 from datetime import datetime, time
@@ -11,7 +12,12 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from apps.orders.models import Order
-from apps.restaurants.models import MealPeriod, Restaurant, RestaurantSection
+from apps.restaurants.models import (
+    MealPeriod,
+    Restaurant,
+    RestaurantSection,
+    SectionStaff,
+)
 from apps.users.models import User
 from django.contrib.gis.geos import Point
 from django.test import TestCase, override_settings
@@ -21,6 +27,7 @@ from domain.services.orders.scheduled_orders import (
     ensure_preorder_slot_capacity,
     meal_window_for,
     meal_windows_for,
+    next_preorder_hint,
     release_at_for,
     upcoming_slot_days,
 )
@@ -51,6 +58,7 @@ class MealPeriodTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=self.owner,
             name='Meal Diner',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=20,
@@ -223,12 +231,21 @@ class MealPeriodTests(TestCase):
         )
         self.assertEqual(breakfast['meal_label'], 'Breakfast')
 
-    def _put_windows(self, user, meal_periods):
+    def _put_windows(self, user, meal_periods, **extra):
         client = APIClient()
         client.force_authenticate(user)
         return client.put(
             f'/api/restaurants/{self.restaurant.id}/meal-periods/',
-            {'meal_periods': meal_periods},
+            {'meal_periods': meal_periods, **extra},
+            format='json',
+        )
+
+    def _put_switch(self, user, enabled, restaurant_id=None):
+        client = APIClient()
+        client.force_authenticate(user)
+        return client.put(
+            f'/api/restaurants/{restaurant_id or self.restaurant.id}/meal-periods/',
+            {'enabled': enabled},
             format='json',
         )
 
@@ -419,3 +436,167 @@ class MealPeriodTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn('cutoff', response.json()['error'])
+
+    # ── Opt-in switch ───────────────────────────────────────────────────────
+
+    def _fresh_restaurant(self, **kwargs):
+        return Restaurant.objects.create(
+            owner=self.owner,
+            name='Off Diner',
+            location='Main Hall',
+            geo_location=POINT,
+            average_prep_time=20,
+            preorder_slot_capacity=3,
+            **kwargs,
+        )
+
+    def test_preorders_are_off_until_the_restaurant_opts_in(self):
+        closed = self._fresh_restaurant()
+
+        self.assertFalse(accepts_preorders(closed))
+        self.assertIsNone(next_preorder_hint(closed, now=self.now))
+        self.assertEqual(upcoming_slot_days(closed, days=2, now=self.now), [])
+        with self.assertRaisesMessage(PreorderSlotUnavailable, 'not accepting'):
+            ensure_preorder_slot_capacity(
+                closed, self._local(12, 30), now=self.now,
+            )
+
+        response = APIClient().get(
+            f'/api/restaurants/{closed.id}/preorder-slots/?days=2'
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()['accepting_preorders'])
+
+    def test_opting_in_without_rows_uses_the_platform_hours(self):
+        restaurant = self._fresh_restaurant(preorders_enabled=True)
+
+        self.assertTrue(accepts_preorders(restaurant))
+        self.assertEqual(
+            [window.kind for window in meal_windows_for(restaurant)],
+            ['BREAKFAST', 'LUNCH', 'DINNER'],
+        )
+        ensure_preorder_slot_capacity(
+            restaurant, self._local(12, 30), now=self.now,
+        )
+
+    def test_owner_can_switch_preorders_on_and_off(self):
+        enabled = self._put_windows(self.owner, [], enabled=True)
+
+        self.assertEqual(enabled.status_code, 200)
+        self.assertTrue(enabled.json()['enabled'])
+        self.assertTrue(accepts_preorders(self.restaurant))
+
+        disabled = self._put_windows(self.owner, [], enabled=False)
+
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()['enabled'])
+        self.assertFalse(accepts_preorders(self.restaurant))
+        # The schedule survives: only new bookings and the badge stop.
+        self.assertEqual(
+            [window.kind for window in meal_windows_for(self.restaurant)],
+            ['BREAKFAST', 'LUNCH', 'DINNER'],
+        )
+        with self.assertRaisesMessage(PreorderSlotUnavailable, 'not accepting'):
+            ensure_preorder_slot_capacity(
+                self.restaurant, self._local(12, 30), now=self.now,
+            )
+
+    def test_omitting_enabled_leaves_the_switch_alone(self):
+        response = self._put_windows(self.owner, [])
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['enabled'])
+
+    def test_enabled_must_be_a_boolean(self):
+        response = self._put_windows(self.owner, [], enabled='yes')
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('enabled', response.json()['error'])
+
+    def test_section_staff_cannot_change_the_schedule(self):
+        staff = User.objects.create_user(
+            username='meal_staff', phone='+255700001052',
+            password='password123', role='customer',
+        )
+        SectionStaff.objects.create(
+            user=staff,
+            section=RestaurantSection.objects.get(
+                restaurant=self.restaurant, name='Main',
+            ),
+        )
+
+        response = self._put_windows(staff, [], enabled=False)
+
+        self.assertEqual(response.status_code, 403)
+        self.restaurant.refresh_from_db()
+        self.assertTrue(self.restaurant.preorders_enabled)
+
+    def test_admin_can_flip_the_switch_without_touching_the_hours(self):
+        self._add_period(MealPeriod.LUNCH, time(12, 0), time(15, 30))
+        admin = User.objects.create_user(
+            username='meal_admin', phone='+255700001053',
+            password='password123', role='admin',
+        )
+
+        off = self._put_switch(admin, False)
+
+        self.assertEqual(off.status_code, 200)
+        self.assertFalse(off.json()['enabled'])
+        self.assertEqual(
+            [row['kind'] for row in off.json()['meal_periods']], ['LUNCH'],
+        )
+        self.restaurant.refresh_from_db()
+        self.assertFalse(self.restaurant.preorders_enabled)
+        self.assertTrue(
+            MealPeriod.objects.filter(restaurant=self.restaurant).exists()
+        )
+        self.assertFalse(accepts_preorders(self.restaurant))
+
+        on = self._put_switch(admin, True)
+        self.assertEqual(on.status_code, 200)
+        self.assertTrue(on.json()['enabled'])
+        self.assertTrue(accepts_preorders(self.restaurant))
+
+    def test_switch_payload_without_enabled_is_rejected(self):
+        client = APIClient()
+        client.force_authenticate(self.owner)
+
+        response = client.put(
+            f'/api/restaurants/{self.restaurant.id}/meal-periods/',
+            {},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('meal_periods', response.json()['error'])
+
+    # ── Badge accuracy ──────────────────────────────────────────────────────
+
+    def test_hint_ignores_an_inactive_kitchen(self):
+        self.restaurant.is_active = False
+        self.restaurant.save(update_fields=['is_active'])
+
+        self.assertFalse(accepts_preorders(self.restaurant))
+        self.assertIsNone(next_preorder_hint(self.restaurant, now=self.now))
+
+    def test_hint_skips_a_meal_the_kitchen_cannot_prep_in_time(self):
+        self._add_period(MealPeriod.LUNCH, time(12, 0), time(13, 0))
+        self._add_period(MealPeriod.DINNER, time(18, 0), time(22, 0))
+
+        # 45 min lead + 20 min prep: 11:50 leaves no lunch slot, but dinner
+        # is hours away.
+        hint = next_preorder_hint(self.restaurant, now=self._local(11, 50))
+
+        self.assertEqual(hint['meal'], 'Dinner')
+        self.assertEqual(hint['day'], 'Today')
+
+    def test_hint_skips_a_meal_whose_slots_are_full(self):
+        self._add_period(
+            MealPeriod.LUNCH, time(12, 0), time(12, 15), capacity=1,
+        )
+        self._add_period(MealPeriod.DINNER, time(18, 0), time(22, 0))
+        self._book(self._local(12, 0))
+
+        hint = next_preorder_hint(self.restaurant, now=self.now)
+
+        self.assertEqual(hint['meal'], 'Dinner')

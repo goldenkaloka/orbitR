@@ -38,6 +38,7 @@ class PreorderSheetTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=self.owner,
             name='Sheet Kitchen',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
             average_prep_time=25,
@@ -168,6 +169,7 @@ class PreorderSheetApiTests(TestCase):
         self.restaurant = Restaurant.objects.create(
             owner=self.owner,
             name='API Sheet Kitchen',
+            preorders_enabled=True,
             location='Main Hall',
             geo_location=POINT,
         )

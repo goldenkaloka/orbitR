@@ -24,6 +24,7 @@ from api.views.drops import DropCalendarView, DropPointViewSet, DropWindowViewSe
 from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet, PostingTokenBundleViewSet
 from api.views.payments import AirpayWebhookView, ClickpesaWebhookView, InitiatePaymentView, PlatformRevenueView
+from api.views.pickup_receipts import PickupReceiptDownloadView
 from api.views.pools import PoolOrderViewSet
 from api.views.preorder_sheets import (
     PreorderSheetDownloadView,
@@ -76,6 +77,11 @@ urlpatterns = router.urls + [
         'preorder-sheets/<uuid:pk>/download/',
         PreorderSheetDownloadView.as_view(),
         name='preorder-sheet-download',
+    ),
+    path(
+        'orders/<uuid:pk>/pickup-receipt/download/',
+        PickupReceiptDownloadView.as_view(),
+        name='pickup-receipt-download',
     ),
     path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),
     path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
