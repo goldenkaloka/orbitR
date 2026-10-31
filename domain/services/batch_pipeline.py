@@ -119,7 +119,11 @@ class BatchPipeline:
         # Look for an existing ACCUMULATING or SOFT_LOCK batch for this restaurant
         candidate = BatchPipeline._find_compatible_batch(order)
         if candidate:
-            return BatchPipeline._join_batch(order, candidate)
+            joined = BatchPipeline._join_batch(order, candidate)
+            # The batch may have closed or been merged away between the lookup
+            # and the lock. Fall through and give the order a batch of its own.
+            if joined:
+                return joined
 
         # ── Busy restaurant guard ────────────────────────────────────────
         # If restaurant already has max concurrent ACCUMULATING batches,
@@ -154,12 +158,15 @@ class BatchPipeline:
 
     @staticmethod
     def on_preorder_released(order):
-        """Put a released pre-order into its restaurant's slot batch.
+        """Put a released pre-order into its slot batch.
 
         All pre-orders for the same restaurant and eating-time slot share one
         batch, regardless of which release sweep they arrive in. The batch
         stays open until the slot's last possible release so later bookings
         still land in the same unit of kitchen work.
+
+        A scheduled drop adds one more key: the drop window. Two hostels eating
+        at the same time are two trips, so they must never share a batch.
         """
         from domain.services.orders.scheduled_orders import (
             release_at_for,
@@ -175,29 +182,43 @@ class BatchPipeline:
             + PREORDER_BATCH_BUFFER_MINUTES,
         )
 
-        candidate = BatchPipeline._find_preorder_batch(order, slot_start)
+        drop_window = order.drop_window
+        max_orders = MAX_ORDERS_PER_BATCH
+        if drop_window is not None:
+            from domain.services.orders.drop_service import capacity
+
+            max_orders = min(max_orders, capacity(drop_window))
+
+        candidate = BatchPipeline._find_preorder_batch(
+            order, slot_start, drop_window=drop_window, max_orders=max_orders,
+        )
         if candidate:
-            return BatchPipeline._join_batch(order, candidate)
+            joined = BatchPipeline._join_batch(order, candidate)
+            if joined:
+                return joined
 
         return BatchPipeline._create_single_batch(
             order,
             preorder_slot_start=slot_start,
             accumulate_window_minutes=window_minutes,
+            drop_window=drop_window,
+            max_orders=max_orders,
         )
 
     @staticmethod
-    def _find_preorder_batch(order, slot_start):
-        """The open batch for this restaurant and slot, if it has room."""
+    def _find_preorder_batch(order, slot_start, drop_window=None, max_orders=MAX_ORDERS_PER_BATCH):
+        """The open batch for this restaurant, slot and drop window, if room."""
         from apps.orders.models import DeliveryBatch
 
         batches = (
             DeliveryBatch.objects.filter(
                 restaurant_id=order.restaurant_id,
                 preorder_slot_start=slot_start,
+                drop_window=drop_window,
                 status__in=['ACCUMULATING', 'SOFT_LOCK'],
             )
             .annotate(order_count=models.Count('orders'))
-            .filter(order_count__lt=MAX_ORDERS_PER_BATCH)
+            .filter(order_count__lt=max_orders)
             .order_by('accumulating_since')
         )
 
@@ -278,7 +299,9 @@ class BatchPipeline:
 
         For platform-managed orders this also refuses a batch that already
         contains a partner restaurant, so a pooled batch can never pick up an
-        order it is not allowed to serve.
+        order it is not allowed to serve. Every kitchen already in the batch
+        must also be a short walk from this one: only then can one rider
+        collect all of the food in a single sensible trip.
         """
         from apps.restaurants.models import Restaurant
 
@@ -296,12 +319,48 @@ class BatchPipeline:
         if not existing_ids:
             return True
 
-        eligible = Restaurant.objects.filter(
-            id__in=existing_ids,
-            source_type=Restaurant.SOURCE_PLATFORM_MANAGED,
-        ).count()
+        existing = list(Restaurant.objects.filter(id__in=existing_ids))
+        if any(kitchen.source_type != Restaurant.SOURCE_PLATFORM_MANAGED
+               for kitchen in existing):
+            return False
 
-        return eligible == len(existing_ids)
+        if not all(BatchPipeline._kitchens_share_trip(order.restaurant, kitchen)
+                   for kitchen in existing):
+            logger.info(
+                f"[BatchPipeline] Order {order.id} at {order.restaurant_id} is not "
+                f"near batch {batch.id} pickups — keeping the trip single-restaurant"
+            )
+            return False
+
+        return True
+
+    @staticmethod
+    def _kitchen_distance(first, second):
+        """Straight-line metres between two kitchens, or None when unknown."""
+        from apps.core.geo_utils import haversine_distance
+
+        if first.id == second.id:
+            return 0.0
+        if not (first.geo_location and second.geo_location):
+            return None
+        return haversine_distance(first.geo_location, second.geo_location)
+
+    @staticmethod
+    def _kitchen_trip_limit():
+        from django.conf import settings
+
+        return float(getattr(settings, 'KITCHEN_TRIP_MAX_METERS', 300))
+
+    @staticmethod
+    def _kitchens_share_trip(first, second):
+        """Whether one rider can collect from both kitchens without unpaid hops.
+
+        The trip pays a flat fee, so kitchens farther apart than
+        KITCHEN_TRIP_MAX_METERS are never pooled. A kitchen with no location
+        cannot be checked, so it never qualifies.
+        """
+        distance = BatchPipeline._kitchen_distance(first, second)
+        return distance is not None and distance <= BatchPipeline._kitchen_trip_limit()
 
     @staticmethod
     def _sync_batch_restaurants(batch):
@@ -409,7 +468,7 @@ class BatchPipeline:
             if locked_batch.status not in ('ACCUMULATING', 'SOFT_LOCK'):
                 logger.warning(f"[BatchPipeline] Batch {batch.id} status '{locked_batch.status}' — cannot join")
                 return None
-            if locked_batch.orders.count() >= MAX_ORDERS_PER_BATCH:
+            if locked_batch.orders.count() >= (locked_batch.max_orders or MAX_ORDERS_PER_BATCH):
                 logger.warning(f"[BatchPipeline] Batch {batch.id} is full — cannot join")
                 return None
 
@@ -449,8 +508,15 @@ class BatchPipeline:
             f"(status={locked_batch.status}, total_orders={locked_batch.orders.count()})"
         )
 
-        # If batch reached max orders while ACCUMULATING, close it
-        if locked_batch.status == 'ACCUMULATING' and locked_batch.orders.count() >= MAX_ORDERS_PER_BATCH:
+        # If batch reached max orders while ACCUMULATING, close it. Pre-order
+        # slot batches are excluded: closing on full would dispatch a drop trip
+        # as soon as the window filled, days before the hand-over. They close on
+        # their slot deadline instead (Pass 1c of the accumulate sweep).
+        if (
+            locked_batch.status == 'ACCUMULATING'
+            and locked_batch.preorder_slot_start is None
+            and locked_batch.orders.count() >= (locked_batch.max_orders or MAX_ORDERS_PER_BATCH)
+        ):
             BatchPipeline._close_accumulating_batch(locked_batch.id)
 
         return locked_batch
@@ -460,6 +526,8 @@ class BatchPipeline:
         order,
         preorder_slot_start=None,
         accumulate_window_minutes=ACCUMULATE_WINDOW_MINUTES,
+        drop_window=None,
+        max_orders=MAX_ORDERS_PER_BATCH,
     ):
         """
         Create a new ACCUMULATING batch with this order as the first member.
@@ -491,9 +559,10 @@ class BatchPipeline:
                 driver_payout=Decimal('0'),
                 company_profit=Decimal('0'),
                 offer_attempt=0,
-                max_orders=MAX_ORDERS_PER_BATCH,
+                max_orders=max_orders,
                 accumulate_window_minutes=accumulate_window_minutes,
                 preorder_slot_start=preorder_slot_start,
+                drop_window=drop_window,
             )
 
             locked_order.batch = batch
@@ -519,6 +588,103 @@ class BatchPipeline:
         return batch
 
     @staticmethod
+    def _merge_with_neighbour(batch_id):
+        """Fold an underfilled batch into a nearby kitchen's open batch.
+
+        Two half-filled trips pay two flat fees; one merged trip pays one. The
+        merge requires an ACCUMULATING target (never a SOFT_LOCK one that is
+        already being routed), kitchens within KITCHEN_TRIP_MAX_METERS, a
+        combined count that still fits one trip, and every order staying
+        compatible with the target's deliveries.
+
+        Returns True when the orders moved. The emptied batch is cancelled.
+        """
+        from apps.orders.models import DeliveryBatch
+        from domain.services.batch_fsm import BatchFSM
+
+        limit = BatchPipeline._kitchen_trip_limit()
+
+        with transaction.atomic():
+            source = (
+                DeliveryBatch.objects.select_for_update()
+                .select_related('restaurant')
+                .filter(id=batch_id)
+                .first()
+            )
+            if not source or source.status != 'ACCUMULATING':
+                return False
+            if source.preorder_slot_start or source.drop_window_id:
+                return False
+            if not (source.restaurant and source.restaurant.allows_multi_restaurant_batching):
+                return False
+
+            source_orders = list(source.orders.select_related('restaurant'))
+            if not source_orders:
+                return False
+
+            # skip_locked: a batch another worker is closing or merging is not
+            # a merge candidate, so two merges can never deadlock on each other.
+            candidates = (
+                DeliveryBatch.objects.select_for_update(skip_locked=True)
+                .filter(
+                    status='ACCUMULATING',
+                    preorder_slot_start__isnull=True,
+                    drop_window__isnull=True,
+                    restaurant__isnull=False,
+                )
+                .exclude(id=source.id)
+                .select_related('restaurant')
+            )
+
+            best = None
+            best_distance = None
+            for target in candidates:
+                if target.restaurant_id == source.restaurant_id:
+                    continue
+                if not target.restaurant.allows_multi_restaurant_batching:
+                    continue
+                capacity = min(MAX_ORDERS_PER_BATCH, target.max_orders or MAX_ORDERS_PER_BATCH)
+                if target.orders.count() + len(source_orders) > capacity:
+                    continue
+                distance = BatchPipeline._kitchen_distance(source.restaurant, target.restaurant)
+                if distance is None or distance > limit:
+                    continue
+                if not all(
+                    BatchPipeline._batch_is_compatible(order, target)
+                    for order in source_orders
+                ):
+                    continue
+                if best_distance is None or distance < best_distance:
+                    best, best_distance = target, distance
+
+            if best is None:
+                return False
+
+            existing_count = best.orders.count()
+            for index, order in enumerate(source_orders):
+                order.batch = best
+                order.route_sequence = existing_count + index + 1
+                order.save(update_fields=['batch', 'route_sequence'])
+            BatchPipeline._create_section_statuses_from_orders(best, source_orders)
+            BatchPipeline._sync_batch_restaurants(best)
+            BatchPipeline._sync_batch_restaurants(source)
+
+            source.status = BatchFSM.transition(source, 'CANCEL')
+            source.save(update_fields=['status', 'updated_at'])
+
+            target_id = str(best.id)
+            merged_count = best.orders.count()
+            capacity = min(MAX_ORDERS_PER_BATCH, best.max_orders or MAX_ORDERS_PER_BATCH)
+
+        logger.info(
+            f"[BatchPipeline] Batch {batch_id} merged into {target_id} "
+            f"({merged_count} orders, kitchens {best_distance:.0f} m apart)"
+        )
+        if merged_count >= capacity:
+            BatchPipeline._close_accumulating_batch(target_id)
+        return True
+
+    @staticmethod
     def _close_accumulating_batch(batch_id: str):
         """
         Move a batch from ACCUMULATING → SOFT_LOCK.
@@ -526,6 +692,14 @@ class BatchPipeline:
         """
         from apps.orders.models import DeliveryBatch
         from domain.services.batch_fsm import BatchFSM
+
+        # Two half-filled trips pay two flat fees. Before closing, try to fold
+        # this batch into a neighbouring kitchen's still-open batch.
+        try:
+            if BatchPipeline._merge_with_neighbour(batch_id):
+                return
+        except Exception as exc:
+            logger.error(f"[BatchPipeline] Merge check failed for {batch_id}: {exc}")
 
         try:
             with transaction.atomic():
@@ -540,6 +714,43 @@ class BatchPipeline:
             logger.error(f"[BatchPipeline] Failed to close accumulating batch {batch_id}: {exc}")
 
     @staticmethod
+    def _route_and_price(orders):
+        """Route and price one trip. The single place both close paths call.
+
+        Routing is a network call, so callers must run this outside their
+        transaction and only then lock and persist the numbers.
+        """
+        from domain.services.mapbox_routing_service import MapboxRoutingService
+
+        route_dict = None
+        try:
+            route = MapboxRoutingService.get_route_for_batch(orders)
+            if route:
+                route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
+        except Exception as exc:
+            logger.warning(f"[BatchPipeline] Mapbox routing failed: {exc}")
+
+        route_distance = Decimal('0')
+        if route_dict and route_dict.get('total_distance_km'):
+            route_distance = Decimal(str(route_dict['total_distance_km']))
+
+        pricing = BatchPipeline._calculate_pricing(orders)
+        driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
+            orders, route_dict, pricing
+        )
+        # A drop trip may cost more than the fees it collected; record the
+        # shortfall instead of hiding it behind a zero, so the per-trip
+        # economics stay visible to admin.
+        company_profit = user_paid_total - driver_payout
+        if not (orders and all(o.drop_window_id for o in orders)):
+            company_profit = max(Decimal('0'), company_profit)
+
+        return (
+            route_dict, route_distance, pricing,
+            driver_payout, user_paid_total, company_profit,
+        )
+
+    @staticmethod
     def _finalize_batch(batch_id: str):
         """
         Move a batch from SOFT_LOCK → FINALIZING.
@@ -549,7 +760,6 @@ class BatchPipeline:
         """
         from apps.orders.models import DeliveryBatch, Order
         from domain.services.batch_fsm import BatchFSM
-        from domain.services.mapbox_routing_service import MapboxRoutingService
 
         # Step 1: Fetch orders and compute route outside transaction
         try:
@@ -562,24 +772,10 @@ class BatchPipeline:
                 logger.warning(f"[BatchPipeline] Batch {batch_id} has no orders — skipping finalize")
                 return
 
-            route_dict = None
-            route_distance = Decimal('0')
-            try:
-                route = MapboxRoutingService.get_route_for_batch(orders)
-                if route:
-                    route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
-            except Exception as exc:
-                logger.warning(f"[BatchPipeline] Mapbox routing failed for batch {batch_id}: {exc}")
-
-            if route_dict and route_dict.get('total_distance_km'):
-                route_distance = Decimal(str(route_dict['total_distance_km']))
-
-            # Recalculate pricing with all orders now known
-            pricing = BatchPipeline._calculate_pricing(orders)
-            driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
-                orders, route_dict, pricing
-            )
-            company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+            (
+                route_dict, route_distance, pricing,
+                driver_payout, user_paid_total, company_profit,
+            ) = BatchPipeline._route_and_price(orders)
 
             # Step 2: Persist atomically inside transaction
             with transaction.atomic():
@@ -659,25 +855,11 @@ class BatchPipeline:
                     # Recalculate route and pricing if not finalized yet (driver_payout is 0)
                     update_fields = ['status', 'waiting_since', 'updated_at']
                     if batch_ref.driver_payout == Decimal('0'):
-                        from domain.services.mapbox_routing_service import MapboxRoutingService
                         orders = list(batch_ref.orders.all())
-                        route_dict = None
-                        route_distance = Decimal('0')
-                        try:
-                            route = MapboxRoutingService.get_route_for_batch(orders)
-                            if route:
-                                route_dict = route.to_dict() if hasattr(route, 'to_dict') else route
-                        except Exception as exc:
-                            logger.warning(f"[BatchPipeline] Mapbox routing failed during all-ready check: {exc}")
-
-                        if route_dict and route_dict.get('total_distance_km'):
-                            route_distance = Decimal(str(route_dict['total_distance_km']))
-
-                        pricing = BatchPipeline._calculate_pricing(orders)
-                        driver_payout, user_paid_total = BatchPipeline._calculate_driver_payout(
-                            orders, route_dict, pricing
-                        )
-                        company_profit = max(Decimal('0'), user_paid_total - driver_payout)
+                        (
+                            route_dict, route_distance, pricing,
+                            driver_payout, user_paid_total, company_profit,
+                        ) = BatchPipeline._route_and_price(orders)
 
                         batch_ref.route_optimization = route_dict
                         batch_ref.route_distance_km = route_distance
@@ -686,7 +868,7 @@ class BatchPipeline:
                         batch_ref.discounted_total_fee = pricing['discounted_total']
                         batch_ref.driver_payout = driver_payout
                         batch_ref.company_profit = company_profit
-                        
+
                         update_fields.extend([
                             'route_optimization', 'route_distance_km', 'user_paid_total',
                             'original_total_fee', 'discounted_total_fee', 'driver_payout',
@@ -798,6 +980,12 @@ class BatchPipeline:
         from domain.services.mapbox_routing_service import MapboxRoutingService
         from domain.services.orders.scheduled_orders import slot_window_for
 
+        if getattr(pool, 'drop_window_id', None):
+            # A bucket at a drop window is not a trip of its own: its orders
+            # ride the window's shared batch (one rider, one gate), so the flat
+            # trip fee is paid once for the window, not once per bucket.
+            return BatchPipeline._attach_drop_pool(pool)
+
         # A pre-order bucket is delivered for its booked slot; tagging the
         # batch keeps it out of live-order sweeps and ties it to that meal.
         preorder_slot_start = None
@@ -817,23 +1005,21 @@ class BatchPipeline:
             route_distance = Decimal(str(route_dict['total_distance_km']))
 
         with transaction.atomic():
-            from domain.services.pricing_service import PricingService
-            policy = PricingService.get_active_policy()
-            min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
-            per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
-            per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
+            from domain.services.payout_service import PayoutService
 
+            pool_orders = list(Order.objects.filter(pool_id=pool.id))
             delivery_fee = Decimal(str(pool.total_delivery_fee or 0))
             service_fee = Decimal(str(pool.service_fee or 0))
             user_paid_total = delivery_fee + service_fee
 
-            driver_share = policy.single_order_driver_share if policy else Decimal('0.95')
-            driver_payout = delivery_fee * driver_share
-            if route_distance > 0:
-                calc = min_guarantee + (route_distance * per_km_rate) + (Decimal('2') * per_stop_rate)
-                driver_payout = max(driver_payout, calc)
-            driver_payout = min(driver_payout, user_paid_total)
-            driver_payout = max(driver_payout, Decimal('0'))
+            # A pool shares one pickup and one drop, so it pays for two stops
+            # however many members split the fee.
+            driver_payout, user_paid_total = PayoutService.quote(
+                pool_orders,
+                route_dict=route_dict,
+                user_paid_total=user_paid_total,
+                stops=2,
+            )
             company_profit = user_paid_total - driver_payout
 
             batch = DeliveryBatch.objects.create(
@@ -841,6 +1027,7 @@ class BatchPipeline:
                 restaurant_id=pool.restaurant_id,
                 status='PENDING_DRIVER',
                 preorder_slot_start=preorder_slot_start,
+                drop_window_id=getattr(pool, 'drop_window_id', None),
                 route_optimization=route_dict,
                 route_distance_km=route_distance,
                 user_paid_total=user_paid_total,
@@ -862,6 +1049,7 @@ class BatchPipeline:
                 order.save(update_fields=['batch', 'status', 'route_sequence'])
 
             BatchPipeline._create_section_statuses_from_orders(batch, pool_orders)
+            BatchPipeline._mark_pool_dispatched(pool)
 
             batch_id_str = str(batch.id)
             transaction.on_commit(lambda: _schedule_dispatch(batch_id_str))
@@ -871,6 +1059,55 @@ class BatchPipeline:
             f"distance={route_distance}km"
         )
         return batch
+
+    @staticmethod
+    def _attach_drop_pool(pool):
+        """Put a bucket's orders on the drop window's shared trip.
+
+        The orders were already grouped into the window batch when they were
+        released, so this normally just returns that batch. Creating a second
+        one would pay the flat trip fee twice for the same gate.
+        """
+        from apps.orders.models import Order
+
+        orders = list(
+            Order.objects.filter(pool_id=pool.id).select_related('batch')
+        )
+        if not orders:
+            return None
+
+        batch = next((order.batch for order in orders if order.batch_id), None)
+        for order in orders:
+            if not order.batch_id:
+                batch = BatchPipeline.on_preorder_released(order) or batch
+            if order.status != 'READY':
+                order.status = 'READY'
+                order.save(update_fields=['status'])
+
+        BatchPipeline._mark_pool_dispatched(pool)
+        logger.info(
+            "[BatchPipeline] Drop bucket %s rides window batch %s",
+            pool.id, getattr(batch, 'id', None),
+        )
+        return batch
+
+    @staticmethod
+    def _mark_pool_dispatched(pool):
+        """Move a ready pool to DISPATCHING once its trip exists.
+
+        The pool FSM has always had DISPATCHING/DELIVERING, but nothing ever
+        wrote them, so the DELIVERING → COMPLETED handler could not run and
+        finished pools stayed DELIVERING-less forever.
+        """
+        from domain.fsm.pool_fsm import InvalidPoolTransitionError, PoolFSM
+
+        if getattr(pool, 'status', None) != 'READY':
+            return
+        try:
+            pool.status = PoolFSM.transition(pool.status, 'DISPATCHING')
+            pool.save(update_fields=['status'])
+        except InvalidPoolTransitionError as exc:
+            logger.warning(f"[BatchPipeline] Pool {pool.id} cannot mark dispatching: {exc}")
 
 
     # ─── Section status helpers ───────────────────────────────────────────────
@@ -898,50 +1135,23 @@ class BatchPipeline:
             )
 
     @staticmethod
-    def check_and_close_full_batches():
-        """
-        Periodic check: close ACCUMULATING batches that have hit max orders.
+    def close_due_accumulating_batches():
+        """Close every ACCUMULATING batch whose window is up.
+
+        Four separate sweeps used to decide this (hit max orders, normal
+        window, busy restaurant, pre-order slot) and each one ended in the
+        same `_close_accumulating_batch` call. The first three are a single
+        query; the pre-order slot keeps its own pass because its window is
+        per-batch rather than a fixed constant.
         """
         from apps.orders.models import DeliveryBatch
-
-        full_batches = DeliveryBatch.objects.filter(
-            status='ACCUMULATING',
-        ).annotate(
-            order_count=models.Count('orders')
-        ).filter(
-            order_count__gte=MAX_ORDERS_PER_BATCH,
-        )
-        for batch in full_batches:
-            BatchPipeline._close_accumulating_batch(str(batch.id))
-
-    @staticmethod
-    def check_and_expire_accumulating():
-        """
-        Periodic check: move ACCUMULATING batches past their window to SOFT_LOCK.
-        Busy restaurants (≥2 concurrent batches) use a shorter window.
-        Pre-order slot batches use their own deadline (the end of the slot) so
-        they are never closed or cancelled before every slot booking released.
-        Also cleans up stale ACCUMULATING batches where no order has progressed
-        to PREPARING or READY after more than 2x the accumulate window.
-        Uses efficient batch-queries — never loads all batches into Python memory.
-        """
-        from apps.orders.models import DeliveryBatch
-        from django.db.models import Count, Exists, OuterRef
+        from django.db.models import Count, F, Q
 
         now = timezone.now()
+        window_cutoff = now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES)
+        busy_cutoff = now - timezone.timedelta(minutes=BUSY_ACCUMULATE_WINDOW_MINUTES)
 
-        # ── Pass 1: Batches past their normal accumulate window → SOFT_LOCK ──
-        expired = DeliveryBatch.objects.filter(
-            status='ACCUMULATING',
-            preorder_slot_start__isnull=True,
-            accumulating_since__isnull=False,
-            accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES),
-        ).only('id')
-        for batch in expired:
-            BatchPipeline._close_accumulating_batch(str(batch.id))
-
-        # ── Pass 1b: Busy restaurants — shorter window ──
-        busy = (
+        busy_restaurant_ids = list(
             DeliveryBatch.objects.filter(
                 status='ACCUMULATING',
                 preorder_slot_start__isnull=True,
@@ -949,27 +1159,38 @@ class BatchPipeline:
             .values('restaurant_id')
             .annotate(cnt=Count('id'))
             .filter(cnt__gte=MAX_ACCUMULATING_BATCHES_PER_RESTAURANT)
+            .values_list('restaurant_id', flat=True)
         )
-        busy_restaurant_ids = [b['restaurant_id'] for b in busy]
-        if busy_restaurant_ids:
-            busy_expired = DeliveryBatch.objects.filter(
-                restaurant_id__in=busy_restaurant_ids,
-                status='ACCUMULATING',
-                preorder_slot_start__isnull=True,
-                accumulating_since__isnull=False,
-                accumulating_since__lt=now - timezone.timedelta(minutes=BUSY_ACCUMULATE_WINDOW_MINUTES),
-            ).only('id')
-            for batch in busy_expired:
-                BatchPipeline._close_accumulating_batch(str(batch.id))
 
-        # ── Pass 1c: pre-order slot batches use their own deadline ──
-        # They span the whole slot so late bookings can join, which is longer
-        # than the generic windows above.
-        preorder_open = DeliveryBatch.objects.filter(
-            status='ACCUMULATING',
-            preorder_slot_start__isnull=False,
-            accumulating_since__isnull=False,
-        ).only('id', 'accumulating_since', 'accumulate_window_minutes')
+        due = (
+            DeliveryBatch.objects.filter(status='ACCUMULATING')
+            .annotate(order_count=Count('orders'))
+            .filter(
+                Q(order_count__gte=F('max_orders'))
+                | Q(
+                    preorder_slot_start__isnull=True,
+                    accumulating_since__lt=window_cutoff,
+                )
+                | Q(
+                    preorder_slot_start__isnull=True,
+                    restaurant_id__in=busy_restaurant_ids,
+                    accumulating_since__lt=busy_cutoff,
+                )
+            )
+            .values_list('id', flat=True)
+        )
+        for batch_id in list(due):
+            BatchPipeline._close_accumulating_batch(str(batch_id))
+
+        # Pre-order slot batches span their whole slot so late bookings can
+        # join, which is longer than the generic windows above.
+        preorder_open = (
+            DeliveryBatch.objects.filter(
+                status='ACCUMULATING',
+                preorder_slot_start__isnull=False,
+                accumulating_since__isnull=False,
+            ).only('id', 'accumulating_since', 'accumulate_window_minutes')
+        )
         for batch in preorder_open:
             deadline = batch.accumulating_since + timezone.timedelta(
                 minutes=batch.accumulate_window_minutes,
@@ -977,22 +1198,27 @@ class BatchPipeline:
             if now >= deadline:
                 BatchPipeline._close_accumulating_batch(str(batch.id))
 
-        # ── Pass 2: Batches > 2x window with no cooking progress → cancel ──
+        # ── Stale batches > 2x window with no cooking progress → cancel ──
         from apps.orders.models import Order
+        from django.db.models import Exists, OuterRef
+
         has_progress = Exists(
             Order.objects.filter(
                 batch=OuterRef('pk'),
                 status__in=['PREPARING', 'READY'],
             )
         )
-        stale_no_progress = DeliveryBatch.objects.filter(
-            status='ACCUMULATING',
-            preorder_slot_start__isnull=True,
-            accumulating_since__isnull=False,
-            accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES * 2),
-        ).annotate(
-            has_progress=has_progress
-        ).filter(has_progress=False).only('id')
+        stale_no_progress = (
+            DeliveryBatch.objects.filter(
+                status='ACCUMULATING',
+                preorder_slot_start__isnull=True,
+                accumulating_since__isnull=False,
+                accumulating_since__lt=now - timezone.timedelta(minutes=ACCUMULATE_WINDOW_MINUTES * 2),
+            )
+            .annotate(has_progress=has_progress)
+            .filter(has_progress=False)
+            .only('id')
+        )
 
         for batch in stale_no_progress:
             logger.warning(f"[BatchPipeline] Batch {batch.id} stale with no cooking progress — cancelling")
@@ -1182,46 +1408,15 @@ class BatchPipeline:
 
     @staticmethod
     def _calculate_driver_payout(orders, route_dict, pricing) -> tuple[Decimal, Decimal]:
-        from domain.services.pricing_service import PricingService
+        from domain.services.payout_service import PayoutService
 
-        policy = PricingService.get_active_policy()
-        min_guarantee = policy.driver_min_guarantee if policy else Decimal('200')
-        per_km_rate = policy.driver_per_km_rate if policy else Decimal('50')
-        per_stop_rate = policy.driver_per_stop_rate if policy else Decimal('30')
-
+        # user_paid_total includes delivery fees + service fees. Drivers are
+        # paid from those, never from the food revenue.
         total_service_fees = sum(Decimal(str(o.service_fee or 0)) for o in orders)
-        # user_paid_total includes delivery fees + service fees.
-        # We do NOT cap driver_payout against the items subtotal — drivers are paid
-        # from the delivery/service fees collected, not from the food revenue.
         user_paid_total = pricing['original_total'] + total_service_fees
-
-        if route_dict and route_dict.get('total_distance_km'):
-            route_distance = Decimal(str(route_dict['total_distance_km']))
-            stop_sequence = route_dict.get('stop_sequence', [])
-            total_stops = len(stop_sequence)
-            driver_payout = (
-                min_guarantee
-                + (route_distance * per_km_rate)
-                + (Decimal(str(total_stops)) * per_stop_rate)
-            )
-        else:
-            total_fees = sum(Decimal(str(o.delivery_fee or 0)) for o in orders)
-            driver_payout = max(min_guarantee, total_fees * Decimal('0.95'))
-
-        # Cap driver_payout to what was actually collected in delivery/service fees,
-        # but always pay at least the minimum guarantee regardless of fee collected
-        # (the platform absorbs shortfalls on very cheap or zero-fee orders).
-        if user_paid_total > 0:
-            driver_payout = min(driver_payout, user_paid_total)
-        # Never pay negative
-        driver_payout = max(driver_payout, Decimal('0'))
-
-        if driver_payout > user_paid_total and user_paid_total > 0:
-            logger.warning(
-                f"[BatchPipeline] Driver payout ({driver_payout}) capped to "
-                f"user_paid_total ({user_paid_total})"
-            )
-        return driver_payout, user_paid_total
+        return PayoutService.quote(
+            orders, route_dict=route_dict, user_paid_total=user_paid_total,
+        )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from domain.events.types import (
     PaymentRefunded,
 )
 from domain.fsm.payment_fsm import PaymentFSM
+from domain.services.payout_service import PayoutService
 from infrastructure.payment_gateways.factory import get_payment_gateway
 
 logger = logging.getLogger(__name__)
@@ -316,7 +317,8 @@ class InitiatePaymentService:
             CompletePaymentService.execute(
                 payment_id=payment.id,
                 provider_reference=payment.provider_reference,
-                success=True
+                success=True,
+                result=response,
             )
             payment.refresh_from_db()
 
@@ -665,7 +667,7 @@ def _refunded_principal_total(payment) -> Decimal:
 
 class CompletePaymentService:
     @staticmethod
-    def execute(payment_id=None, provider_reference=None, success=True, rrn=None, reference_id=None):
+    def execute(payment_id=None, provider_reference=None, success=True, rrn=None, reference_id=None, result=None):
         """
         Unfied completion handler. Uses Strategy Pattern for post-payment logic.
         """
@@ -701,6 +703,16 @@ class CompletePaymentService:
                     payment.status = PaymentFSM.transition(payment.status, 'COLLECTED')
                     payment.provider_reference = provider_reference or payment.provider_reference
                     payment.rrn = rrn
+
+                    # Record what the gateway kept on the way in, when it says.
+                    # There is no published collection schedule, so this is
+                    # never estimated; release() subtracts it from revenue.
+                    if result is not None:
+                        from domain.services.gateway_fees import fee_from_gateway_result
+                        collected_fee = fee_from_gateway_result(result)
+                        if collected_fee is not None:
+                            payment.gateway_fee = collected_fee.quantize(Decimal('0.01'))
+                            payment.gateway_fee_source = 'GATEWAY'
                     
                     # DISPATCH TO HANDLER
                     if payment.payable_type == 'order':
@@ -948,18 +960,7 @@ class ReleasePaymentService:
                 commission = order.restaurant.commission_rate if order.restaurant else Decimal('0.050')
                 restaurant_payout = (Decimal(str(order.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
 
-                if order.batch and order.batch.driver_payout:
-                    batch_order_count = order.batch.orders.count()
-                    driver_payout = (order.batch.driver_payout / batch_order_count).quantize(Decimal('0.01')) if batch_order_count > 0 else Decimal('0')
-                elif order.driver:
-                    from domain.services.pricing_service import PricingService
-                    policy = PricingService.get_active_policy()
-                    driver_share = Decimal('0.95')
-                    if policy and policy.single_order_driver_share:
-                        driver_share = policy.single_order_driver_share
-                    driver_payout = (Decimal(str(order.delivery_fee or 0)) * driver_share).quantize(Decimal('0.01'))
-                else:
-                    driver_payout = Decimal('0')
+                driver_payout = PayoutService.order_share(order)
 
             elif payment.payable_type == 'pool_member':
                 from apps.orders.models import OrderPool, PoolMember
@@ -969,12 +970,6 @@ class ReleasePaymentService:
                 OrderPool.objects.select_for_update().get(id=member.pool_id)
                 commission = member.pool.restaurant.commission_rate if member.pool.restaurant else Decimal('0.050')
                 restaurant_payout = (Decimal(str(member.items_subtotal or 0)) * (Decimal('1.0') - commission)).quantize(Decimal('0.01'))
-
-                if member.pool.batch and member.pool.batch.driver_payout:
-                    paid_member_count = member.pool.members.filter(status='PAID').count()
-                    driver_payout = (member.pool.batch.driver_payout / paid_member_count).quantize(Decimal('0.01')) if paid_member_count > 0 else Decimal('0')
-                else:
-                    driver_payout = Decimal(str(member.delivery_fee_share or 0)).quantize(Decimal('0.01'))
 
                 # Use this specific member's order (not just any pool order) so that
                 # _distribute_restaurant_payout uses the right items for section credit.
@@ -992,6 +987,13 @@ class ReleasePaymentService:
                 # Resolve the driver from the batch if order.driver is None.
                 if order and not order.driver and order.batch_id and order.batch.driver:
                     order.driver = order.batch.driver
+
+                # The pool's own share of the fee is what was collected for this
+                # drop when no trip was ever batched behind it.
+                if order and order.batch_id and order.batch.driver_payout:
+                    driver_payout = PayoutService.order_share(order)
+                else:
+                    driver_payout = Decimal(str(member.delivery_fee_share or 0)).quantize(Decimal('0.01'))
 
             if not order:
                 raise ValueError("No payout target found for this payment.")
@@ -1020,8 +1022,11 @@ class ReleasePaymentService:
             # Gateway fees are a real cost of moving the money. Subtract them
             # from the platform's share before it is booked as revenue: the
             # fee has already left the platform's float, so a cut that ignores
-            # it is profit on paper only.
-            gateway_fee = order_gateway_fee(order)
+            # it is profit on paper only. Two fees apply — what was kept when
+            # the customer's money came in, and what was kept when the
+            # restaurant was paid.
+            collection_fee = Decimal(str(payment.gateway_fee or 0)).quantize(Decimal('0.01'))
+            gateway_fee = collection_fee + order_gateway_fee(order)
 
             platform_cut = (
                 escrow_release_amount - restaurant_payout - driver_payout - gateway_fee

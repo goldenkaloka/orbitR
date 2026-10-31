@@ -267,6 +267,10 @@ class Restaurant(models.Model):
     updated_at = models.DateTimeField(auto_now=True, db_index=True)
 
     def save(self, *args, **kwargs):
+        # The flag only restates source_type ("Verified partner" is the partner
+        # source label). Deriving it here keeps the two from drifting when ops
+        # edits one without the other.
+        self.is_verified_partner = self.source_type == self.SOURCE_PARTNER
         if self.geo_location:
             new_h3 = latlng_to_h3(self.geo_location.y, self.geo_location.x)
             if self.h3_index != new_h3:

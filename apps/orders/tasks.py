@@ -293,3 +293,61 @@ def generate_preorder_sheets():
 
     generated = generate_due_sheets()
     return f"Generated {len(generated)} pre-order sheet(s)."
+
+
+@shared_task
+def close_due_drop_windows():
+    """Apply the below-minimum policy when a drop window closes.
+
+    A drop trip only pays for itself above ``min_orders``. At cut-off the count
+    is finally known, so this is the moment to decide whether to run anyway,
+    roll the orders to the next window, or cancel and refund.
+
+    Runs every couple of minutes and claims each window occurrence with a cache
+    key, so a re-run (or a second beat worker) never applies the policy twice.
+    """
+    from apps.orders.models import DropWindow
+    from domain.services.orders.drop_service import (
+        apply_low_fill_policy,
+        cutoff_at,
+        local_now,
+    )
+
+    now = local_now()
+    handled = 0
+    windows = (
+        DropWindow.objects.filter(is_active=True, drop_point__is_active=True)
+        .select_related('drop_point')
+    )
+
+    for window in windows:
+        # The cut-off and the hand-over are on the same local day.
+        for offset in (0, 1):
+            day = now.date() - timedelta(days=offset)
+            if window.weekday is not None and day.weekday() != window.weekday:
+                continue
+            cutoff = cutoff_at(window, day)
+            # Only act in the short window after cut-off. A beat worker that
+            # was down for hours must not reopen yesterday's decisions.
+            if not (cutoff <= now < cutoff + timedelta(minutes=15)):
+                continue
+
+            key = f'drop-cutoff:{window.id}:{day.isoformat()}'
+            if not cache.add(key, 1, timeout=60 * 60 * 26):
+                continue
+
+            try:
+                outcome = apply_low_fill_policy(window, day, now=now)
+                handled += 1
+                logger.info(
+                    "[DropCutoff] %s on %s → %s", window, day, outcome,
+                )
+            except Exception as exc:
+                # Release the claim so the next beat retries; otherwise one bad
+                # run would leave the window unresolved for the whole 26 hours.
+                cache.delete(key)
+                logger.exception(
+                    "[DropCutoff] Failed to close %s on %s: %s", window, day, exc,
+                )
+
+    return f"Closed {handled} drop window(s)."

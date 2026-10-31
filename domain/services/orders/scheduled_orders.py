@@ -207,7 +207,13 @@ def slot_capacity_for(restaurant):
         return explicit
 
     slot_minutes = settings.PREORDER_SLOT_MINUTES
-    sections = list(restaurant.sections.filter(is_active=True))
+    # The feed asks this for every kitchen, so read the prefetched rows when
+    # they exist instead of firing one query per restaurant.
+    prefetched = getattr(restaurant, '_prefetched_objects_cache', {}).get('sections')
+    if prefetched is not None:
+        sections = [section for section in prefetched if section.is_active]
+    else:
+        sections = list(restaurant.sections.filter(is_active=True))
     if not sections:
         return 1
 
@@ -283,6 +289,45 @@ def _day_label(day, today):
     if day == today + timedelta(days=1):
         return 'Tomorrow'
     return day.strftime('%a %d %b')
+
+
+def next_preorder_hint(restaurant, now=None):
+    """The next meal that still takes pre-orders, for a listing badge.
+
+    Answers "can I pre-order here soon", not "what is the full calendar": only
+    today and tomorrow are considered. Today's meal counts while its cut-off is
+    still ahead; tomorrow always does. Returns ``None`` when the kitchen takes
+    no pre-orders at all.
+    """
+    if not accepts_preorders(restaurant):
+        return None
+
+    local_now = (now or timezone.now()).astimezone(_preorder_timezone())
+    windows = [
+        window for window in meal_windows_for(restaurant)
+        if slot_capacity_for_meal(restaurant, window) > 0
+    ]
+    for offset in range(0, 2):
+        day = local_now.date() + timedelta(days=offset)
+        for window in windows:
+            if offset == 0:
+                if window.end <= local_now.time():
+                    continue
+                if (
+                    window.preorder_cutoff is not None
+                    and local_now.time() >= window.preorder_cutoff
+                ):
+                    continue
+            return {
+                'accepting': True,
+                'meal': window.label,
+                'cutoff': (
+                    window.preorder_cutoff.strftime('%H:%M')
+                    if window.preorder_cutoff else None
+                ),
+                'day': _day_label(day, local_now.date()),
+            }
+    return None
 
 
 def upcoming_slot_days(restaurant, days=2, now=None):

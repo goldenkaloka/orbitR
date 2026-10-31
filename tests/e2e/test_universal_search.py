@@ -63,3 +63,50 @@ class UniversalSearchTests(TestCase):
 
     def test_prefix_matches(self):
         self.assertIn('Ugali & Fish', self._food_names('uga'))
+
+    def _restaurant(self, name, lng, lat):
+        return Restaurant.objects.create(
+            owner=self.owner,
+            name=name,
+            location='Test',
+            geo_location=Point(lng, lat),
+            average_prep_time=20,
+        )
+
+    def test_far_restaurant_is_still_searchable(self):
+        # Search spans the catalogue, so a kitchen outside the customer's
+        # neighbourhood is still findable by name.
+        self._restaurant('Kigoma Grill', 29.6, -4.9)
+
+        response = self.client.get('/api/search/', {
+            'q': 'Kigoma', 'lat': -6.7924, 'lng': 39.2083,
+        })
+
+        self.assertEqual(response.status_code, 200)
+        names = [row['name'] for row in response.json()['restaurants']]
+        self.assertIn('Kigoma Grill', names)
+
+    def test_food_from_far_restaurant_is_still_searchable(self):
+        far = self._restaurant('Kigoma Grill', 29.6, -4.9)
+        Food.objects.create(
+            section=far.sections.first(), name='Kigoma Chips', price=Decimal('4000.00'),
+        )
+
+        response = self.client.get('/api/search/', {
+            'q': 'Kigoma Chips', 'lat': -6.7924, 'lng': 39.2083,
+        })
+
+        names = [row['name'] for row in response.json()['products']]
+        self.assertIn('Kigoma Chips', names)
+
+    def test_equal_matches_are_ordered_nearest_first(self):
+        self._restaurant('Kebab House', 39.25, -6.79)
+        self._restaurant('Kebab House', 29.6, -4.9)
+
+        response = self.client.get('/api/search/', {
+            'q': 'Kebab', 'lat': -6.7924, 'lng': 39.2083,
+        })
+
+        distances = [row['distance_km'] for row in response.json()['restaurants']]
+        self.assertEqual(len(distances), 2)
+        self.assertEqual(distances, sorted(distances))

@@ -39,8 +39,8 @@ DISPATCH_DEBUG = config('DISPATCH_DEBUG', default=DEBUG, cast=bool)
 # Lets a single reviewer phone sign in with a fixed OTP instead of waiting for
 # an SMS. Scoped to ONE phone and ONE code, and auto-provisions a customer
 # account so reviewers can log in on a clean install.
-# Disable after store approval with REVIEW_LOGIN_ENABLED=0.
-REVIEW_LOGIN_ENABLED = config('REVIEW_LOGIN_ENABLED', default=True, cast=bool)
+# Off unless a store review is active: it bypasses OTP expiry entirely.
+REVIEW_LOGIN_ENABLED = config('REVIEW_LOGIN_ENABLED', default=False, cast=bool)
 REVIEW_LOGIN_PHONE = config('REVIEW_LOGIN_PHONE', default='0635622485')
 REVIEW_LOGIN_OTP = config('REVIEW_LOGIN_OTP', default='121212')
 REVIEW_LOGIN_USERNAME = config('REVIEW_LOGIN_USERNAME', default='App Reviewer')
@@ -211,8 +211,8 @@ SPECTACULAR_SETTINGS = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=config('JWT_ACCESS_TOKEN_HOURS', default=168, cast=int)),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=config('JWT_REFRESH_TOKEN_DAYS', default=3650, cast=int)),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=config('JWT_ACCESS_TOKEN_HOURS', default=12, cast=int)),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=config('JWT_REFRESH_TOKEN_DAYS', default=30, cast=int)),
     'ROTATE_REFRESH_TOKENS': config('JWT_ROTATE_REFRESH_TOKENS', default=True, cast=bool),
     'BLACKLIST_AFTER_ROTATION': config('JWT_BLACKLIST_AFTER_ROTATION', default=True, cast=bool),
     'UPDATE_LAST_LOGIN': True,
@@ -256,6 +256,10 @@ LOCAL_PICKUP_MAX_DISTANCE_KM = config('LOCAL_PICKUP_MAX_DISTANCE_KM', default=0.
 
 DRIVER_RESTAURANT_MAX_DISTANCE_KM = config('DRIVER_RESTAURANT_MAX_DISTANCE_KM', default=5.0, cast=float)
 DRIVER_RESTAURANT_ZONE_RADIUS = config('DRIVER_RESTAURANT_ZONE_RADIUS', default=0, cast=int)
+
+# Two kitchens farther apart than this never share one trip. The trip pays a
+# flat fee, so a long hop between pickups is rider time nobody pays for.
+KITCHEN_TRIP_MAX_METERS = config('KITCHEN_TRIP_MAX_METERS', default=300, cast=float)
 
 
 MIDDLEWARE = [
@@ -870,6 +874,10 @@ CELERY_BEAT_SCHEDULE = {
     'generate-preorder-sheets-every-5-mins': {
         'task': 'apps.orders.tasks.generate_preorder_sheets',
         'schedule': crontab(minute='*/5'),
+    },
+    'close-due-drop-windows-every-2-mins': {
+        'task': 'apps.orders.tasks.close_due_drop_windows',
+        'schedule': crontab(minute='*/2'),
     },
     'expire-stale-assigned-orders-every-5-mins': {
         'task': 'domain.services.dispatch_tasks.expire_stale_assigned_orders_task',

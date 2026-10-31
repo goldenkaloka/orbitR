@@ -1,6 +1,5 @@
 import logging
 import random
-from decimal import Decimal
 
 from apps.core.geo_utils import haversine_distance
 from apps.delivery.models import DeliveryAssignment
@@ -152,6 +151,19 @@ class PickupOrderService:
             order.picked_up_at = timezone.now()
             order.save()
 
+            if order.pool_id:
+                # A pool is being carried now; DELIVERING is what lets the
+                # last delivery close it (see order_handlers.on_order_delivered).
+                from domain.fsm.pool_fsm import InvalidPoolTransitionError, PoolFSM
+
+                pool = order.pool
+                if pool.status == 'DISPATCHING':
+                    try:
+                        pool.status = PoolFSM.transition(pool.status, 'DELIVERING')
+                        pool.save(update_fields=['status'])
+                    except InvalidPoolTransitionError as exc:
+                        logger.warning(f"Pool {pool.id} cannot mark delivering: {exc}")
+
             # Driver is already in DELIVERING state (set on batch accept / claim).
             # No driver state change needed here.
             assignment = getattr(order, 'delivery_assignment', None)
@@ -208,20 +220,9 @@ class DeliverOrderService:
 
                 BatchPipeline.complete_batch_if_finished(order.batch_id)
 
-            # If the order is part of a batch or pool batch, calculate its share of the batch's driver payout.
-            if order.batch_id and order.batch.driver_payout:
-                batch_order_count = order.batch.orders.count()
-                order_driver_payout = Decimal(str(order.batch.driver_payout)) / batch_order_count if batch_order_count > 0 else Decimal('0')
-            elif order.pool_id and order.pool.batch_id and order.pool.batch.driver_payout:
-                paid_member_count = order.pool.members.filter(status='PAID').count()
-                order_driver_payout = Decimal(str(order.pool.batch.driver_payout)) / paid_member_count if paid_member_count > 0 else Decimal('0')
-            else:
-                from domain.services.pricing_service import PricingService
-                policy = PricingService.get_active_policy()
-                driver_share = Decimal('0.95')
-                if policy and policy.single_order_driver_share:
-                    driver_share = policy.single_order_driver_share
-                order_driver_payout = Decimal(str(order.delivery_fee or 0)) * driver_share
+            from domain.services.payout_service import PayoutService
+
+            order_driver_payout = PayoutService.order_share(order)
 
             # Return driver to AVAILABLE when no more active deliveries.
             active_orders_count = Order.objects.filter(

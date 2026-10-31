@@ -15,10 +15,9 @@ from api.serializers.core import (
 )
 from api.serializers.marketplace import MarketplaceProductSerializer
 from apps.core.cache_keys import stable_cache_key
-from apps.core.geo_utils import ZONE_RESOLUTION, get_neighbors, latlng_to_h3
+from apps.core.geo_utils import get_neighbors
 from apps.core.models import Notification
 from apps.delivery.models import Driver
-from apps.geo.models import OperationalZone
 from apps.marketplace.models import MarketplaceProduct
 from apps.orders.models import DeliveryBatch, Dispute, Order
 from apps.products.models import Food
@@ -26,7 +25,6 @@ from apps.restaurants.models import Restaurant, RestaurantSection
 from apps.reviews.models import Review
 from apps.users.models import User
 from apps.wallets.models import Wallet, WalletTransaction
-from django.conf import settings
 from django.contrib.postgres.search import TrigramWordSimilarity
 from django.core.cache import cache
 from django.db import models
@@ -48,7 +46,6 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.settings import api_settings
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
@@ -325,11 +322,6 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
     public_actions = {'list', 'retrieve', 'delivery_fee', 'preorder_slots'}
 
-    # Matchmaking-style discovery: start with the immediate neighbourhood and
-    # widen the ring until a page holds enough options. Kilometres.
-    DISCOVERY_RINGS_KM = (1, 3, 5, 10, 20, 50)
-    MIN_DISCOVERY_RESULTS = 6
-
     def get_permissions(self):
         if getattr(self, 'action', None) in self.public_actions:
             return [AllowAny()]
@@ -372,9 +364,12 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             queryset=RestaurantSection.objects.only(
                 'id', 'restaurant_id', 'name', 'specialization', 'description',
                 'image', 'is_active', 'sort_order', 'prep_time',
+                'max_concurrent_orders',
             ).prefetch_related(food_prefetch),
         )
-        queryset = Restaurant.objects.select_related('owner').prefetch_related(section_prefetch).annotate(
+        queryset = Restaurant.objects.select_related('owner').prefetch_related(
+            section_prefetch, 'meal_periods',
+        ).annotate(
             available_food_count=Count('sections__foods', filter=Q(sections__foods__is_available=True))
         )
         if getattr(self, "action", None) != "update_profile":
@@ -393,66 +388,13 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
                 from django.contrib.gis.db.models.functions import Distance
                 from django.contrib.gis.geos import Point
                 user_location = Point(float(lng), float(lat), srid=4326)
+                # Every active restaurant stays in the feed; location only
+                # ranks them, so a customer always sees the closest first and
+                # never gets an empty homepage because nothing is "in range".
+                # A restaurant without a pin has no distance and sorts last.
                 queryset = queryset.annotate(
-                    distance=Case(
-                        When(geo_location__isnull=False, then=Distance('geo_location', user_location)),
-                        default=Value(1e10),
-                        output_field=FloatField(),
-                    )
+                    distance=Distance('geo_location', user_location)
                 )
-
-                # Restaurant must be able to serve this customer: the customer
-                # sits inside its delivery radius, or both are in the same
-                # operational zone. The H3 lookup keeps the zone test on an
-                # index instead of a polygon scan per restaurant.
-                cell = latlng_to_h3(float(lat), float(lng), ZONE_RESOLUTION)
-                zone = (
-                    OperationalZone.objects.filter(
-                        is_active=True,
-                        h3_indexes__h3_index=cell,
-                    )
-                    .only('boundary')
-                    .first()
-                )
-                deliverable = Q(distance__lte=F('max_delivery_radius_km') * 1000.0)
-                if zone is not None:
-                    # coveredby has a geography implementation; ST_Within does not.
-                    deliverable |= Q(geo_location__coveredby=zone.boundary)
-
-                # Ringed discovery. A customer in a dense area only sees their
-                # neighbourhood; in a sparse one the ring keeps widening until
-                # it can fill a page, instead of an empty feed.
-                try:
-                    requested = int(self.request.query_params.get('limit', ''))
-                except (TypeError, ValueError):
-                    requested = 0
-                ring_target = max(
-                    self.MIN_DISCOVERY_RESULTS,
-                    min(requested or api_settings.PAGE_SIZE or 20, 50),
-                )
-                from django.contrib.gis.measure import D
-                located = queryset.filter(geo_location__isnull=False)
-                discovered = None
-                for ring_km in self.DISCOVERY_RINGS_KM:
-                    # ST_DWithin (not the distance annotation) so the GiST
-                    # index narrows the ring instead of scanning every row.
-                    ring_qs = located.filter(
-                        deliverable,
-                        geo_location__distance_lte=(user_location, D(km=ring_km)),
-                    )
-                    count = ring_qs.count()
-                    if count == 0:
-                        continue
-                    discovered = ring_qs
-                    if count >= ring_target:
-                        break
-                if discovered is None:
-                    # No deliverable restaurant at any ring: show the nearest
-                    # listings regardless, so the feed is never blank. Order
-                    # placement does not gate on delivery radius.
-                    queryset = located
-                else:
-                    queryset = discovered
 
             queryset = queryset.annotate(
                 review_count=Count(
@@ -494,8 +436,9 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 
             if sort_by == 'distance' and lat and lng:
                 # Nearest first, with id as a stable tiebreak so limit/offset
-                # pagination does not repeat or skip rows.
-                queryset = queryset.order_by('distance', 'id')
+                # pagination does not repeat or skip rows. Unpinned kitchens
+                # (NULL distance) go to the end rather than the top.
+                queryset = queryset.order_by(F('distance').asc(nulls_last=True), 'id')
             elif sort_by == 'rating':
                 queryset = queryset.order_by('-rating', '-review_count')
             elif sort_by == 'prep_time':
@@ -575,7 +518,7 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
         lng = request.query_params.get('lng')
         limit = request.query_params.get('limit')
         offset = request.query_params.get('offset')
-        sort_by = request.query_params.get('sort_by', 'recommended')
+        sort_by = request.query_params.get('sort_by', 'distance')
 
         version = cache.get('restaurant_list_cache_version', 0)
         cache_key = stable_cache_key(
@@ -1002,6 +945,10 @@ class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
+    # Orders are created and then moved by the named actions below. A plain
+    # PUT/PATCH/DELETE would let a customer rewrite financial fields or drop the
+    # row (cascading payments and ledger entries) behind the FSM's back.
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def perform_create(self, serializer):
         serializer.save(customer=self.request.user)
@@ -1016,6 +963,8 @@ class OrderViewSet(viewsets.ModelViewSet):
             'driver__user',
             'batch',
             'payment',
+            'drop_point',
+            'drop_window',
         ).prefetch_related(
             'items', 'items__food', 'items__section',
             'batch__orders',
@@ -1881,6 +1830,10 @@ class UniversalSearchView(APIView):
     Search across multiple models (Restaurants, Foods).
     Uses Postgres trigram word similarity for fuzzy matching.
 
+    The catalogue is searched whole — a restaurant listed on the homepage is
+    always findable by name. A caller-supplied fix only breaks ties between
+    equally good matches, nearest first.
+
     Public: the catalogue is browsable by guests, so search must be too. Reads
     of the same tables are already public through RestaurantViewSet.
     """
@@ -1895,14 +1848,27 @@ class UniversalSearchView(APIView):
 
     def get(self, request):
         query = request.query_params.get('q', '')
-        lat = request.query_params.get('lat')
-        lng = request.query_params.get('lng')
 
         if not query or len(query) < 2:
             return Response({
                 "restaurants": [],
                 "products": []
             })
+
+        # Search spans the whole catalogue: the feed lists every active
+        # restaurant, so hiding distant kitchens here would make a restaurant
+        # the customer can see on the homepage unfindable. The customer's fix is
+        # used only to rank equally good matches nearest first.
+        user_location = None
+        lat = request.query_params.get('lat')
+        lng = request.query_params.get('lng')
+        if lat and lng:
+            try:
+                from django.contrib.gis.db.models.functions import Distance
+                from django.contrib.gis.geos import Point
+                user_location = Point(float(lng), float(lat), srid=4326)
+            except (TypeError, ValueError):
+                user_location = None
 
         # A bare trigram cut-off is too permissive: "wali" (rice) shares its
         # tail with "Ugali" and cleared the old 0.1 floor, so a rice search
@@ -1931,12 +1897,27 @@ class UniversalSearchView(APIView):
         # Search Restaurants — Prefetch foods to avoid N+1 in serializer
         restaurants_qs = search_qs(
             Restaurant.objects.filter(is_active=True).prefetch_related('sections__foods')
-        )[:15]
+        )
 
         # Search Products — select_related for vendor info
         products_qs = search_qs(
             Food.objects.select_related('section__restaurant').filter(is_available=True)
-        )[:30]
+        )
+
+        if user_location is not None:
+            restaurants_qs = restaurants_qs.annotate(
+                distance=Distance('geo_location', user_location),
+            ).order_by(
+                '-match_rank', '-similarity', F('distance').asc(nulls_last=True),
+            )
+            products_qs = products_qs.annotate(
+                distance=Distance('section__restaurant__geo_location', user_location),
+            ).order_by(
+                '-match_rank', '-similarity', F('distance').asc(nulls_last=True),
+            )
+
+        restaurants_qs = restaurants_qs[:15]
+        products_qs = products_qs[:30]
 
         # Search Marketplace
         marketplace_qs = search_qs(

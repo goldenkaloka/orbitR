@@ -75,6 +75,29 @@ def _split_fee_proportionally(total: Decimal, shares: list[Decimal]) -> list[Dec
     return results
 
 
+def _drop_fee_shares(pool, members):
+    """Flat per-order fees for a bucket pointed at a scheduled drop.
+
+    A drop fee is charged per order, not per trip: eight people at a gate each
+    pay 500. The normal bucket splits one trip's fee proportionally, which
+    would let a large order subsidise everyone else's delivery.
+    """
+    if not getattr(pool, 'drop_window_id', None):
+        return None
+    per_order_fee = Decimal(str(pool.drop_window.delivery_fee))
+    policy = PricingService.get_active_policy()
+    per_order_service = (
+        Decimal(str(policy.service_fee)) if policy else Decimal('300')
+    )
+    count = max(len(members), 1)
+    return (
+        per_order_fee * count,
+        per_order_service * count,
+        [per_order_fee] * len(members),
+        [per_order_service] * len(members),
+    )
+
+
 def _notify_pool_prep_sms(pool_id: str):
     try:
         from domain.services.order_sms_notifications import OrderPrepSmsService
@@ -93,23 +116,28 @@ class PoolOrderService:
         The fixed delivery fee is re-split every time the squad changes; the
         lock step recomputes the same total and logs it.
         """
-        total_fee, service_fee, _ = PricingService.calculate_delivery_fee(
-            pool.restaurant,
-            pool.delivery_location,
-            pool=pool,
-            skip_log=True,
-        )
+        members = list(pool.members.all())
+        drop_fees = _drop_fee_shares(pool, members)
+        if drop_fees:
+            total_fee, service_fee, delivery_shares, service_shares = drop_fees
+        else:
+            total_fee, service_fee, _ = PricingService.calculate_delivery_fee(
+                pool.restaurant,
+                pool.delivery_location,
+                pool=pool,
+                skip_log=True,
+            )
         pool.total_delivery_fee = total_fee
         pool.service_fee = service_fee
         pool.save(update_fields=['total_delivery_fee', 'service_fee'])
 
-        members = list(pool.members.all())
         if not members:
             return
 
-        subtotals = [member.items_subtotal for member in members]
-        delivery_shares = _split_fee_proportionally(total_fee, subtotals)
-        service_shares = _split_fee_proportionally(service_fee, subtotals)
+        if not drop_fees:
+            subtotals = [member.items_subtotal for member in members]
+            delivery_shares = _split_fee_proportionally(total_fee, subtotals)
+            service_shares = _split_fee_proportionally(service_fee, subtotals)
         for i, member in enumerate(members):
             member.delivery_fee_share = delivery_shares[i]
             member.service_fee_share = service_shares[i]
@@ -125,11 +153,41 @@ class PoolOrderService:
         delivery_location,
         scheduled_for=None,
         meal_period=None,
+        drop_window=None,
     ):
         if OrderPool.objects.filter(initiator=initiator, status='OPEN').exists():
             raise ValueError("You already have an open bucket.")
 
         restaurant = Restaurant.objects.get(id=restaurant_id)
+
+        # A bucket pointed at a scheduled drop becomes a group order for a
+        # hostel/campus window: the point supplies the address, the window
+        # supplies the flat fee, and the cut-off (not the kitchen release time)
+        # closes the bucket.
+        drop_start = None
+        if drop_window is not None:
+            from apps.orders.models import DropWindow
+            from domain.services.orders.drop_service import (
+                DropUnavailable,
+                validate_drop_booking,
+            )
+
+            if not isinstance(drop_window, DropWindow):
+                try:
+                    drop_window = DropWindow.objects.select_related('drop_point').get(
+                        id=drop_window,
+                    )
+                except (DropWindow.DoesNotExist, ValueError, TypeError):
+                    raise ValueError("This drop window does not exist.")
+            try:
+                drop_start = validate_drop_booking(
+                    drop_window, scheduled_for, restaurant=restaurant,
+                )
+            except DropUnavailable as exc:
+                raise ValueError(str(exc))
+            scheduled_for = drop_start
+            delivery_location = drop_window.drop_point.geo_location
+            delivery_address = delivery_address or drop_window.drop_point.name
 
         if not delivery_location or not hasattr(delivery_location, 'x'):
             raise ValueError("Valid delivery location (lat/lng) is required for pooling.")
@@ -140,8 +198,9 @@ class PoolOrderService:
         if requested_meal and requested_meal not in dict(MealPeriod.KIND_CHOICES):
             raise ValueError(f"Unknown meal period: {requested_meal}")
 
-        if scheduled_for:
+        if scheduled_for and not drop_start:
             validate_scheduled_for(scheduled_for, restaurant=restaurant)
+        if scheduled_for:
             # The booking must fall inside a serving window, and the bucket's
             # meal must be the one that window serves. A time outside every
             # window is rejected later by ensure_preorder_slot_capacity with
@@ -182,7 +241,13 @@ class PoolOrderService:
 
         max_retries = 3
         pool = None
-        if scheduled_for:
+        if drop_start:
+            # The bucket must settle before the drop's cut-off, not the kitchen
+            # release time, because the rider's trip is sized at cut-off.
+            from domain.services.orders.drop_service import cutoff_at
+
+            expires_at = cutoff_at(drop_window, drop_start.date())
+        elif scheduled_for:
             # A scheduled bucket must be settled before the kitchen starts
             # prepping; an immediate bucket keeps the usual two-hour window.
             expires_at = release_at_for(restaurant, scheduled_for)
@@ -190,7 +255,21 @@ class PoolOrderService:
             expires_at = timezone.now() + timedelta(hours=2)
 
         with transaction.atomic():
-            if scheduled_for:
+            if drop_start:
+                # Same serialisation as a solo drop order: lock the window so
+                # two buckets cannot both claim the last seat.
+                from apps.orders.models import DropWindow
+                from domain.services.orders.drop_service import (
+                    DropUnavailable,
+                    validate_drop_booking,
+                )
+
+                DropWindow.objects.select_for_update().get(id=drop_window.id)
+                try:
+                    validate_drop_booking(drop_window, drop_start, restaurant=restaurant)
+                except DropUnavailable as exc:
+                    raise ValueError(str(exc))
+            elif scheduled_for:
                 # Take the same restaurant lock as the solo pre-order path so a
                 # bucket and a solo order cannot both claim the last seat.
                 locked_restaurant = Restaurant.objects.select_for_update().get(
@@ -212,6 +291,7 @@ class PoolOrderService:
                             expires_at=expires_at,
                             scheduled_for=scheduled_for,
                             meal_period=meal_period,
+                            drop_window=drop_window,
                         )
                         PoolMember.objects.create(pool=pool, user=initiator, status='ADDING')
                     break
@@ -231,7 +311,11 @@ class PoolOrderService:
     @staticmethod
     def join_pool(user, invite_code):
         with transaction.atomic():
-            pool = OrderPool.objects.select_for_update().get(invite_code=invite_code, status='OPEN')
+            pool = (
+                OrderPool.objects.select_for_update()
+                .select_related('drop_window', 'drop_window__drop_point')
+                .get(invite_code=invite_code, status='OPEN')
+            )
 
             if pool.expires_at <= timezone.now():
                 raise ValueError("This pool has expired.")
@@ -239,8 +323,27 @@ class PoolOrderService:
             if PoolMember.objects.filter(user=user, pool__status='OPEN').exclude(pool=pool).exists():
                 raise ValueError("You are already participating in another active bucket.")
 
-            if pool.members.count() >= PoolOrderService.MAX_POOL_MEMBERS:
-                raise ValueError(f"Pool is full (max {PoolOrderService.MAX_POOL_MEMBERS}).")
+            member_limit = PoolOrderService.MAX_POOL_MEMBERS
+            if pool.drop_window_id:
+                # A drop bucket is bounded by the trip: it can never carry more
+                # members than the window has seats left, or the last members
+                # would be sold a seat that does not exist.
+                from domain.services.orders.drop_service import (
+                    capacity as drop_capacity,
+                    local_now,
+                    reserved_seats,
+                )
+
+                window = pool.drop_window
+                member_limit = min(member_limit, drop_capacity(window))
+                seats = reserved_seats(
+                    window, local_now(pool.scheduled_for).date(),
+                )
+                if seats >= drop_capacity(window):
+                    raise ValueError("This drop is full — try the next window.")
+
+            if pool.members.count() >= member_limit:
+                raise ValueError(f"Pool is full (max {member_limit}).")
 
             member, created = PoolMember.objects.get_or_create(pool=pool, user=user, defaults={'status': 'ADDING'})
 
@@ -399,13 +502,16 @@ class PoolOrderService:
 
             pool.status = PoolFSM.transition(pool.status, 'LOCKED')
 
-            total_fee, s_fee, _ = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location, pool=pool)
+            drop_fees = _drop_fee_shares(pool, members)
+            if drop_fees:
+                total_fee, s_fee, delivery_shares, service_shares = drop_fees
+            else:
+                total_fee, s_fee, _ = PricingService.calculate_delivery_fee(pool.restaurant, pool.delivery_location, pool=pool)
+                subtotals = [m.items_subtotal for m in members]
+                delivery_shares = _split_fee_proportionally(total_fee, subtotals)
+                service_shares = _split_fee_proportionally(s_fee, subtotals)
             pool.total_delivery_fee = total_fee
             pool.service_fee = s_fee
-
-            subtotals = [m.items_subtotal for m in members]
-            delivery_shares = _split_fee_proportionally(total_fee, subtotals)
-            service_shares = _split_fee_proportionally(s_fee, subtotals)
 
             for i, member in enumerate(members):
                 member.delivery_fee_share = delivery_shares[i]
@@ -473,7 +579,7 @@ class PoolOrderService:
 
         from django.utils import timezone
 
-        pool = OrderPool.objects.select_related('restaurant').get(id=pool_id)
+        pool = OrderPool.objects.select_related('restaurant', 'drop_window').get(id=pool_id)
 
         if Order.objects.filter(pool=pool).exists():
             logger.info(f"[finalize_pool] Orders already exist for pool {pool_id}, skipping.")
@@ -526,6 +632,11 @@ class PoolOrderService:
                 delivery_address=pool.delivery_address,
                 delivery_location=pool.delivery_location,
                 h3_index=pool.h3_index,
+                drop_window_id=pool.drop_window_id,
+                drop_point_id=(
+                    pool.drop_window.drop_point_id
+                    if pool.drop_window_id else None
+                ),
                 group_breakdown={
                     'pool_id': str(pool.id),
                     'member_id': str(member.id),

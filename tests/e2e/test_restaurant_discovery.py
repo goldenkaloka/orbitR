@@ -3,22 +3,22 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.restaurants.models import Restaurant
+from apps.restaurants.models import MealPeriod, Restaurant
 from apps.users.models import User
+from datetime import time
 
 LAT = -6.7924
 LNG = 39.2083
 
 
 @override_settings(
-    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+    CACHES={"default": {"django.core.cache.backends.locmem.LocMemCache"}}
 )
 class RestaurantDiscoveryTests(TestCase):
-    """Ringed discovery for the customer feed.
+    """Customer feed: every active kitchen, nearest first.
 
-    Results are distance-ordered, and the search ring widens until it holds a
-    usable page — so a customer in a quiet area sees the closest kitchens
-    instead of an empty list.
+    Location ranks the list but never filters it, so a customer in a quiet
+    area still sees the whole catalogue instead of an empty feed.
     """
 
     _origin_seq = 0
@@ -37,14 +37,14 @@ class RestaurantDiscoveryTests(TestCase):
         self.lng = LNG
         cache.clear()
 
-    def _restaurant(self, name, offset_km, max_radius_km=10.0):
+    def _restaurant(self, name, offset_km, max_radius_km=10.0, pinned=True):
         # ~110.6 km per degree of longitude at Dar es Salaam's latitude.
         lng = self.lng + offset_km / 110.6
         return Restaurant.objects.create(
             owner=self.owner,
             name=name,
             location="Test",
-            geo_location=Point(lng, self.lat),
+            geo_location=Point(lng, self.lat) if pinned else None,
             max_delivery_radius_km=max_radius_km,
         )
 
@@ -67,24 +67,23 @@ class RestaurantDiscoveryTests(TestCase):
         distances = [r["distance_km"] for r in results]
         self.assertEqual(distances, sorted(distances))
 
-    def test_search_radius_expands_for_sparse_areas(self):
-        # Nothing inside 5 km, so the ring has to widen before returning.
+    def test_sparse_area_still_returns_the_only_kitchen(self):
         self._restaurant("Only Option", 8.0)
 
         results = self._list()
 
         self.assertEqual([r["name"] for r in results], ["Only Option"])
 
-    def test_nearest_listing_is_returned_even_if_it_cannot_deliver(self):
-        # 8 km away with a 1 km delivery radius: no ring ever satisfies the
-        # delivery gate, so discovery falls back to the nearest listing.
+    def test_kitchen_outside_its_delivery_radius_is_still_listed(self):
+        # 8 km away with a 1 km radius: the listing is shown anyway, because
+        # the feed ranks by proximity and does not gate on the radius.
         self._restaurant("Out Of Range", 8.0, max_radius_km=1.0)
 
         results = self._list()
 
         self.assertEqual([r["name"] for r in results], ["Out Of Range"])
 
-    def test_dense_area_stays_in_the_nearby_ring(self):
+    def test_first_page_holds_only_the_nearest_kitchens(self):
         for i in range(6):
             self._restaurant(f"Near {i}", 0.2 + i * 0.1)
         self._restaurant("Distant", 40.0, max_radius_km=60.0)
@@ -95,9 +94,7 @@ class RestaurantDiscoveryTests(TestCase):
         self.assertEqual(len(names), 6)
         self.assertNotIn("Distant", names)
 
-    def test_ring_keeps_widening_until_it_can_fill_a_page(self):
-        # Six nearby kitchens are not a full page, so discovery widens and
-        # still lists the distant one rather than truncating the feed.
+    def test_every_active_kitchen_is_listed(self):
         for i in range(6):
             self._restaurant(f"Near {i}", 0.2 + i * 0.1)
         self._restaurant("Distant", 40.0, max_radius_km=60.0)
@@ -109,3 +106,36 @@ class RestaurantDiscoveryTests(TestCase):
         self.assertEqual(names[-1], "Distant")
         distances = [r["distance_km"] for r in results]
         self.assertEqual(distances, sorted(distances))
+
+    def test_unpinned_kitchen_is_listed_last_without_a_distance(self):
+        self._restaurant("Pinned", 0.5)
+        self._restaurant("Unpinned", 0.5, pinned=False)
+
+        results = self._list()
+
+        self.assertEqual([r["name"] for r in results], ["Pinned", "Unpinned"])
+        self.assertIsNone(results[-1]["distance_km"])
+        self.assertIsNotNone(results[0]["distance_km"])
+
+    def test_feed_reports_whether_a_kitchen_takes_preorders(self):
+        takes = self._restaurant("Takes Preorders", 0.4)
+        takes.preorder_slot_capacity = 4
+        takes.save(update_fields=["preorder_slot_capacity"])
+        MealPeriod.objects.create(
+            restaurant=takes,
+            kind=MealPeriod.LUNCH,
+            start_time=time(11, 0),
+            end_time=time(15, 0),
+        )
+        closed = self._restaurant("No Preorders", 0.6)
+        closed.preorder_slot_capacity = 0
+        closed.save(update_fields=["preorder_slot_capacity"])
+
+        results = {r["name"]: r["preorder"] for r in self._list()}
+
+        self.assertIsNone(results["No Preorders"])
+        hint = results["Takes Preorders"]
+        self.assertIsNotNone(hint)
+        self.assertTrue(hint["accepting"])
+        self.assertEqual(hint["meal"], "Lunch")
+        self.assertIn(hint["day"], ("Today", "Tomorrow"))

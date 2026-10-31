@@ -8,6 +8,8 @@ from .models import (
     BatchSectionStatus,
     DeliveryBatch,
     Dispute,
+    DropPoint,
+    DropWindow,
     Order,
     OrderItem,
     PreorderSheet,
@@ -227,3 +229,36 @@ class PreorderSheetAdmin(ModelAdmin):
     @display(description='PDF')
     def pdf_kb(self, obj):
         return f'{len(obj.pdf or b"") // 1024} KB'
+
+
+class DropWindowInline(TabularInline):
+    model = DropWindow
+    extra = 0
+    fields = (
+        'label', 'weekday', 'start_time', 'end_time', 'cutoff_time',
+        'delivery_fee', 'max_orders', 'is_active',
+    )
+
+
+@admin.register(DropPoint)
+class DropPointAdmin(LeafletGeoAdminMixin, ModelAdmin):
+    settings_overrides = {
+        'DEFAULT_CENTER': (-6.7924, 39.2083),
+        'DEFAULT_ZOOM': 13,
+    }
+    list_display = ('name', 'zone', 'min_orders', 'max_orders', 'is_active')
+    list_filter = ('is_active', 'zone')
+    search_fields = ('name', 'description', 'contact_name', 'contact_phone')
+    readonly_fields = ('id', 'h3_index', 'created_at', 'updated_at')
+    inlines = [DropWindowInline]
+
+
+@admin.register(DropWindow)
+class DropWindowAdmin(ModelAdmin):
+    list_display = (
+        'drop_point', 'label', 'weekday', 'start_time', 'end_time',
+        'cutoff_time', 'delivery_fee', 'is_active',
+    )
+    list_filter = ('is_active', 'weekday', 'drop_point')
+    raw_id_fields = ('drop_point',)
+    readonly_fields = ('id', 'created_at', 'updated_at')

@@ -209,6 +209,7 @@ class AirpayWebhookView(APIView):
                 provider_reference=ap_transaction_id,
                 success=success,
                 reference_id=order_id,
+                result=actual_data,
             )
 
             return Response({"status": "success"}, status=200)
@@ -363,6 +364,7 @@ class ClickpesaWebhookView(APIView):
                 provider_reference=transaction_id,
                 success=success,
                 reference_id=order_ref,
+                result=event_data,
             )
 
             return Response({"status": "success"}, status=200)

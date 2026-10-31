@@ -95,6 +95,18 @@ class Order(models.Model):
         default=FULFILLMENT_DELIVERY,
         db_index=True,
     )
+
+    # Scheduled drop: a shared hand-over point (hostel gate, campus block)
+    # instead of a private address. The delivery fee comes from the window,
+    # not from distance, because one trip carries many orders.
+    drop_point = models.ForeignKey(
+        'DropPoint', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='orders', db_index=True,
+    )
+    drop_window = models.ForeignKey(
+        'DropWindow', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='orders', db_index=True,
+    )
     
     # PostGIS Location Field
     delivery_location = gis_models.PointField(geography=True, null=True, blank=True, db_index=True)
@@ -382,6 +394,13 @@ class OrderPool(models.Model):
     delivery_address = models.TextField()
     delivery_location = gis_models.PointField(geography=True, db_index=True)
     h3_index = models.CharField(max_length=20, db_index=True, null=True, blank=True)
+
+    # A bucket can be pointed at a scheduled drop, which turns a private group
+    # order into a group order for a hostel/campus window.
+    drop_window = models.ForeignKey(
+        'DropWindow', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='pools', db_index=True,
+    )
     
     # Financials — pooled across all members
     total_delivery_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
@@ -494,15 +513,6 @@ class PoolMember(models.Model):
     class Meta:
         unique_together = ('pool', 'user')
 
-class PoolItem(models.Model):
-    member = models.ForeignKey(PoolMember, on_delete=models.CASCADE, related_name='pool_item_entries')
-    food = models.ForeignKey(Food, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1)
-    price_at_addition = models.DecimalField(max_digits=10, decimal_places=2)
-
-    def __str__(self):
-        return f"{self.quantity} x {self.food.name} (User: {self.member.user.username})"
-
 class DeliveryBatch(models.Model):
     STATUS_CHOICES = (
         ('ACCUMULATING', 'Collecting orders'),
@@ -558,6 +568,12 @@ class DeliveryBatch(models.Model):
 
     max_orders = models.PositiveIntegerField(default=5, help_text="Max orders before batch closes to new joins")
     accumulate_window_minutes = models.PositiveIntegerField(default=10, help_text="Minutes to stay in ACCUMULATING before SOFT_LOCK")
+    # A scheduled-drop trip: every order for the same drop window rides in one
+    # batch so the rider makes a single trip to a single gate.
+    drop_window = models.ForeignKey(
+        'DropWindow', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='batches', db_index=True,
+    )
     # Pre-orders for one restaurant and one eating-time slot share a batch so
     # the kitchen sees the slot as a single unit of work. Null for live batches.
     preorder_slot_start = models.DateTimeField(
@@ -650,3 +666,126 @@ class BatchingStrategy(models.Model):
 
     def get_pricing(self, key, default=None):
         return self.pricing.get(key, default)
+
+
+class DropPoint(models.Model):
+    """A shared hand-over point: a hostel gate, a campus block, an office lobby.
+
+    Not a customer address. Many customers share one pin, which is what makes a
+    scheduled drop cheap: the rider makes one trip for the whole group instead
+    of one trip per order.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120, db_index=True)
+    description = models.TextField(blank=True, default='')
+    geo_location = gis_models.PointField(geography=True, db_index=True)
+    h3_index = models.CharField(max_length=20, blank=True, default='', db_index=True)
+    zone = models.ForeignKey(
+        'geo.OperationalZone', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='drop_points',
+    )
+
+    # A trip pays its flat fee at four orders (4 × 800 = 3,200 against a
+    # 3,000 trip), so three would run at a loss. Above `max_orders` a second
+    # trip is opened, which pays the flat fee again — keep this at the batch
+    # size so one window is always one trip.
+    min_orders = models.PositiveIntegerField(
+        default=4, help_text="Orders needed for the trip to pay for itself",
+    )
+    max_orders = models.PositiveIntegerField(
+        default=5, help_text="Orders one rider can carry on a single trip",
+    )
+
+    contact_name = models.CharField(max_length=120, blank=True, default='')
+    contact_phone = models.CharField(max_length=20, blank=True, default='')
+    notes = models.TextField(blank=True, default='')
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['is_active', 'h3_index'], name='drop_point_active_h3_idx'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if self.geo_location:
+            self.h3_index = latlng_to_h3(
+                self.geo_location.y, self.geo_location.x,
+            ) or ''
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({'active' if self.is_active else 'inactive'})"
+
+
+class DropWindow(models.Model):
+    """A recurring hand-over slot at a :class:`DropPoint`.
+
+    ``cutoff_time`` is the last moment an order may join — it is what lets the
+    kitchen cook to a known count instead of guessing. ``end_time`` is when the
+    rider is expected to *arrive*, so the kitchen's release time is derived by
+    walking back travel time from it.
+    """
+
+    WEEKDAY_CHOICES = (
+        (0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'), (3, 'Thursday'),
+        (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    drop_point = models.ForeignKey(
+        DropPoint, on_delete=models.CASCADE, related_name='windows',
+    )
+    label = models.CharField(
+        max_length=60, default='Lunch',
+        help_text='Shown to customers, e.g. "Lunch" or "Dinner"',
+    )
+    # Null weekday means the window runs every day.
+    weekday = models.PositiveSmallIntegerField(
+        choices=WEEKDAY_CHOICES, null=True, blank=True, db_index=True,
+    )
+    start_time = models.TimeField(help_text='When the hand-over window opens')
+    end_time = models.TimeField(help_text='When the rider is expected to arrive')
+    cutoff_time = models.TimeField(
+        help_text='Last moment a customer may join this window',
+    )
+
+    delivery_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=500.00,
+        help_text='Flat fee per order — one trip is shared by many orders',
+    )
+    # Null falls back to the drop point's capacity.
+    max_orders = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Orders per trip; blank uses the drop point default',
+    )
+
+    is_active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['drop_point__name', 'start_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['drop_point', 'weekday', 'start_time'],
+                name='unique_drop_window_per_point_day',
+            ),
+            models.CheckConstraint(
+                check=models.Q(end_time__gt=models.F('start_time')),
+                name='drop_window_ends_after_start',
+            ),
+            models.CheckConstraint(
+                check=models.Q(cutoff_time__lte=models.F('start_time')),
+                name='drop_window_cutoff_before_start',
+            ),
+        ]
+
+    def __str__(self):
+        day = 'Every day' if self.weekday is None else self.get_weekday_display()
+        return f"{self.drop_point.name} · {self.label} · {day} {self.start_time:%H:%M}"
+

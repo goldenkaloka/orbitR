@@ -18,24 +18,6 @@ from infrastructure.notifications.messages import (
 logger = logging.getLogger(__name__)
 User = get_user_model()
 
-MAX_DISPATCH_ATTEMPTS = 3
-DISPATCH_RETRY_DELAYS = {1: 120, 2: 300, 3: 900}
-
-@shared_task(
-    name='domain.services.dispatch_tasks.dispatch_order_task',
-    bind=True,
-    max_retries=0,
-    acks_late=True,
-)
-def dispatch_order_task(self, order_id):
-    """
-    Deprecated: individual auto-dispatch is dead. This task is kept for
-    backwards compatibility but will not retry.
-    """
-    logger.warning(f"[deprecated] dispatch_order_task called for {order_id} — no-op")
-    return
-
-
 @shared_task(
     name='domain.services.dispatch_tasks.dispatch_batch_task',
 )
@@ -136,8 +118,7 @@ def batch_lifecycle_poll_task():
     4. Check for all-sections-ready → PENDING_DRIVER
     """
     from domain.services.batch_pipeline import BatchPipeline
-    BatchPipeline.check_and_close_full_batches()
-    BatchPipeline.check_and_expire_accumulating()
+    BatchPipeline.close_due_accumulating_batches()
     BatchPipeline.check_and_expire_soft_lock()
     BatchPipeline.check_and_expire_pending_driver()
     BatchPipeline.check_section_timeouts()

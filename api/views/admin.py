@@ -637,8 +637,7 @@ class AdminViewSet(viewsets.GenericViewSet):
         """
         Update restaurant details.
         Body: { restaurant_id, name, location, latitude, longitude, description,
-                category, source_type, is_verified_partner, public_disclaimer,
-                dispatch_mode }
+                category, source_type, public_disclaimer, dispatch_mode }
         """
         restaurant_id = request.data.get('restaurant_id')
         if not restaurant_id:
@@ -653,7 +652,6 @@ class AdminViewSet(viewsets.GenericViewSet):
             'description': request.data.get('description'),
             'category': request.data.get('category'),
             'source_type': request.data.get('source_type'),
-            'is_verified_partner': request.data.get('is_verified_partner'),
             'public_disclaimer': request.data.get('public_disclaimer'),
             'dispatch_mode': request.data.get('dispatch_mode'),
             'settlement_mode': request.data.get('settlement_mode'),

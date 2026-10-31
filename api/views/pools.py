@@ -75,6 +75,12 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
         if pool.scheduled_for != requested_scheduled:
             return False
 
+        # A different drop point/window is a different booking even if the
+        # restaurant and time happen to match.
+        requested_drop = data.get('drop_window')
+        if str(pool.drop_window_id or '') != str(requested_drop or ''):
+            return False
+
         # Older clients do not send a meal. When they omit it, the schedule
         # alone identifies the bucket; when they do send one, it must match.
         requested_meal = str(data.get('meal_period') or '').strip().upper() or None
@@ -129,6 +135,7 @@ class PoolOrderViewSet(viewsets.ModelViewSet):
             delivery_location=point,
             scheduled_for=serializer.validated_data.get('scheduled_for'),
             meal_period=serializer.validated_data.get('meal_period'),
+            drop_window=serializer.validated_data.get('drop_window'),
         )
         serializer.instance = pool
 

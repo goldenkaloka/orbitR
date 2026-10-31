@@ -5,7 +5,7 @@ from decimal import Decimal
 import h3
 from apps.core.geo_utils import ZONE_RESOLUTION, latlng_to_h3
 from apps.geo.models import ZoneH3Index
-from apps.orders.models import Order, OrderItem
+from apps.orders.models import DropWindow, Order, OrderItem
 from apps.restaurants.models import Restaurant
 from django.conf import settings
 from django.db import transaction
@@ -17,6 +17,10 @@ from domain.services.orders.scheduled_orders import (
     ensure_preorder_slot_capacity,
     release_at_for,
     validate_scheduled_for,
+)
+from domain.services.orders.drop_service import (
+    DropUnavailable,
+    validate_drop_booking,
 )
 from domain.services.pricing_service import PricingService
 
@@ -44,6 +48,38 @@ class PlaceOrderService:
         if fulfillment_type not in {Order.FULFILLMENT_DELIVERY, Order.FULFILLMENT_PICKUP}:
             raise ValueError("Invalid fulfillment type.")
 
+        # ── Scheduled drop ────────────────────────────────────────────────────
+        # A drop order is delivered to a shared point for a recurring window.
+        # The point replaces the customer's address, the window's flat fee
+        # replaces distance pricing, and the window's start is the eating time.
+        drop_window = validated_data.get('drop_window')
+        drop_start = None
+        if drop_window is not None:
+            if not isinstance(drop_window, DropWindow):
+                try:
+                    drop_window = DropWindow.objects.select_related('drop_point').get(
+                        id=drop_window,
+                    )
+                except (DropWindow.DoesNotExist, ValueError, TypeError):
+                    raise ValueError("This drop window does not exist.")
+            try:
+                drop_start = validate_drop_booking(
+                    drop_window, validated_data.get('scheduled_for'),
+                    restaurant=restaurant,
+                )
+            except DropUnavailable as exc:
+                raise ValueError(str(exc))
+
+            point = drop_window.drop_point
+            fulfillment_type = Order.FULFILLMENT_DELIVERY
+            validated_data['fulfillment_type'] = fulfillment_type
+            validated_data['drop_window'] = drop_window
+            validated_data['drop_point'] = point
+            validated_data['scheduled_for'] = drop_start
+            validated_data['delivery_location'] = point.geo_location
+            validated_data['delivery_address'] = point.name
+        is_drop = drop_start is not None
+
         delivery_location = validated_data.get('delivery_location')
         is_pickup = fulfillment_type == Order.FULFILLMENT_PICKUP
         if is_pickup:
@@ -67,7 +103,17 @@ class PlaceOrderService:
             # We bypass the max_delivery_radius_km check so delivery can happen anywhere.
         
         # Calculate dynamic delivery and service fees
-        if is_pickup:
+        if is_drop:
+            # One trip carries many orders, so the fee is the window's flat
+            # price. Distance maths would charge each customer for the whole
+            # route and destroy the economics of a shared drop.
+            dynamic_fee = Decimal(str(drop_window.delivery_fee))
+            policy = PricingService.get_active_policy()
+            service_fee = (
+                Decimal(str(policy.service_fee)) if policy else Decimal('300.00')
+            )
+            fee_log = None
+        elif is_pickup:
             _, service_fee, fee_log = PricingService.calculate_delivery_fee(
                 restaurant,
                 delivery_location,
@@ -102,7 +148,11 @@ class PlaceOrderService:
             items_subtotal += (food.price * quantity)
             
         scheduled_for = validated_data.get('scheduled_for')
-        if scheduled_for:
+        if is_drop:
+            # The window's cut-off already enforces the lead time; the kitchen
+            # still needs a release moment so the food is hot at hand-over.
+            validated_data['release_at'] = release_at_for(restaurant, drop_start)
+        elif scheduled_for:
             validate_scheduled_for(scheduled_for, restaurant=restaurant)
             validated_data['release_at'] = release_at_for(restaurant, scheduled_for)
         else:
@@ -112,7 +162,16 @@ class PlaceOrderService:
         otp = str(random.randint(1000, 9999))
         
         with transaction.atomic():
-            if scheduled_for:
+            if is_drop:
+                # Serialise bookings per drop window so two customers cannot
+                # both take the last seat. The row lock is the same mechanism
+                # the pre-order path uses on the restaurant.
+                DropWindow.objects.select_for_update().get(id=drop_window.id)
+                try:
+                    validate_drop_booking(drop_window, drop_start, restaurant=restaurant)
+                except DropUnavailable as exc:
+                    raise ValueError(str(exc))
+            elif scheduled_for:
                 # Serialise pre-order bookings per restaurant so two customers
                 # cannot both take the same last slot.
                 locked_restaurant = Restaurant.objects.select_for_update().get(

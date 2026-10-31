@@ -26,6 +26,41 @@ class PricingPolicy(models.Model):
     driver_per_stop_rate = models.DecimalField(max_digits=10, decimal_places=2, default=300.00, help_text="Payout per stop (pickup/delivery)")
     single_order_driver_share = models.DecimalField(max_digits=5, decimal_places=2, default=0.95, help_text="Driver share for non-batched orders (0.95 = 95%)")
 
+    # Delivery Floor
+    # The rider guarantee is paid out of the delivery fee. Without a floor a
+    # short trip bills less than the guarantee and every such order loses
+    # money before it even starts, so the fee is raised to cover the
+    # guarantee plus at least this margin.
+    min_delivery_margin = models.DecimalField(
+        max_digits=10, decimal_places=2, default=150.00,
+        help_text="Minimum profit kept per delivery on top of the rider guarantee",
+    )
+
+    # ── Scheduled drops ──────────────────────────────────────────────────────
+    # A drop trip carries many orders to one gate, so it is paid per trip, not
+    # per kilometre. This is the number that makes a 500 delivery fee viable:
+    # eight orders collect 4,000 and the trip costs 3,000, instead of eight
+    # separate guarantee-based payouts swallowing the fee.
+    drop_trip_payout = models.DecimalField(
+        max_digits=10, decimal_places=2, default=3000.00,
+        help_text="Flat payout to the rider for one scheduled-drop trip",
+    )
+
+    DROP_LOW_FILL_RUN = 'RUN'
+    DROP_LOW_FILL_ROLL = 'ROLL'
+    DROP_LOW_FILL_CANCEL = 'CANCEL'
+    DROP_LOW_FILL_CHOICES = (
+        (DROP_LOW_FILL_RUN, 'Run the trip anyway'),
+        (DROP_LOW_FILL_ROLL, 'Move orders to the next window'),
+        (DROP_LOW_FILL_CANCEL, 'Cancel and refund'),
+    )
+    drop_low_fill_policy = models.CharField(
+        max_length=10,
+        choices=DROP_LOW_FILL_CHOICES,
+        default=DROP_LOW_FILL_ROLL,
+        help_text="What to do when a drop window has fewer than min_orders at cut-off",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

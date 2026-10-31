@@ -53,6 +53,18 @@ class Payment(models.Model):
     status = models.CharField(max_length=50, default='INITIATED', db_index=True, choices=STATUS_CHOICES)
     provider_reference = models.CharField(max_length=255, null=True, blank=True, db_index=True)
     rrn = models.CharField(max_length=255, null=True, blank=True)
+    # What the gateway kept when it collected this payment. Only populated when
+    # the provider reports a fee; the platform has no published schedule for
+    # collections, so this is never guessed. Subtracted from platform revenue
+    # at release so the books match the money that actually arrived.
+    gateway_fee = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text="Gateway fee charged when collecting this payment (TZS)",
+    )
+    gateway_fee_source = models.CharField(
+        max_length=16, blank=True, default='',
+        help_text="GATEWAY when the provider reported the fee, ESTIMATE otherwise",
+    )
     refund_id = models.CharField(max_length=255, null=True, blank=True)
     refunded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)

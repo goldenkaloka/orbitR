@@ -147,6 +147,18 @@ class PricingService:
             logger.warning(f"PRICING FALLBACK: Restaurant {restaurant.id} has invalid Point(0,0) location.")
             return Decimal('1000.00'), Decimal('300.00'), None
 
+        # A scheduled drop is priced by its window, not by distance: one rider
+        # carries many orders to one shared point, so every order pays the same
+        # flat fee. Recalculating by distance here would re-add the cost the
+        # drop is designed to remove.
+        drop_window = getattr(order, 'drop_window', None) if order is not None else None
+        if drop_window is None and pool is not None:
+            drop_window = getattr(pool, 'drop_window', None)
+        if drop_window is not None:
+            policy = cls.get_active_policy()
+            service_fee = policy.service_fee if policy else Decimal('300.00')
+            return Decimal(str(drop_window.delivery_fee)), service_fee, None
+
         try:
             delivery_h3 = latlng_to_h3(delivery_location.y, delivery_location.x, ZONE_RESOLUTION)
             restaurant_h3 = latlng_to_h3(restaurant.geo_location.y, restaurant.geo_location.x, ZONE_RESOLUTION)
@@ -204,9 +216,21 @@ class PricingService:
 
             final_fee = base_fee + variable_fee + fuel_adjustment
 
+            # The rider guarantee is paid out of the delivery fee. Billing a
+            # short trip below guarantee + margin makes the order lose money
+            # before it starts, so the fee is floored at that break-even point.
+            adjustments = {}
+            floor_fee = (
+                Decimal(str(getattr(policy, 'driver_min_guarantee', 0) or 0))
+                + Decimal(str(getattr(policy, 'min_delivery_margin', 0) or 0))
+                - service_fee
+            )
+            if floor_fee > 0 and final_fee < floor_fee:
+                final_fee = floor_fee
+                adjustments['min_fee_floor'] = str(floor_fee.quantize(Decimal('0.01')))
+
             # Limitless delivery fee cap to protect users against excessive rates
             MAX_DELIVERY_FEE = Decimal('25000.00')
-            adjustments = {}
 
             if final_fee > MAX_DELIVERY_FEE:
                 final_fee = MAX_DELIVERY_FEE

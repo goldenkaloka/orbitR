@@ -3,7 +3,14 @@ from decimal import Decimal
 from api.serializers.utils import parse_coordinate_dict
 from apps.core.models import Notification
 from apps.delivery.models import Driver
-from apps.orders.models import BatchSectionStatus, Dispute, Order, OrderItem, PreorderSheet
+from apps.orders.models import (
+    BatchSectionStatus,
+    Dispute,
+    DropWindow,
+    Order,
+    OrderItem,
+    PreorderSheet,
+)
 from apps.products.models import Food
 from apps.restaurants.models import MealPeriod, Restaurant, RestaurantSection
 from apps.users.models import User
@@ -150,6 +157,7 @@ class RestaurantListSerializer(serializers.ModelSerializer):
     foods = serializers.SerializerMethodField()
     sections = RestaurantSectionSerializer(many=True, read_only=True)
     is_busy = serializers.SerializerMethodField()
+    preorder = serializers.SerializerMethodField()
 
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
@@ -170,8 +178,18 @@ class RestaurantListSerializer(serializers.ModelSerializer):
             'category', 'price_range', 'rating', 
             'is_active', 'is_busy', 'foods', 'sections', 'average_prep_time',
             'score', 'distance_km', 'wait_time', 'review_count',
-            'delivery_fee', 'service_fee',
+            'delivery_fee', 'service_fee', 'preorder',
         ]
+
+    def get_preorder(self, obj):
+        """Whether the kitchen takes pre-orders soon, for the card badge.
+
+        Runs on the feed for every kitchen, so it reads prefetched sections
+        and meal periods instead of issuing one query per row.
+        """
+        from domain.services.orders.scheduled_orders import next_preorder_hint
+
+        return next_preorder_hint(obj)
 
     def get_wait_time(self, obj):
         prep = getattr(obj, 'actual_prep_minutes', None)
@@ -411,6 +429,7 @@ class OrderSerializer(serializers.ModelSerializer):
     is_reviewed = serializers.SerializerMethodField()
     settlement_mode = serializers.SerializerMethodField()
     restaurant_payout_phone = serializers.SerializerMethodField()
+    drop = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
@@ -429,13 +448,41 @@ class OrderSerializer(serializers.ModelSerializer):
             'cancelled_at', 'cancelled_by', 'cancellation_fault', 'cancellation_category',
             'cancellation_reason', 'affects_restaurant_reputation', 'is_reviewed',
             'scheduled_for', 'release_at',
+            'drop_point', 'drop_window', 'drop',
         ]
 
         read_only_fields = ['status', 'items_subtotal', 'delivery_fee', 'service_fee', 'total_amount', 'delivery_otp',
                            'original_delivery_fee', 'discount_applied', 'discount_amount',
                            'cancelled_at', 'cancelled_by', 'cancellation_fault',
                            'cancellation_category', 'cancellation_reason',
-                           'affects_restaurant_reputation', 'release_at']
+                           'affects_restaurant_reputation', 'release_at', 'drop_point',
+                           # Money state is written by services only. Leaving these
+                           # writable let a customer mark their own order paid or
+                           # rewrite what the restaurant was owed.
+                           'is_paid', 'is_pool_order', 'confirmed_total',
+                           'restaurant_payment_status', 'restaurant_paid_amount',
+                           'restaurant_payment_reference', 'restaurant_paid_at']
+
+    def get_drop(self, obj):
+        """The hand-over details the app needs, without a second request."""
+        window = obj.drop_window
+        if window is None:
+            return None
+        point = obj.drop_point or window.drop_point
+        return {
+            'point_id': str(point.id),
+            'point_name': point.name,
+            'address': point.description,
+            'latitude': point.geo_location.y if point.geo_location else None,
+            'longitude': point.geo_location.x if point.geo_location else None,
+            'window_id': str(window.id),
+            'label': window.label,
+            'start_time': window.start_time.strftime('%H:%M'),
+            'end_time': window.end_time.strftime('%H:%M'),
+            'cutoff_time': window.cutoff_time.strftime('%H:%M'),
+            'delivery_fee': float(window.delivery_fee),
+        }
+
 
 
     def get_is_reviewed(self, obj):
@@ -630,10 +677,12 @@ class OrderSerializer(serializers.ModelSerializer):
 
     def get_fields(self):
         fields = super().get_fields()
-        # The eating time is fixed once the order exists: changing it after
-        # placement would leave release_at pointing at the old window.
+        # The eating time and the drop window are fixed once the order exists:
+        # changing either after placement would leave release_at and the flat
+        # fee pointing at the old booking.
         if isinstance(self.instance, Order):
             fields['scheduled_for'].read_only = True
+            fields['drop_window'].read_only = True
         return fields
 
     def create(self, validated_data):
@@ -649,6 +698,8 @@ class OrderSerializer(serializers.ModelSerializer):
             return PlaceOrderService.execute(validated_data)
         except PreorderSlotUnavailable as exc:
             raise serializers.ValidationError({'scheduled_for': str(exc)})
+        except ValueError as exc:
+            raise serializers.ValidationError({'detail': str(exc)})
 
 
 class DriverSerializer(serializers.ModelSerializer):
@@ -772,6 +823,10 @@ class OrderPoolSerializer(serializers.ModelSerializer):
 
     scheduled_for = serializers.DateTimeField(required=False, allow_null=True)
     meal_period = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    drop_window = serializers.PrimaryKeyRelatedField(
+        queryset=DropWindow.objects.all(), required=False, allow_null=True,
+    )
+    drop = serializers.SerializerMethodField()
 
     def validate_scheduled_for(self, value):
         if self.instance is not None and value != self.instance.scheduled_for:
@@ -795,12 +850,36 @@ class OrderPoolSerializer(serializers.ModelSerializer):
             'id', 'initiator', 'restaurant', 'restaurant_name', 'invite_code', 
             'status', 'delivery_address', 'delivery_location', 
             'total_delivery_fee', 'total_service_fee', 'members', 'created_at', 'expires_at',
-            'scheduled_for', 'pool_type', 'meal_period',
+            'scheduled_for', 'pool_type', 'meal_period', 'drop_window', 'drop',
             'is_initiator', 'current_user_member_id', 'restaurant_menu', 'final_order_id'
         ]
         read_only_fields = ['invite_code', 'status', 'total_delivery_fee', 'total_service_fee', 'initiator', 'expires_at', 'pool_type']
+        extra_kwargs = {
+            # A drop bucket derives its location from the drop point, so the
+            # client does not have to send coordinates.
+            'delivery_location': {'required': False},
+        }
 
     total_service_fee = serializers.ReadOnlyField(source='service_fee')
+
+    def get_drop(self, obj):
+        window = obj.drop_window
+        if window is None:
+            return None
+        point = window.drop_point
+        return {
+            'point_id': str(point.id),
+            'point_name': point.name,
+            'address': point.description,
+            'latitude': point.geo_location.y if point.geo_location else None,
+            'longitude': point.geo_location.x if point.geo_location else None,
+            'window_id': str(window.id),
+            'label': window.label,
+            'start_time': window.start_time.strftime('%H:%M'),
+            'end_time': window.end_time.strftime('%H:%M'),
+            'cutoff_time': window.cutoff_time.strftime('%H:%M'),
+            'delivery_fee': float(window.delivery_fee),
+        }
 
     final_order_id = serializers.SerializerMethodField()
 

@@ -328,7 +328,6 @@ class ManageRestaurantService:
         'image',
         'logo',
         'source_type',
-        'is_verified_partner',
         'public_disclaimer',
         'dispatch_mode',
         'settlement_mode',
@@ -469,8 +468,6 @@ class ManageRestaurantService:
                                 "Invalid settlement_mode. Expected one of: "
                                 f"{', '.join(sorted(valid_modes))}"
                             )
-                    if key == 'is_verified_partner':
-                        value = str(value).lower() in ('true', '1', 'yes', 'on')
                     setattr(restaurant, key, value)
             restaurant.save()
 

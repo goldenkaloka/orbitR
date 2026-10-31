@@ -50,12 +50,12 @@ class MultiRestaurantBatchingTests(TestCase):
         self.platform_b = self._restaurant('Platform B', self.platform_owner_b, managed=True)
         self.partner = self._restaurant('Partner Cafe', self.partner_owner, managed=False)
 
-    def _restaurant(self, name, owner, managed):
+    def _restaurant(self, name, owner, managed, point=POINT):
         restaurant = Restaurant.objects.create(
             owner=owner,
             name=name,
             location=name,
-            geo_location=POINT,
+            geo_location=point,
             source_type=(
                 Restaurant.SOURCE_PLATFORM_MANAGED if managed
                 else Restaurant.SOURCE_PARTNER
@@ -133,6 +133,138 @@ class MultiRestaurantBatchingTests(TestCase):
         self.assertNotEqual(batch_one.id, batch_two.id)
         self.assertEqual(batch_one.batch_type, 'SINGLE_RESTAURANT')
         self.assertEqual(batch_two.batch_type, 'SINGLE_RESTAURANT')
+
+    # ── Proximity gate ────────────────────────────────────────────────────────
+
+    def test_far_apart_platform_restaurants_do_not_pool(self):
+        """One rider cannot collect from kitchens 11 km apart in one trip."""
+        far = self._restaurant(
+            'Far Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.8924),
+        )
+
+        first = self._order(self.platform_a)
+        second = self._order(far)
+
+        batch_one = self._batch(first)
+        batch_two = self._batch(second)
+
+        self.assertNotEqual(batch_one.id, batch_two.id)
+        self.assertEqual(batch_one.batch_type, 'SINGLE_RESTAURANT')
+        self.assertEqual(batch_two.batch_type, 'SINGLE_RESTAURANT')
+
+    def test_kitchens_200m_apart_pool(self):
+        near = self._restaurant(
+            'Near Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.7942),
+        )
+
+        batch = self._batch(self._order(self.platform_a))
+        merged = self._batch(self._order(near))
+
+        self.assertEqual(batch.id, merged.id)
+        self.assertEqual(merged.batch_type, 'MULTI_RESTAURANT')
+
+    # ── Merge on close ────────────────────────────────────────────────────────
+
+    def test_close_merges_into_a_neighbouring_kitchen_batch(self):
+        """Two half-filled trips become one before either is dispatched."""
+        from domain.services.batch_pipeline import BatchPipeline
+
+        near = self._restaurant(
+            'Near Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.7942),
+        )
+        first = BatchPipeline._create_single_batch(self._order(self.platform_a, 'a1'))
+        second = BatchPipeline._create_single_batch(self._order(near, 'b1'))
+
+        BatchPipeline._close_accumulating_batch(str(first.id))
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, 'CANCELLED')
+        self.assertEqual(first.orders.count(), 0)
+        self.assertEqual(second.status, 'ACCUMULATING')
+        self.assertEqual(second.orders.count(), 2)
+        self.assertEqual(second.batch_type, 'MULTI_RESTAURANT')
+
+    def test_close_keeps_far_kitchens_in_separate_trips(self):
+        from domain.services.batch_pipeline import BatchPipeline
+
+        far = self._restaurant(
+            'Far Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.8924),
+        )
+        first = BatchPipeline._create_single_batch(self._order(self.platform_a, 'a1'))
+        second = BatchPipeline._create_single_batch(self._order(far, 'b1'))
+
+        BatchPipeline._close_accumulating_batch(str(first.id))
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, 'SOFT_LOCK')
+        self.assertEqual(first.orders.count(), 1)
+        self.assertEqual(second.orders.count(), 1)
+
+    def test_merge_refuses_to_oversell_one_trip(self):
+        """4 + 2 orders is two trips, so the batches stay apart."""
+        from domain.services.batch_pipeline import BatchPipeline
+
+        near = self._restaurant(
+            'Near Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.7942),
+        )
+        big = self._batch(self._order(self.platform_a, 'a1'))
+        for suffix in ('a2', 'a3', 'a4'):
+            self._batch(self._order(self.platform_a, suffix))
+        self.assertEqual(big.orders.count(), 4)
+
+        small = BatchPipeline._create_single_batch(self._order(near, 'b1'))
+        BatchPipeline._join_batch(self._order(near, 'b2'), small)
+        self.assertEqual(small.orders.count(), 2)
+
+        BatchPipeline._close_accumulating_batch(str(big.id))
+
+        big.refresh_from_db()
+        self.assertEqual(big.status, 'SOFT_LOCK')
+        self.assertEqual(big.orders.count(), 4)
+
+    def test_merge_closes_the_target_when_the_trip_fills(self):
+        from domain.services.batch_pipeline import BatchPipeline
+
+        near = self._restaurant(
+            'Near Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.7942),
+        )
+        first = BatchPipeline._create_single_batch(self._order(self.platform_a, 'a1'))
+        BatchPipeline._join_batch(self._order(self.platform_a, 'a2'), first)
+        BatchPipeline._join_batch(self._order(self.platform_a, 'a3'), first)
+
+        second = BatchPipeline._create_single_batch(self._order(near, 'b1'))
+        BatchPipeline._join_batch(self._order(near, 'b2'), second)
+
+        BatchPipeline._close_accumulating_batch(str(first.id))
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, 'CANCELLED')
+        self.assertEqual(second.orders.count(), 5)
+        self.assertEqual(second.status, 'SOFT_LOCK')
+
+    def test_relocated_kitchen_joins_a_nearby_batch(self):
+        far = self._restaurant(
+            'Far Kitchen', self.platform_owner_b, managed=True,
+            point=Point(39.2083, -6.8924),
+        )
+        batch = self._batch(self._order(self.platform_a))
+
+        far.geo_location = Point(39.2083, -6.7942)
+        far.save(update_fields=['geo_location'])
+
+        merged = self._batch(self._order(far))
+
+        self.assertEqual(batch.id, merged.id)
+        self.assertEqual(merged.batch_type, 'MULTI_RESTAURANT')
 
     def test_partner_order_does_not_join_a_platform_batch(self):
         platform_order = self._order(self.platform_a)

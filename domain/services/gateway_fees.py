@@ -27,6 +27,10 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 FEE_SOURCE_GATEWAY = 'GATEWAY'
 FEE_SOURCE_ESTIMATE = 'ESTIMATE'
 FEE_SOURCE_NONE = ''
@@ -118,7 +122,15 @@ def estimate_payout_fee(amount, provider=None):
 
     # Above the top band the schedule is undocumented; the top fee is the only
     # defensible floor. Keep it configurable rather than guessing a percentage.
-    return tiers[-1][2]
+    top_low, top_high, top_fee = tiers[-1]
+    if amount > top_high:
+        logger.warning(
+            "[gateway_fees] Payout of %s TZS is above the highest published "
+            "band (%s-%s); using the %s TZS top-tier fee as a floor. Add the "
+            "missing band to GATEWAY_PAYOUT_FEE_TIERS once ClickPesa publishes it.",
+            amount, top_low, top_high, top_fee,
+        )
+    return top_fee
 
 
 def fee_from_gateway_result(result):

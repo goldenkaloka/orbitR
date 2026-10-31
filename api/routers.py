@@ -20,6 +20,7 @@ from api.views.core import (
 )
 from api.views.demands import BuyerDemandViewSet, ShopViewSet
 from api.views.driver import DriverViewSet
+from api.views.drops import DropCalendarView, DropPointViewSet, DropWindowViewSet
 from api.views.geo import OperationalZoneViewSet
 from api.views.marketplace import MarketplaceCategoryViewSet, MarketplaceProductViewSet, PostingTokenBundleViewSet
 from api.views.payments import AirpayWebhookView, ClickpesaWebhookView, InitiatePaymentView, PlatformRevenueView
@@ -67,6 +68,8 @@ router.register(r'pricing/logs', DeliveryFeeLogViewSet, basename='pricing-log')
 router.register(r'batches', BatchViewSet, basename='batch')
 router.register(r'sections', SectionViewSet, basename='section')
 router.register(r'batch-section-statuses', BatchSectionStatusViewSet, basename='batch-section-status')
+router.register(r'drop-points', DropPointViewSet, basename='drop-point')
+router.register(r'drop-windows', DropWindowViewSet, basename='drop-window')
 
 urlpatterns = router.urls + [
     path(
@@ -86,6 +89,7 @@ urlpatterns = router.urls + [
     path('payments/initiate/', InitiatePaymentView.as_view(), name='payment-initiate'),
     path('payments/revenue/', PlatformRevenueView.as_view(), name='platform-revenue'),
     path('search/', UniversalSearchView.as_view(), name='universal-search'),
+    path('drop-calendar/', DropCalendarView.as_view(), name='drop-calendar'),
     path('ws-subscribe-check/', ws_subscribe_check, name='ws-subscribe-check'),
     path('reliability/', ReliabilityView.as_view(), name='reliability-me'),
     path('app-config/', AppConfigView.as_view(), name='app-config'),

@@ -145,7 +145,7 @@ class PreorderBatchingTests(TestCase):
                 accumulating_since=six_minutes_ago,
             )
 
-        BatchPipeline.check_and_expire_accumulating()
+        BatchPipeline.close_due_accumulating_batches()
 
         preorder_batch.refresh_from_db()
         self.assertEqual(preorder_batch.status, 'ACCUMULATING')
@@ -168,7 +168,7 @@ class PreorderBatchingTests(TestCase):
             - timedelta(minutes=batch.accumulate_window_minutes + 1),
         )
 
-        BatchPipeline.check_and_expire_accumulating()
+        BatchPipeline.close_due_accumulating_batches()
 
         batch.refresh_from_db()
         self.assertEqual(batch.status, 'SOFT_LOCK')
